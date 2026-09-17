@@ -23,6 +23,10 @@ function prettify(segment: string): string {
 export function PageBreadcrumbs() {
   const pathname = usePathname();
   if (pathname === "/dashboard") return null;
+  // Detail pages already render their own contextual Breadcrumb with the
+  // entity name (e.g. seller.businessName). Hide the global trail there
+  // so only one breadcrumb appears — fixes double trail on seller detail.
+  if (/^\/dashboard\/(sellers|users|products|communities|orders|support)\/[^/]+$/.test(pathname)) return null;
 
   const segments = pathname.split("/").filter(Boolean).slice(1);
   const items: { label: string; href?: string }[] = [];

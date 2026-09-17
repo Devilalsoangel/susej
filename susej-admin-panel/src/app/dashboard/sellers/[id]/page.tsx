@@ -201,7 +201,7 @@ export default function SellerDetailPage({ params }: { params: Promise<{ id: str
     }
     return (
       <div className="space-y-6">
-        <Breadcrumb items={[{ label: "Sellers", href: "/dashboard/sellers" }, { label: "Seller" }]} />
+        <Breadcrumb items={[{ label: "Seller Verification", href: "/dashboard/sellers" }, { label: "Seller" }]} />
         <EmptyState
           icon={<FileText className="h-8 w-8 text-gray-300" />}
           title="Seller not found"
@@ -312,7 +312,7 @@ export default function SellerDetailPage({ params }: { params: Promise<{ id: str
 
   return (
     <div className="space-y-6">
-      <Breadcrumb items={[{ label: "Sellers", href: "/dashboard/sellers" }, { label: seller.businessName }]} />
+      <Breadcrumb items={[{ label: "Seller Verification", href: "/dashboard/sellers" }, { label: seller.businessName }]} />
 
       {/* Header */}
       <div className="flex items-start justify-between">
