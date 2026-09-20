@@ -267,17 +267,25 @@ export async function GET(request: NextRequest) {
     },
     // Admin rail order (the desk drag-reorder persists position per section):
     // enabled sections, lowest position first, rows without a position last.
-    // Additive — existing clients keep reading `sections` untouched.
-    sectionOrder: (sections as { name: string; isEnabled: boolean; position?: unknown }[])
-      .filter((s) => s && s.isEnabled !== false && typeof s.name === "string")
-      .sort((a, b) => {
-        const pa = Number(a.position);
-        const pb = Number(b.position);
-        const va = Number.isFinite(pa) ? pa : Number.MAX_SAFE_INTEGER;
-        const vb = Number.isFinite(pb) ? pb : Number.MAX_SAFE_INTEGER;
-        return va - vb;
-      })
-      .map((s) => s.name),
+    // Fresh prod has zero rows (missing = ON everywhere): fall back to the
+    // canonical rail order so the field is never an empty promise. Additive
+    // — existing clients keep reading `sections` untouched.
+    sectionOrder: (() => {
+      const ordered = (sections as { name: string; isEnabled: boolean; position?: unknown }[])
+        .filter((s) => s && s.isEnabled !== false && typeof s.name === "string")
+        .sort((a, b) => {
+          const pa = Number(a.position);
+          const pb = Number(b.position);
+          const va = Number.isFinite(pa) ? pa : Number.MAX_SAFE_INTEGER;
+          const vb = Number.isFinite(pb) ? pb : Number.MAX_SAFE_INTEGER;
+          return va - vb;
+        })
+        .map((s) => s.name);
+      if (ordered.length) return ordered;
+      return ["top-sellers", "hot-deals", "storefront-banners", "featured-posts", "spotlight"].filter(
+        (k) => !sectionOff.has(k)
+      );
+    })(),
     topSellers: (sectionOff.has("top-sellers") ? [] : topSellers).map((t) => {
       const username = sellerIdToUsername.get(t.sellerId) ?? null;
       const live = username ? liveStats.get(username) : undefined;
