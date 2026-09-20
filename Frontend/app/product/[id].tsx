@@ -15,6 +15,7 @@ import { useBookmark } from '../../contexts/BookmarkContext';
 import { useNotifications } from '../../contexts/NotificationContext';
 import { hasRealImage, resolveAvatar, resolveListingImage } from '../../utils/productImages';
 import { serverApi } from '../../utils/serverApi';
+import { useBlockedSellers } from '../../utils/blockedSellers';
 import { CommentsSheet } from '../../components/sheets/PostEngagementSheets';
 
 const BLOCKED_KEY_BASE = '@susej_blocked';
@@ -255,6 +256,17 @@ export default function ProductDetailsScreen() {
   const description = post ? post.description : '';
   const verified = post ? post.verified : false;
   const following = isFollowing(sellerUsername);
+  // Blocked seller set (same device-local list as grids + chat): this page
+  // gates purchase + contact actions, and related rails hide blocked rows.
+  const { blockedSet } = useBlockedSellers();
+  const sellerBlocked = !!sellerUsername && blockedSet.has(sellerUsername.toLowerCase());
+  const guardSellerBlocked = (): boolean => {
+    if (sellerBlocked) {
+      Alert.alert('Seller blocked', `@${sellerUsername} is blocked — unblock them from /blocked to buy or message.`);
+      return true;
+    }
+    return false;
+  };
 
   // Deterministic per-seller avatar (same derivation as the feed) — never one
   // shared stock face for every seller.
@@ -297,7 +309,7 @@ export default function ProductDetailsScreen() {
 
   const recentProducts = recents
     .map((r) => posts.find((p) => p.id === r.postId))
-    .filter((p): p is (typeof posts)[number] => Boolean(p && p.id !== postId && !hiddenPostIds.includes(p.id) && !mutedSellers.includes(p.sellerUsername) && hasRealImage(p)))
+    .filter((p): p is (typeof posts)[number] => Boolean(p && p.id !== postId && !hiddenPostIds.includes(p.id) && !mutedSellers.includes(p.sellerUsername) && !blockedSet.has(String(p.sellerUsername ?? '').toLowerCase()) && hasRealImage(p)))
     .slice(0, 8);
 
   const handleToggleSave = () => {
@@ -343,6 +355,28 @@ export default function ProductDetailsScreen() {
       return sum + (match?.priceDelta ?? 0);
     }, 0) ?? 0;
   const effectivePrice = price + selectedDelta;
+  // Stepper cap (Amazon parity): the tightest selected per-value stock wins.
+  // Soft cap only — the add gate below is the hard backstop (OOS + choose-
+  // options). Unpicked tracked options and zero-stock SKUs clamp + to a
+  // no-op instead of rendering buyable quantities.
+  const trackedVariants = (post?.variants ?? []).some((v) =>
+    Array.isArray(v?.values) && v.values.some((x) => typeof x?.stock === 'number')
+  );
+  const pickedCount = Object.values(variantSelections).filter((s) => !!s).length;
+  const needsPick = trackedVariants && pickedCount === 0;
+  const stepperCap = (() => {
+    let cap: number | null = null;
+    for (const v of post?.variants ?? []) {
+      const chosen = variantSelections[v.name];
+      if (!chosen) continue;
+      const match = v.values.find((val) => String(val.label ?? '').trim().toLowerCase() === String(chosen).trim().toLowerCase());
+      if (match && typeof match.stock === 'number' && match.stock >= 0) {
+        cap = cap === null ? Math.floor(match.stock) : Math.min(cap, Math.floor(match.stock));
+      }
+    }
+    if (cap !== null) return cap;
+    return typeof post?.stockLeft === 'number' && post.stockLeft > 0 ? post.stockLeft : 1;
+  })();
   // Per-SKU discount (Amazon parity): a +₹ premium variant is less off MRP
   // than the base — the badge and strikethrough must use effectivePrice.
   const offPct = mrp ? Math.round(((mrp - effectivePrice) / mrp) * 100) : offPctBase;
@@ -351,13 +385,15 @@ export default function ProductDetailsScreen() {
 
   const similarItems = (() => {
     if (!post) return [];
-    const base = posts.filter((p) => !hiddenPostIds.includes(p.id) && !mutedSellers.includes(p.sellerUsername) && hasRealImage(p));
+    const base = posts.filter((p) => !hiddenPostIds.includes(p.id) && !mutedSellers.includes(p.sellerUsername) && !blockedSet.has(String(p.sellerUsername ?? '').toLowerCase()) && hasRealImage(p));
     const sameCat = base.filter((p) => p.id !== post.id && p.category === post.category);
     const rest = base.filter((p) => p.id !== post.id && p.category !== post.category);
     return [...sameCat, ...rest].slice(0, 4);
   })();
 
   const handlePrimaryAction = () => {
+    // Blocked seller: nothing on this page may transact or contact.
+    if (guardSellerBlocked()) return;
     switch (flow.archetype) {
       case 'goods':
       case 'food':
@@ -444,18 +480,21 @@ export default function ProductDetailsScreen() {
   };
 
   const handleSubmitApplication = () => {
+    if (guardSellerBlocked()) return;
     setApplyVisible(false);
     const msg = `Hi ${sellerName}, I'd like to apply for "${title}". Details: ${applyName || '—'}${applyPhone ? `, ${applyPhone}` : ''}.${applyNote ? ` ${applyNote}` : ''}`;
     router.push(`/(tabs)/chat?to=${encodeURIComponent(sellerUsername)}&msg=${encodeURIComponent(msg)}`);
   };
 
   const handleSubmitEnquiry = () => {
+    if (guardSellerBlocked()) return;
     setEnquireVisible(false);
     const msg = `${enquireNote || `Hi ${sellerName}, I'm interested in ${title}.`}${enquireDay ? ` Preferred day: ${enquireDay}.` : ''}`;
     router.push(`/(tabs)/chat?to=${encodeURIComponent(sellerUsername)}&msg=${encodeURIComponent(msg)}`);
   };
 
   const handleSubmitQuote = () => {
+    if (guardSellerBlocked()) return;
     setQuoteVisible(false);
     const msg = `Hi ${sellerName}, I'd like a quote for "${title}".${quoteQty ? ` Quantity: ${quoteQty}.` : ''}${quoteNote ? ` ${quoteNote}` : ''}`;
     router.push(`/(tabs)/chat?to=${encodeURIComponent(sellerUsername)}&msg=${encodeURIComponent(msg)}`);
@@ -483,7 +522,7 @@ export default function ProductDetailsScreen() {
         list = [...list, { username: sellerUsername, name: sellerName }];
         await AsyncStorage.setItem(getBlockedKey(), JSON.stringify(list));
       }
-      Alert.alert('User blocked', `@${sellerUsername} can no longer see your profile, posts or message you.`);
+      Alert.alert('User blocked', `@${sellerUsername} is now hidden on this device.`);
     } catch {
       Alert.alert('Something went wrong', 'Please try again.');
     }
@@ -777,13 +816,24 @@ export default function ProductDetailsScreen() {
             <TouchableOpacity
               className="px-5 py-2 rounded-figma-full"
               style={{ backgroundColor: following ? colors.surfaceContainer : colors.primaryContainer }}
-              onPress={() => toggleFollow(sellerUsername)}
+              onPress={() => {
+                if (guardSellerBlocked()) return;
+                toggleFollow(sellerUsername);
+              }}
             >
               <Text className="font-inter-600 text-white" style={{ fontSize: 12, lineHeight: 14, letterSpacing: 0.24 }}>
                 {following ? 'Following' : 'Follow'}
               </Text>
             </TouchableOpacity>
           </View>
+          {/* Blocked-seller notice: actions on this page refuse — the banner says why. */}
+          {sellerBlocked && (
+            <View className="mb-4 px-4 py-2 rounded-figma-16" style={{ backgroundColor: colors.surfaceContainerLow }}>
+              <Text className="font-inter-500 text-textSecondary" style={{ fontSize: 12, lineHeight: 16 }}>
+                {`You've blocked @${sellerUsername} — buying and messaging are off until you unblock them from /blocked.`}
+              </Text>
+            </View>
+          )}
 
           {/* Seller rating — REAL aggregate from the users route (Amazon trust row);
               hidden entirely when the seller has no reviews yet (never fabricated) */}
@@ -939,7 +989,10 @@ export default function ProductDetailsScreen() {
               </Text>
               <View className="ml-2 min-w-[22px] h-[22px] px-1.5 rounded-full items-center justify-center" style={{ backgroundColor: colors.surfaceContainer }}>
                 <Text className="font-inter-600 text-textSecondary" style={{ fontSize: 11, lineHeight: 14 }}>
-                  {(postId.startsWith('post_') ? (Array.isArray(post?.commentList) ? post.commentList.length : 0) : post ? post.comments : 0) + commentDelta}
+                  {/* Single source with the feed card: the loaded thread wins
+                      when present, else the post count — never an id-prefix
+                      branch that shows two different numbers per surface. */}
+                  {(Array.isArray(post?.commentList) && post.commentList.length > 0 ? post.commentList.length : post ? post.comments : 0) + commentDelta}
                 </Text>
               </View>
             </View>
@@ -1063,7 +1116,7 @@ export default function ProductDetailsScreen() {
               <TouchableOpacity
                 className="h-11 w-11 items-center justify-center"
                 accessibilityLabel="Increase quantity"
-                onPress={() => setQty((q) => Math.min(typeof post?.stockLeft === 'number' && post.stockLeft > 0 ? post.stockLeft : 99, q + 1))}
+                onPress={() => setQty((q) => (needsPick ? q : Math.min(Math.max(stepperCap, q), q + 1)))}
               >
                 <Text className="font-inter-700 text-textPrimary" style={{ fontSize: 18 }}>+</Text>
               </TouchableOpacity>
@@ -1072,11 +1125,12 @@ export default function ProductDetailsScreen() {
               <TouchableOpacity
                 className="flex-1 h-11 items-center justify-center rounded-figma-12 border"
                 style={{ borderColor: colors.primary }}
-                onPress={() =>
+                onPress={() => {
+                  if (guardSellerBlocked()) return;
                   router.push(
                     `/(tabs)/chat?seller=${encodeURIComponent(sellerUsername)}&product=${encodeURIComponent(title)}&listing=${encodeURIComponent(String(id))}`
-                  )
-                }
+                  );
+                }}
               >
                 <Text className="font-inter-400" style={{ fontSize: 15, color: colors.primary }}>
                   Make Offer
@@ -1094,11 +1148,12 @@ export default function ProductDetailsScreen() {
           <TouchableOpacity
             className="flex-1 h-14 items-center justify-center rounded-figma-12 border"
             style={{ borderColor: colors.outlineVariant }}
-            onPress={() =>
+            onPress={() => {
+              if (guardSellerBlocked()) return;
               router.push(
                 `/(tabs)/chat?seller=${encodeURIComponent(sellerUsername)}&product=${encodeURIComponent(title)}&listing=${encodeURIComponent(String(id))}`
-              )
-            }
+              );
+            }}
           >
             <Text className="font-inter-400 text-textPrimary" style={{ fontSize: 16, lineHeight: 24 }}>
               {flow.secondaryCta}

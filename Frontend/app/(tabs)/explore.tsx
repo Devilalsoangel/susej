@@ -11,6 +11,7 @@ import { usePromotions } from '../../contexts/PromotionContext';
 import { hasRealImage, resolveListingImage } from '../../utils/productImages';
 import { matchesCategory } from '../category/[slug]';
 import { serverApi } from '../../utils/serverApi';
+import { useBlockedSellers } from '../../utils/blockedSellers';
 
 function PlayIcon({ size = 18, color = '#5d5fef' }: { size?: number; color?: string }) {
   return (
@@ -195,8 +196,22 @@ export default function ExploreScreen() {
 
   const clearAllFilters = () => setFilters(DEFAULT_FILTERS);
 
+  // Blocked sellers hide on this device (same list as feed + chat inbox).
+  const { blockedSet } = useBlockedSellers();
   const filteredPosts = useMemo(() => {
-    let out = posts.filter((p) => !hiddenPostIds?.includes(p.id) && !mutedSellers?.includes(p.sellerUsername) && hasRealImage(p));
+    let out = posts.filter((p) => !hiddenPostIds?.includes(p.id) && !mutedSellers?.includes(p.sellerUsername) && !blockedSet.has(String(p.sellerUsername ?? '').toLowerCase()) && hasRealImage(p));
+    // Live local filter (IG/OLX norm): typing filters the grid immediately
+    // across title + description + seller + category. Enter still jumps to
+    // /search for the deeper server-side result set.
+    const q = search.trim().toLowerCase();
+    if (q) {
+      out = out.filter((p) =>
+        String(p.title ?? '').toLowerCase().includes(q) ||
+        String(p.description ?? '').toLowerCase().includes(q) ||
+        String(p.sellerUsername ?? '').toLowerCase().includes(q) ||
+        String(p.category ?? '').toLowerCase().includes(q)
+      );
+    }
     if (selectedCategory !== 'All') out = out.filter((p) => matchesCategory(p.category, selectedCategory));
     const { min, max } = pricePreset;
     if (min != null) out = out.filter((p) => p.price >= min);
@@ -217,7 +232,7 @@ export default function ExploreScreen() {
     else if (filters.sort === 'priceAsc') out = [...out].sort((a, b) => a.price - b.price);
     else if (filters.sort === 'priceDesc') out = [...out].sort((a, b) => b.price - a.price);
     return out;
-  }, [posts, selectedCategory, filters, pricePreset, hiddenPostIds, mutedSellers]);
+  }, [posts, selectedCategory, filters, pricePreset, hiddenPostIds, mutedSellers, search, blockedSet]);
 
   // Paid Boost Post campaigns surface a Sponsored chip on explore cards (IG ad pattern).
   const boostedIds = useMemo(
@@ -444,6 +459,9 @@ export default function ExploreScreen() {
               </Text>
               <Text className="font-inter-600 text-primaryContainer" style={{ fontSize: 20, lineHeight: 28 }}>
                 {formatPrice(item.price)}
+              </Text>
+              <Text className="font-inter-500 text-textSecondary mt-0.5" numberOfLines={1} style={{ fontSize: 12, lineHeight: 16 }}>
+                {item.sellerName}{item.verified ? ' ✓' : ''}
               </Text>
               <Text className="font-inter-400 text-textSecondary mt-0.5" style={{ fontSize: 14, lineHeight: 20 }}>
                 {item.sellerLocation}

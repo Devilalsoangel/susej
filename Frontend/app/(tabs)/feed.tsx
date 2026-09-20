@@ -16,6 +16,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useRecentlyViewed } from '../../contexts/RecentlyViewedContext';
 import { useHashtags } from '../../contexts/HashtagContext';
 import { useBookmark } from '../../contexts/BookmarkContext';
+import { useBlockedSellers } from '../../utils/blockedSellers';
 import { serverApi } from '../../utils/serverApi';
 import { getAdminUrl } from '../../utils/adminSync';
 import { PanGestureHandler, State } from 'react-native-gesture-handler';
@@ -277,7 +278,9 @@ function FeedContent() {
         name: t.sellerName || s?.name || u,
         location: s?.location ?? '',
         verified: s?.verified ?? false,
-        avatar: s?.avatar ?? resolveAvatar(u),
+        // Server-curated logo first (admin desk branding); organic avatar
+        // is the fallback, never the override.
+        avatar: t.sellerLogo ? { uri: t.sellerLogo } : (s?.avatar ?? resolveAvatar(u)),
       });
     }
     for (const s of suggestions) {
@@ -297,9 +300,12 @@ function FeedContent() {
   };
 
   // Sort: followed sellers first, then newest — imageless NEVER in feed (even for seller), only in seller dashboard under review until image added
+  // Blocked sellers hide everywhere on this device (same list as chat inbox):
+  // block previously hid only the thread while listings stayed shoppable.
+  const { blockedSet } = useBlockedSellers();
   const sortedPosts = useMemo(() => {
     const visible = posts.filter(
-      (p) => !hiddenPostIds?.includes(p.id) && !mutedSellers?.includes(p.sellerUsername) && hasRealImage(p)
+      (p) => !hiddenPostIds?.includes(p.id) && !mutedSellers?.includes(p.sellerUsername) && !blockedSet.has(String(p.sellerUsername ?? '').toLowerCase()) && hasRealImage(p)
     );
     return [...visible].sort((a, b) => {
       const aFollowed = isFollowing(a.sellerUsername);
@@ -308,7 +314,7 @@ function FeedContent() {
       if (!aFollowed && bFollowed) return 1;
       return b.createdAt - a.createdAt;
     });
-  }, [posts, hiddenPostIds, mutedSellers, isFollowing]);
+  }, [posts, hiddenPostIds, mutedSellers, blockedSet, isFollowing]);
 
   // Promotions & Ads (IG boost model): PAID placements come from the SERVER
   // (PromotionPurchase rows). No paid campaign -> no placement anywhere; the
@@ -374,12 +380,14 @@ function FeedContent() {
         if (!pid || seen.has(pid)) continue;
         seen.add(pid);
         const price = typeof d.discountedPrice === 'number' ? d.discountedPrice : (typeof d.originalPrice === 'number' ? d.originalPrice : 0);
+        // Honest badge: percent-off from the curated row, never fake urgency.
+        const pct = typeof d.discountPercentage === 'number' ? Math.round(d.discountPercentage) : 0;
         cards.push({
           id: pid,
           name: d.productName,
           price,
           oldPrice: typeof d.originalPrice === 'number' && d.originalPrice > price ? d.originalPrice : undefined,
-          badge: 'URGENT',
+          badge: pct > 0 ? `${pct}% OFF` : 'DEAL',
           image: d.productImage ?? undefined,
         });
       }
@@ -387,12 +395,14 @@ function FeedContent() {
     for (const p of sortedPosts) {
       if (!hotDealIds.has(p.id) || seen.has(p.id)) continue;
       seen.add(p.id);
+      const old = typeof p.mrp === 'number' && p.mrp > p.price ? p.mrp : undefined;
+      const pct = old ? Math.round(((old - p.price) / old) * 100) : 0;
       cards.push({
         id: p.id,
         name: p.description,
         price: p.price,
-        oldPrice: typeof p.mrp === 'number' && p.mrp > p.price ? p.mrp : undefined as number | undefined,
-        badge: 'URGENT',
+        oldPrice: old as number | undefined,
+        badge: pct > 0 ? `${pct}% OFF` : 'DEAL',
         image: p.image ?? p.images?.[0],
       });
     }

@@ -9,6 +9,7 @@ import { usePosts } from '../contexts/PostContext';
 import { useCommunities } from '../contexts/CommunityContext';
 import { useAuth } from '../contexts/AuthContext';
 import { hasRealImage, resolveListingImage } from '../utils/productImages';
+import { useBlockedSellers } from '../utils/blockedSellers';
 
 const RECENT_KEY_BASE = '@susej_recent_searches';
 const SEARCHES_KEY_BASE = '@susej_saved_searches';
@@ -42,6 +43,8 @@ export default function SearchScreen() {
   const { posts, hiddenPostIds = [], mutedSellers = [], searchServer } = usePosts() as { posts: import('../contexts/PostContext').Post[]; hiddenPostIds?: string[]; mutedSellers?: string[]; searchServer: (q: string) => Promise<{ rows: unknown[]; ok: boolean }> };
   const { communities } = useCommunities();
   const { user } = useAuth();
+  // Blocked sellers hide from results + sellers tab (same device-local list).
+  const { blockedSet } = useBlockedSellers();
   const recentKey = user?.username ? `${RECENT_KEY_BASE}:${user.username}` : RECENT_KEY_BASE;
   const searchesKey = user?.username ? `${SEARCHES_KEY_BASE}:${user.username}` : SEARCHES_KEY_BASE;
   const insets = useSafeAreaInsets();
@@ -169,6 +172,7 @@ export default function SearchScreen() {
       (p) =>
         !hiddenPostIds.includes(p.id) &&
         !mutedSellers.includes(p.sellerUsername) &&
+        !blockedSet.has(norm(p.sellerUsername)) &&
         (norm(p.title ?? '').includes(nterm) ||
           norm(p.description).includes(nterm) ||
           norm(p.category).includes(nterm) ||
@@ -176,7 +180,7 @@ export default function SearchScreen() {
           norm(p.sellerName).includes(nterm) ||
           norm(p.sellerUsername).includes(nterm))
     );
-  }, [posts, nterm, hiddenPostIds, mutedSellers]);
+  }, [posts, nterm, hiddenPostIds, mutedSellers, blockedSet]);
 
   // Product cards hide imageless listings (policy); the SELLERS tab must not
   // inherit that — a seller whose rows all lack photos is still a seller.
@@ -187,12 +191,12 @@ export default function SearchScreen() {
     const out: SellerHit[] = [];
     for (const p of matchResults) {
       const key = p.sellerUsername.toLowerCase();
-      if (seen.has(key)) continue;
+      if (seen.has(key) || blockedSet.has(key)) continue;
       seen.add(key);
       out.push({ sellerName: p.sellerName, sellerUsername: p.sellerUsername, sellerLocation: p.sellerLocation, verified: p.verified });
     }
     return out;
-  }, [matchResults]);
+  }, [matchResults, blockedSet]);
 
   const communityHits = useMemo(() => {
     if (!nterm) return [];

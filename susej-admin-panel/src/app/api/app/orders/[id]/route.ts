@@ -117,7 +117,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   const prisma = await getPrisma();
   if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
 
-  let body: { status?: string; rating?: number; reviewComment?: string; reviewAnonymous?: boolean; refundReason?: string; refundDecision?: string; podNote?: string };
+  let body: { status?: string; rating?: number; reviewComment?: string; reviewAnonymous?: boolean; refundReason?: string; refundDecision?: string; decisionNote?: string; podNote?: string };
   try {
     body = await req.json();
   } catch {
@@ -351,6 +351,76 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         }
         if (vrows.length) await tx.ledgerEntry.createMany({ data: vrows });
       }
+      // Stock restore (seller P0: cancelled/declined orders burned the
+      // placement reservation — isSold stayed true, variant/stockLeft units
+      // never came back, the listing read "sold out" forever). Runs inside
+      // the same locked tx, once per status change (repeat cancels dedupe at
+      // the gate above; concurrent transitions serialize on the row lock).
+      // Best-effort per listing: a missing/deleted post skips (nothing to
+      // restock); corrupt variant JSON skips that listing only — money legs
+      // above already landed and must not roll back for a display counter.
+      try {
+        const settledLines = Array.isArray(order.itemsList) ? (order.itemsList as Array<Record<string, unknown>>) : [];
+        for (const sl of settledLines) {
+          const pid = String((sl as Record<string, unknown>).listingId ?? "").trim();
+          if (!pid) continue;
+          const qty = Math.max(1, Math.floor(Number((sl as Record<string, unknown>).qty ?? (sl as Record<string, unknown>).quantity ?? 1) || 1));
+          const post = await (tx as any).post.findUnique({ where: { id: pid } }).catch(() => null);
+          if (!post) continue;
+          const patch: Record<string, unknown> = {};
+          const groups = Array.isArray((post as { variants?: unknown }).variants)
+            ? JSON.parse(JSON.stringify((post as { variants?: unknown }).variants))
+            : null;
+          if (groups) {
+            const rawVariant = String((sl as Record<string, unknown>).variantLabel ?? "").trim();
+            if (rawVariant) {
+              const picks = rawVariant.split(",").map((s: string) => {
+                const idx = s.indexOf(":");
+                return idx === -1 ? { group: "", label: s.trim() } : { group: s.slice(0, idx).trim(), label: s.slice(idx + 1).trim() };
+              });
+              let touched = false;
+              for (const pick of picks) {
+                if (!pick.label) continue;
+                const group = (groups as Array<{ name?: unknown; values?: Array<{ label?: unknown; stock?: unknown }> }>).find((v) =>
+                  !pick.group || String(v?.name ?? "").trim().toLowerCase() === pick.group.toLowerCase()
+                );
+                const val = group && Array.isArray(group.values)
+                  ? group.values.find((x) => String(x?.label ?? "").trim().toLowerCase() === pick.label.toLowerCase())
+                  : null;
+                if (val && typeof val.stock === "number") {
+                  val.stock = Math.max(0, Math.floor(val.stock)) + qty;
+                  touched = true;
+                }
+              }
+              if (touched) patch.variants = groups;
+            }
+            // Recompute isSold from restored variant stock (any remaining or
+            // unlimited unit -> sellable again).
+            const vals: Array<{ stock?: unknown }> = [];
+            for (const g of groups as Array<{ values?: unknown }>) {
+              if (Array.isArray(g?.values)) for (const v of g.values as Array<{ stock?: unknown }>) vals.push(v);
+            }
+            const remaining = vals.reduce((n, v) => n + (typeof v?.stock === "number" ? Math.max(0, Math.floor(v.stock)) : 0), 0);
+            const unlimited = vals.some((v) => typeof v?.stock !== "number");
+            if (remaining > 0 || unlimited) patch.isSold = false;
+          } else if (typeof (post as { stockLeft?: unknown }).stockLeft === "number") {
+            const left = Math.max(0, Math.floor(Number((post as { stockLeft?: unknown }).stockLeft))) + qty;
+            patch.stockLeft = left;
+            if (left > 0) patch.isSold = false;
+          } else if ((post as { isSold?: unknown }).isSold === true) {
+            // Untracked single-unit listing held only by the serialization
+            // flag: release it so one cancelled sale stops bricking the row.
+            patch.isSold = false;
+          }
+          if (Object.keys(patch).length) {
+            await (tx as any).post.update({ where: { id: pid }, data: patch }).catch(() => null);
+          }
+        }
+      } catch {
+        // Stock counters are display truth, never money truth: a restore
+        // failure must not roll back the refund legs above. Worst case the
+        // seller re-edits stock on the desk; the buyer is already whole.
+      }
     } else if (next === "delivered") {
       data.status = "delivered";
       data.deliveryStatus = "delivered";
@@ -538,10 +608,16 @@ if (Number.isFinite(deliveredStamp) && Date.now() - deliveredStamp > 7 * 24 * 60
       if (decision !== "approved" && decision !== "rejected") {
         throw new OrderError(400, "Invalid refund decision");
       }
+      // Seller decision note (the decline reason the desk + buyer must see):
+      // no note column exists, so it appends to reason with a Seller prefix
+      // (buyer's original reason stays intact as the prefix). Single append —
+      // only requested rows are decidable, so no stacking.
+      const rawNote = typeof body.decisionNote === "string" ? body.decisionNote.replace(/\s+/g, " ").trim().slice(0, 300) : "";
       const pending = await tx.refund.findFirst({
         where: { orderRef: tracking, status: "requested" },
       });
       if (!pending) throw new OrderError(400, "No pending refund request on this order");
+      const decidedReason = rawNote ? `${pending.reason}\nSeller: ${rawNote}` : pending.reason;
       if (decision === "approved") {
         const refundTitle = `Order refund · ${tracking}`;
         const clawTitle = `Order refund clawback · ${tracking}`;
@@ -671,9 +747,9 @@ if (Number.isFinite(deliveredStamp) && Date.now() - deliveredStamp > 7 * 24 * 60
             }
           }
         }
-        await tx.refund.update({ where: { id: pending.id }, data: { status: "approved", respondedAt: new Date() } });
+        await tx.refund.update({ where: { id: pending.id }, data: { status: "approved", respondedAt: new Date(), reason: decidedReason } });
       } else {
-        await tx.refund.update({ where: { id: pending.id }, data: { status: "rejected", respondedAt: new Date() } });
+        await tx.refund.update({ where: { id: pending.id }, data: { status: "rejected", respondedAt: new Date(), reason: decidedReason } });
       }
     }
 

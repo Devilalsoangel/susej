@@ -107,6 +107,15 @@ interface PostContextType {
   isLiked: (postId: string) => boolean;
   updatePost: (id: string, patch: Partial<Post>, opts?: { localOnly?: boolean }) => Promise<boolean>;
   toggleSold: (id: string) => Promise<boolean>;
+  /**
+   * Local-only stock decrement on server-acked order placement (OLX/Amazon
+   * reserve-on-order): base stockLeft and matched per-value stocks drop by
+   * the ordered qty, floored at 0. Server is still the decrement authority
+   * (pull reconciles); this just closes the stale-until-reseed window where
+   * the hub card reads Active while PDP refuses sale. Local-only, never
+   * PATCHes — callers invoke EXACTLY once per acked order (guarded set).
+   */
+  decrementStock: (lines: Array<{ listingId: string; quantity: number; variantLabel?: string }>) => void;
   hiddenPostIds: string[];
   hidePost: (id: string) => void;
   mutedSellers: string[];
@@ -708,6 +717,83 @@ export function PostProvider({ children }: { children: React.ReactNode }) {
     []
   );
 
+  const decrementStock = useCallback(
+    (lines: Array<{ listingId: string; quantity: number; variantLabel?: string }>): void => {
+      // Ref-read + single set (never a functional updater): StrictMode
+      // double-invokes updaters, which would decrement twice.
+      // Mirrors the server placement rule EXACTLY (isSold included): the old
+      // version decremented counters but never flipped isSold, so depleted
+      // rows stayed buyable in-cache until the next pull (server 400ed them).
+      // ALL lines per listing apply (two variants of one listing in one order
+      // used to decrement only the first).
+      const prev = postsRef.current;
+      const next = prev.map((p) => {
+        const matched = lines.filter((l) => l.listingId === p.id && l.quantity > 0);
+        if (!matched.length) return p;
+        const qty = matched.reduce((s, l) => s + Math.floor(l.quantity), 0);
+        let variants = p.variants;
+        let trackedHit = false;
+        for (const line of matched) {
+          if (!line.variantLabel || !Array.isArray(variants)) continue;
+          const picks = line.variantLabel
+            .split(',')
+            .map((s) => {
+              const i = s.indexOf(':');
+              return i >= 0 ? { group: s.slice(0, i).trim(), label: s.slice(i + 1).trim() } : null;
+            })
+            .filter((x): x is { group: string; label: string } => !!x && !!x.group && !!x.label);
+          variants = (variants as NonNullable<typeof p.variants>).map((g) => ({
+            ...g,
+            values: (g.values ?? []).map((val) => {
+              const hit = picks.some(
+                (pk) =>
+                  String(g.name ?? '').trim().toLowerCase() === pk.group.toLowerCase() &&
+                  String(val.label ?? '').trim().toLowerCase() === pk.label.toLowerCase()
+              );
+              if (!hit) return val;
+              // Numeric stock: decrement (floor 0). Untracked option: single
+              // unique unit — mark 0 like the server (else it oversells).
+              if (typeof val.stock === 'number') {
+                trackedHit = true;
+                return { ...val, stock: Math.max(0, Math.floor(val.stock) - Math.floor(line.quantity)) };
+              }
+              trackedHit = true;
+              return { ...val, stock: 0 };
+            }),
+          }));
+        }
+        const stockLeft =
+          typeof p.stockLeft === 'number' ? Math.max(0, Math.floor(p.stockLeft) - qty) : p.stockLeft;
+        // isSold mirrors the server: variant-tracked rows flip only at full
+        // depletion (any remaining or unlimited unit keeps them sellable);
+        // stockLeft rows flip at zero; everything else releases (services and
+        // unlimited listings stay buyable — one booking must never brick them).
+        let isSold = p.isSold;
+        if (trackedHit && Array.isArray(variants)) {
+          let remaining = 0;
+          let unlimited = false;
+          for (const g of variants) {
+            for (const v of g.values ?? []) {
+              if (typeof (v as { stock?: unknown }).stock === 'number') {
+                remaining += Math.max(0, Math.floor(Number((v as { stock?: unknown }).stock)));
+              } else {
+                unlimited = true;
+              }
+            }
+          }
+          isSold = remaining <= 0 && !unlimited;
+        } else if (typeof stockLeft === 'number') {
+          isSold = stockLeft <= 0;
+        } else if (!trackedHit) {
+          isSold = false;
+        }
+        return { ...p, isSold, stockLeft, ...(variants !== p.variants ? { variants } : {}) };
+      });
+      setPosts(next);
+    },
+    []
+  );
+
   const addComment = useCallback(
     (postId: string, comment: { author: string; text: string }) => {
       setPosts((prev) => {
@@ -764,7 +850,7 @@ export function PostProvider({ children }: { children: React.ReactNode }) {
   const isLiked = useCallback((postId: string) => !!liked[postId], [liked]);
 
   return (
-    <PostContext.Provider value={{ posts, loaded, refresh, searchServer, addPost, removePost, deletePost, addComment, toggleLike, isLiked, updatePost, toggleSold, hiddenPostIds, hidePost, mutedSellers, toggleMuteSeller, reportPost, reports }}>
+    <PostContext.Provider value={{ posts, loaded, refresh, searchServer, addPost, removePost, deletePost, addComment, toggleLike, isLiked, updatePost, toggleSold, decrementStock, hiddenPostIds, hidePost, mutedSellers, toggleMuteSeller, reportPost, reports }}>
       {children}
     </PostContext.Provider>
   );

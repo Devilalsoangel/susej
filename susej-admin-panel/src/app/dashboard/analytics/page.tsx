@@ -300,6 +300,9 @@ export default function AnalyticsPage() {
     return topN(counts);
   }, [users]);
 
+  // Orders-per-signup (NOT session conversion: no session/funnel source
+  // exists — this is placed orders ÷ new signups per month, and can exceed
+  // 100%. Labeled honestly; a true checkout-conversion needs funnel events.
   const conversionSeries = useMemo(() => {
     const ordersPer = perMonth((orders ?? []).map((o) => toDate(o.createdAt)).filter((d): d is Date => !!d));
     const usersPer = perMonth((users ?? []).map((u) => toDate(u.joinedAt ?? u.createdAt)).filter((d): d is Date => !!d));
@@ -388,7 +391,7 @@ export default function AnalyticsPage() {
         <ChartCard title="Top Cities (by users)" points={topCities} color="#2563EB" scope={scopeOf(usersTotal, (users ?? []).length)} />
         <ChartCard title="Top Categories (by products)" points={topCategories} />
         <ChartCard title="Top Hashtags (by posts)" points={topHashtags} color="#16A34A" scope={scopeOf(hashtagsTotal, (hashtags ?? []).length)} />
-        <ChartCard title="Conversion Rate (%)" points={conversionSeries} color="#2563EB" scope={scopeOf(usersTotal, (users ?? []).length)} />
+        <ChartCard title="Orders per signup (%)" points={conversionSeries} color="#2563EB" scope="Orders ÷ new signups per month (recent-100 window) — not checkout conversion; can exceed 100%" />
       </div>
     </div>
   );

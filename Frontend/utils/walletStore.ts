@@ -115,6 +115,12 @@ export async function creditWallet(
   tx: { title: string; detail: string; dedupeByTitle?: string; ref?: string }
 ): Promise<WalletState> {
   if (amount <= 0) return getWallet();
+  // Mirror the server per-transaction caps (1..50000 integer): any other
+  // caller (promotions, pins) must fail fast instead of minting arbitrary
+  // local balance the server will reject.
+  if (!Number.isInteger(amount) || amount < 1 || amount > 50000) {
+    throw new Error('Top-up must be an integer between 1 and 50000.');
+  }
   // Guard: client can only credit via top-up. Server rejects everything else.
   // Whitelist: "Promotion refund" is a legitimate reversal of a just-debited promotion
   // purchase where createPromotion failed — treat as top-up for server acceptance.

@@ -30,7 +30,7 @@ export default function DashboardPage() {
   // (Replaces 8 unbounded full-table pulls + client-side aggregation.)
   interface SummaryShape {
     counts: Record<string, number>;
-    revenue: { gross: number; refundsOut: number; net: number };
+    revenue: { gross: number; refundsOut: number; net: number; avgOrderValue?: number };
     revenueByMonth: { month: string; revenue: number }[];
     revenueTrendComplete?: boolean;
     growthByMonth: { month: string; users: number; sellers: number }[];
@@ -97,6 +97,8 @@ export default function DashboardPage() {
       ordersToday: num("ordersToday"),
       revenue: Number(summary?.revenue.gross ?? 0),
       refundsOut: Number(summary?.revenue.refundsOut ?? 0),
+      avgOrderValue: Number(summary?.revenue.avgOrderValue ?? 0),
+      deliveredOrders: num("deliveredOrders"),
       netRevenue: Number(summary?.revenue.net ?? 0),
       pendingReports: num("pendingReports"),
       openSupportTickets: num("openSupportTickets"),
@@ -154,6 +156,13 @@ export default function DashboardPage() {
         />
         <KPICard title="Total Users" value={formatNumber(kpis.totalUsers)} icon={Users} variant="default" />
         <KPICard title="Orders Today" value={kpis.ordersToday} icon={ShoppingCart} variant="default" />
+        <KPICard
+          title="Avg Order Value"
+          value={formatCurrency(kpis.avgOrderValue)}
+          subtitle={`${formatNumber(kpis.deliveredOrders)} delivered orders`}
+          icon={ShoppingCart}
+          variant="default"
+        />
         <KPICard title="Open Support Tickets" value={kpis.openSupportTickets} icon={Headphones} variant="warning" />
       </div>
 

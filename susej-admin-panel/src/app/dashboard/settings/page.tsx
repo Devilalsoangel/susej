@@ -152,6 +152,9 @@ function GeneralSettings() {
 
   return (
     <div className="space-y-6">
+      <p className="rounded-xl border border-[#FDE68A] bg-[#FFFBEB] px-4 py-2.5 text-xs text-[#92400E]">
+        Recorded settings — maintenance mode, new registrations and guest checkout are saved but not enforced by any buyer lane yet. Enforcement is on the roadmap; do not rely on these toggles today.
+      </p>
       <div className="grid grid-cols-2 gap-4">
         <div><Label>Site Name</Label><Input value={siteName} onChange={(e) => setSiteName(e.target.value)} /></div>
         <div><Label>Tagline</Label><Input value={tagline} onChange={(e) => setTagline(e.target.value)} /></div>
@@ -368,6 +371,9 @@ function StorageSettings() {
 
   return (
     <div className="space-y-6">
+      <p className="rounded-xl border border-[#FDE68A] bg-[#FFFBEB] px-4 py-2.5 text-xs text-[#92400E]">
+        Partially enforced — only Max Upload Size gates the uploader today. Image quality, CDN URL and extra file types (PDF/MP4) are saved but ignored: uploads accept PNG/JPG/WebP/GIF only. Wiring the rest is on the roadmap.
+      </p>
       <div className="grid grid-cols-2 gap-4">
         <div><Label>Max Upload Size (MB)</Label><Input value={maxSize} onChange={(e) => setMaxSize(e.target.value)} type="number" /></div>
         <div><Label>Image Quality (%)</Label><Input value={quality} onChange={(e) => setQuality(e.target.value)} type="number" /></div>
@@ -403,7 +409,11 @@ function StorageSettings() {
 
 interface ApiKeyEntry {
   name: string;
-  key: string;
+  // Full keys are NEVER persisted: only the sha256 hash + last4 survive.
+  // `key` remains for reading legacy rows (self-migrated to hashes on load).
+  key?: string;
+  keyHash?: string;
+  last4: string;
   lastUsed: string;
   permissions?: string[];
   expiresAt?: string | null;
@@ -411,13 +421,24 @@ interface ApiKeyEntry {
 }
 
 function isApiKeyEntry(value: unknown): value is ApiKeyEntry {
+  const v = value as ApiKeyEntry | null;
+  // Legacy rows are {name, key, lastUsed} with no last4 — accept them so the
+  // self-migration below can see and hash them (requiring last4 up front
+  // filtered them out first, bricking legacy keys with a bare 401).
+  const hasSecret = typeof v?.keyHash === "string" || typeof v?.key === "string";
   return (
     typeof value === "object" &&
     value !== null &&
-    typeof (value as ApiKeyEntry).name === "string" &&
-    typeof (value as ApiKeyEntry).key === "string" &&
-    typeof (value as ApiKeyEntry).lastUsed === "string"
+    typeof v!.name === "string" &&
+    typeof v!.lastUsed === "string" &&
+    (typeof v!.last4 === "string" || typeof v!.key === "string") &&
+    hasSecret
   );
+}
+
+async function sha256HexBrowser(s: string): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 function ApiKeysSettings() {
@@ -433,11 +454,39 @@ function ApiKeysSettings() {
     let cancelled = false;
     fetch("/api/data/app-settings", { cache: "no-store" })
       .then((res) => res.json())
-      .then((body) => {
+      .then(async (body) => {
         if (cancelled) return;
         const row = (body.rows as AppSettingRow[] | undefined)?.find((r) => r.key === "apiKeys");
         if (Array.isArray(row?.value)) {
-          setKeys(row.value.filter(isApiKeyEntry));
+          let list = row.value.filter(isApiKeyEntry);
+          // Self-migration: legacy rows stored the full key (readable via the
+          // settings GET by anyone with read access). Hash them once and
+          // re-persist hashed so the plaintext never rests again. Legacy
+          // human-string expiries ("30 days") never parsed in the gateway —
+          // convert them to ISO from createdAt (or now) so they actually end.
+          const needsMigration = list.filter(
+            (e) => !e.keyHash && e.key
+              || (typeof e.expiresAt === "string" && e.expiresAt && Number.isNaN(Date.parse(e.expiresAt)))
+          );
+          if (needsMigration.length > 0) {
+            list = await Promise.all(
+              list.map(async (e) => {
+                let out = e;
+                if (!e.keyHash && e.key) {
+                  const keyHash = await sha256HexBrowser(e.key);
+                  const { key: _dropped, ...rest } = e;
+                  out = { ...rest, keyHash, last4: e.key.slice(-4) };
+                }
+                if (typeof out.expiresAt === "string" && out.expiresAt && Number.isNaN(Date.parse(out.expiresAt))) {
+                  const base = typeof out.createdAt === "string" && out.createdAt ? Date.parse(out.createdAt) : Date.now();
+                  out = { ...out, expiresAt: expiryToISO(out.expiresAt, Number.isFinite(base) ? base : Date.now()) };
+                }
+                return out;
+              })
+            );
+            void persistSetting("apiKeys", list);
+          }
+          if (!cancelled) setKeys(list);
         }
         setLoaded(true);
       })
@@ -468,18 +517,30 @@ function ApiKeysSettings() {
     return `susej_${random}`;
   }
 
-  function handleCreate() {
+  // Expiry vocab → ISO timestamp (the gateway enforces via Date.parse, and
+  // human strings like "30 days" never parse — those keys silently lived
+  // forever). Null = never expires.
+  function expiryToISO(choice: string, from: number = Date.now()): string | null {
+    if (choice === "never" || choice === "Never") return null;
+    const days = choice === "90 days" ? 90 : choice === "1 year" ? 365 : 30;
+    return new Date(from + days * 864e5).toISOString();
+  }
+
+  async function handleCreate() {
     if (!keyName.trim()) return;
     const key = generateKey();
-    // Permissions + expiry are persisted (previously chosen in the dialog then
-    // silently dropped). Expiry is advisory until the API gateway enforces it.
+    // Hash-at-rest: the full key lives ONLY in the show-once dialog below.
+    // What persists (and what the settings GET can leak at worst) is the
+    // sha256 + last4, which the async app-key gate enforces.
+    const keyHash = await sha256HexBrowser(key);
     const next: ApiKeyEntry[] = [
       {
         name: keyName.trim(),
-        key,
+        keyHash,
+        last4: key.slice(-4),
         lastUsed: "Never",
         permissions: [...permissions],
-        expiresAt: expiration === "never" || expiration === "Never" ? null : expiration,
+        expiresAt: expiryToISO(expiration),
         createdAt: new Date().toISOString(),
       },
       ...keys,
@@ -501,8 +562,9 @@ function ApiKeysSettings() {
   return (
     <div className="space-y-6">
       <p className="rounded-xl border border-[#FDE68A] bg-[#FFFBEB] px-4 py-2.5 text-xs text-[#92400E]">
-        Keys are shown once at creation. The list below shows only the last 4 characters — there is no bulk reveal.
-        Permissions and expiry are stored with each key; expiry is advisory until the API gateway enforces it.
+        Keys are shown once at creation and stored as hashes — the list below shows only the last 4 characters and cannot reveal a key again.
+        Expiry is enforced by the API gateway; revoked or expired keys stop authenticating immediately.
+        Scopes are enforced on the admin data write lanes: keys without write/admin are rejected there (read-only integrations stay read-only). Mobile app lanes authenticate by user session, not by these keys. Last-used stamps on every authenticated call — a key that still says Never was never used.
       </p>
       {keys.length > 0 && (
         <div className="space-y-3">
@@ -511,13 +573,12 @@ function ApiKeysSettings() {
               <div>
                 <p className="text-sm font-medium text-[#18181B] ">{k.name}</p>
                 <div className="flex items-center gap-2">
-                  <code className="text-xs text-gray-500">••••{k.key.slice(-4)}</code>
-                  <button title="Copy full key" onClick={() => navigator.clipboard.writeText(k.key)}><Copy className="h-3.5 w-3.5 text-gray-400" /></button>
+                  <code className="text-xs text-gray-500">••••{k.last4}</code>
                 </div>
                 <p className="mt-0.5 text-xs text-gray-400">
                   Last used: {k.lastUsed}
                   {(k.permissions?.length ?? 0) > 0 ? ` · ${k.permissions!.join(", ")}` : ""}
-                  {k.expiresAt ? ` · expires ${k.expiresAt}` : ""}
+                  {k.expiresAt ? ` · expires ${new Date(k.expiresAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}` : ""}
                 </p>
               </div>
               <Button variant="danger" size="sm" onClick={() => handleRevoke(k.name)}>Revoke</Button>
@@ -628,6 +689,9 @@ function MaintenanceSettings() {
 
   return (
     <div className="space-y-6">
+      <p className="rounded-xl border border-[#FDE68A] bg-[#FFFBEB] px-4 py-2.5 text-xs text-[#92400E]">
+        Recorded, not enforced yet: flipping this switch stores the flag but no lane reads it — buyers and sellers keep transacting. Enforcement lands with the gateway work; until then treat this as a note, not a kill-switch.
+      </p>
       <div className="flex items-center justify-between rounded-xl border border-[#E4E4E7] px-4 py-3">
         <div>
           <p className="text-sm font-medium text-[#18181B] ">Maintenance Mode</p>

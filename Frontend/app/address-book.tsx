@@ -143,12 +143,16 @@ export default function AddressBookScreen() {
 
   // Shipping-PII validation (server mirrors phone 7-15 digits): a 1-char
   // phone used to persist and serialize into the seller's SHIP-TO block.
+  // PIN: the city box carries "City, PIN" (no separate PIN column — schema
+  // frozen), so a 6-digit PIN run is REQUIRED: couriers cannot route without
+  // it and the seller SHIP-TO must contain it.
   const formErrorText = (): string | null => {
     if (form.name.trim().length < 2) return 'Enter the recipient name.';
     const digits = form.phone.replace(/\D/g, '');
     if (digits.length < 7 || digits.length > 15) return 'Enter a valid phone number (7–15 digits).';
     if (form.street.trim().length < 5) return 'Enter the street, building and area.';
     if (form.city.trim().length < 2) return 'Enter the city.';
+    if (!/(^|\D)\d{6}(\D|$)/.test(form.city)) return 'Add the 6-digit delivery PIN with the city (e.g. Pune 411001).';
     return null;
   };
   const canSave =

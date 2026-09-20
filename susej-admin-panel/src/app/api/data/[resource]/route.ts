@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma as resolveDb } from "@/lib/db";
 import { verifySessionToken, hashPassword, SESSION_COOKIE, getClientIp } from "@/lib/auth";
-import { checkAppKey } from "@/lib/promotions/api-auth";
+import { checkAppKeyAsync, getMintedKeyScope } from "@/lib/promotions/api-auth";
 import { lazySweep } from "@/lib/promotions/activate";
 import { getAppUser } from "@/lib/app-auth";
 import { resolveCommissionRate, settlementGoodsBasis, settledFeeFromLegs } from "@/lib/commission";
@@ -64,6 +64,7 @@ const PRISMA_MODELS: Record<string, string> = {
   admins: "admin",
   "seller-documents": "sellerDocument",
   "seller-audit-log": "sellerAuditLog",
+  "webhook-events": "webhookEvent",
 };
 
 // Models whose @id column is not named `id` (e.g. AppSetting.key) — the
@@ -156,10 +157,12 @@ function normalizeRole(raw: string): Role {
 }
 
 // Finance read scope (least-privilege): money queues + their tables, the
-// payee directory (sellers), and read-only money context (commission rates,
-// summary aggregates). NEVER admins/audit-logs/users/moderation queues — a
-// payout clerk has no need for credentials, audit trails, or report contents.
-const FINANCE_READ_RESOURCES = new Set([...FINANCE_RESOURCES, "commission", "sellers", "summary", "gateway-logs"]);
+// payee directory (sellers), read-only money context (commission rates,
+// summary aggregates, gateway trail), the dispute freeze queue it must check
+// before completing payouts, and the export datasets it reconciles with.
+// NEVER admins/audit-logs/users/moderation queues — a payout clerk has no
+// need for credentials, audit trails, or report contents.
+const FINANCE_READ_RESOURCES = new Set([...FINANCE_RESOURCES, "commission", "sellers", "summary", "gateway-logs", "disputes"]);
 function readAllowed(resource: string, role: Role): boolean {
   if (role === "app") return false; // the app never reads admin data
   if (role === "super_admin") return true;
@@ -320,7 +323,15 @@ async function parseWriteSession(request: NextRequest) {
   const { getActiveAdmin } = await import("@/lib/auth");
   const admin = await getActiveAdmin(request).catch(() => null);
   if (admin) return admin as unknown as { sub: string; name: string; role: Role; loginId: string; appUser?: unknown };
-  if (checkAppKey(request)) {
+  if (await checkAppKeyAsync(request)) {
+    // Minted-key scopes are gateway-enforced, not display-only: a read-only
+    // desk key + a valid user Bearer previously got full app-write power.
+    // Legacy scope-less rows are grandfathered; explicit scopes without
+    // write/admin cannot write (reads authenticate as before).
+    const scope = await getMintedKeyScope(request).catch((): null => null);
+    if (scope !== "env" && scope !== null && Array.isArray(scope.permissions)) {
+      if (!scope.permissions.includes("write") && !scope.permissions.includes("admin")) return null;
+    }
     const app = await getAppUser(request);
     if (!app) return null;
     return {
@@ -911,6 +922,21 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         // Also return total for client pagination UI when paginated
         try {
           const total = await prisma[PRISMA_MODELS[resource]].count({ where: Object.keys(where).length ? where : undefined });
+          // Bulk-export audit: full-book pulls (KYC/bank/ID rows included)
+          // must leave a trail of who pulled what — best-effort, never
+          // blocks the read.
+          if (exportMode) {
+            try {
+              await writeAuditSafe({
+                action: "data.export",
+                entity: resource,
+                entityId: "",
+                details: `Full-book export by ${session.name}: ${rowsOut.length} rows${typeof total === "number" && total > rowsOut.length ? ` (PARTIAL of ${total})` : ""}`,
+                adminName: session.name,
+                ip: getClientIp(request),
+              });
+            } catch {}
+          }
           return NextResponse.json({ rows: rowsOut, total, skip, take: take || rowsOut.length });
         } catch {}
       }
@@ -1257,6 +1283,23 @@ async function transitionRefund(
         where: { id: String(row.id) },
         data: { status: nextStatus, respondedAt: new Date().toISOString() },
       });
+      // Gateway trail (second writer): refund executions land here with the
+      // money legs, inside the same tx — the finance desk reconciles against
+      // real executions, never an always-green empty table.
+      if (nextStatus === "refunded") {
+        try {
+          await prisma.gatewayLog.create({
+            data: {
+              gateway: "wallet",
+              event: `refund.issued:${String(row.id)}`,
+              amount: Number((row as { amount?: unknown }).amount ?? 0),
+              status: "success",
+              message: `Refund ${String(row.id)} issued for order ${String((row as { orderRef?: unknown }).orderRef ?? "")}`,
+              createdAt: new Date(),
+            },
+          });
+        } catch {}
+      }
       // Break-glass audit: an override execution must scream in the trail
       // (who, what, explicit flag, real IP) — silent overrides would launder
       // theft, and an empty IP would orphan the trail.
@@ -1314,6 +1357,51 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   }
   const validationErr = validateResourcePayload(resource, data as Record<string, unknown>);
   if (validationErr) return NextResponse.json({ error: validationErr }, { status: 400 });
+  // Settlement-state resurrection guard: paymentStatus is machine-owned once
+  // terminal (refunded/cancelled/partial_refund) — a hand-edit flipping it
+  // back to paid/pending would resurrect withdrawable earnings the clawback
+  // already took (the payout guard reads this column). Forward transitions
+  // (paid → refunded, the desk cancel path) stay allowed; only AWAY moves
+  // refuse. Machines write via prisma directly, never this lane.
+  if (resource === "orders" && typeof (data as Record<string, unknown>).paymentStatus === "string") {
+    try {
+      const gdb = (await resolveDb()) as any;
+      if (!gdb) return NextResponse.json({ error: "Could not verify order state — change refused" }, { status: 503 });
+      const current = await gdb.order.findUnique({ where: { id: String(id) }, select: { paymentStatus: true } });
+      const cur = String((current as { paymentStatus?: unknown } | null)?.paymentStatus ?? "").trim().toLowerCase();
+      const nxt = String((data as Record<string, unknown>).paymentStatus ?? "").trim().toLowerCase();
+      if (["refunded", "cancelled", "partial_refund"].includes(cur) && nxt !== cur) {
+        return NextResponse.json({ error: `Order is terminally ${cur} — paymentStatus cannot move back to ${nxt || "empty"}. Reopen via a dispute ruling, not a row edit.` }, { status: 400 });
+      }
+    } catch (e) {
+      if (e instanceof NextResponse) throw e;
+      return NextResponse.json({ error: "Could not verify order state — change refused" }, { status: 503 });
+    }
+  }
+  // Seller approval is evidence-bound SERVER-side (the desk refuses zero-doc
+  // approves, but direct API calls bypassed it and went live). Approving to
+  // "approved" needs at least one submitted SellerDocument, or a CKYC identity
+  // fallback on the row (selfieUrl/idNumber). Super_admin break-glass with a
+  // written reason stays available and audited. Fail-closed on DB errors.
+  if (resource === "sellers" && String((data as Record<string, unknown>).kycStatus ?? "") === "approved" && role !== "app") {
+    const isBreakGlass = role === "super_admin" && typeof reason === "string" && (reason as string).trim().length > 0;
+    if (!isBreakGlass) {
+      try {
+        const gdb = (await resolveDb()) as any;
+        if (!gdb) return NextResponse.json({ error: "Could not verify seller evidence — approval refused" }, { status: 503 });
+        const target = await gdb.seller.findUnique({ where: { id: String(id) } });
+        if (!target) return NextResponse.json({ error: "Seller not found" }, { status: 404 });
+        const docCount = await gdb.sellerDocument.count({ where: { sellerId: String(id) } }).catch(() => -1);
+        if (docCount < 0) return NextResponse.json({ error: "Could not verify seller evidence — approval refused" }, { status: 503 });
+        const hasFallbackId = Boolean((target as { selfieUrl?: unknown }).selfieUrl) && Boolean((target as { idNumber?: unknown }).idNumber);
+        if (docCount === 0 && !hasFallbackId) {
+          return NextResponse.json({ error: "Approval needs evidence — no documents submitted for this seller. Request documents first." }, { status: 422 });
+        }
+      } catch {
+        return NextResponse.json({ error: "Could not verify seller evidence — approval refused" }, { status: 503 });
+      }
+    }
+  }
   // Settlement-owned money fields are NEVER hand-editable: display edits that
   // move no ledger legs make GMV/commission/payout tiles lie. Amounts move
   // only inside their machines (order cancel/deliver/refund, payout
@@ -1820,8 +1908,24 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
                 const dRate = await resolveCommissionRate(prisma);
                 const sRows = await prisma.order.findMany({
                   where: { sellerUsername: payee, status: "delivered", paymentStatus: { not: "refunded" } },
-                  select: { itemsList: true, actualDelivery: true, trackingNumber: true },
+                  select: { itemsList: true, actualDelivery: true, trackingNumber: true, paymentStatus: true },
                 });
+                // Split-clawback map (same retained-half math as the request
+                // guard): partial_refund rows credit legNet minus the landed
+                // claw, zero when no claw row exists. Without this the re-check
+                // counted partials at FULL while the request guard counts the
+                // retained half — completing payouts the request would refuse.
+                const splitClaw = new Map<string, number>();
+                try {
+                  const clawRows = await prisma.walletTransaction.findMany({
+                    where: { username: payee, title: { startsWith: "Dispute split clawback · " } },
+                    select: { title: true, amount: true },
+                  }).catch(() => [] as Array<{ title: string; amount: number }>);
+                  for (const r of clawRows) {
+                    const t = String(r.title ?? "").slice("Dispute split clawback · ".length).trim();
+                    if (t) splitClaw.set(t, Math.abs(Number(r.amount ?? 0)) || 0);
+                  }
+                } catch { /* fail-closed below: missing claw map strands partials at zero */ }
                 const trks = sRows.map((o: { trackingNumber?: unknown }) => String(o.trackingNumber ?? "")).filter(Boolean);
                 const fz = trks.length
                   ? new Set(
@@ -1841,9 +1945,16 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
                   const stamp = Date.parse(String((o as { actualDelivery?: unknown }).actualDelivery ?? ""));
                   if (Number.isFinite(stamp) && hNow - stamp < HOLD_MS) continue;
                   const legFee = settledFeeFromLegs((o as { itemsList?: unknown }).itemsList);
-                  lifeNet += legFee !== null
+                  const legNet = legFee !== null
                     ? Math.max(0, Math.round(b as number) - legFee)
                     : Math.max(0, Math.round((b as number) * (1 - dRate)));
+                  if (String((o as { paymentStatus?: unknown }).paymentStatus ?? "") === "partial_refund") {
+                    const t = String((o as { trackingNumber?: unknown }).trackingNumber ?? "");
+                    if (!splitClaw.has(t)) continue;
+                    lifeNet += Math.max(0, legNet - (splitClaw.get(t) ?? 0));
+                    continue;
+                  }
+                  lifeNet += legNet;
                 }
                 const otherWd = await prisma.withdrawal.findMany({
                   where: { userName: payee, status: { in: ["requested", "approved", "completed"] }, id: { not: String(id) } },
@@ -1851,9 +1962,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
                 }).catch(() => [] as Array<{ id?: unknown; amount?: unknown }>);
                 // Principal + fee (matches the request-time paidOut math):
                 // fee rides in each payout's debit detail (`₹<fee> fee`).
-                // Unparseable legacy rows assume the CURRENT fee (same
-                // fallback as the request guard — understating committed
-                // would overstate withdrawable, the fail-open direction).
+                // Unparseable legacy rows assume the MAXIMUM of the current
+                // fee and every parsed historic fee (same fallback as the
+                // request guard — understating committed would overstate
+                // withdrawable, the fail-open direction).
                 const liveFee = await prisma.commissionSetting.findUnique({ where: { id: "global" } })
                   .then((s: { payoutFee?: unknown } | null) => {
                     const f = Number((s as { payoutFee?: unknown } | null)?.payoutFee);
@@ -1874,11 +1986,15 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
                 }
                 // Principal + fee (matches the request-time paidOut math, which
                 // commits amount+fee; the wallet CAS still enforces amount+fee
-                // at debit).
+                // at debit). Legacy fallback is the max historic fee (never
+                // the current fee alone — a fee decrease must not unlock
+                // phantom withdrawable).
+                let maxOtherFee = liveFee;
+                for (const f of otherFeeById.values()) if (Number.isFinite(f) && f > maxOtherFee) maxOtherFee = f;
                 const otherOut = otherWd.reduce((s: number, w: { id?: unknown; amount?: unknown }) => {
                   const principal = Math.max(0, Number(w.amount ?? 0));
                   const wf = otherFeeById.get(String(w.id ?? ""));
-                  return s + principal + (wf !== undefined ? Math.max(0, wf) : liveFee);
+                  return s + principal + (wf !== undefined ? Math.max(0, wf) : maxOtherFee);
                 }, 0);
                 if (wAmt > lifeNet - otherOut) {
                   return NextResponse.json(
@@ -1999,6 +2115,26 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
               userName: "susej Payouts", action: `Your payout request was ${copy}`, targetId: String(id),
             });
           }
+        }
+        // Gateway trail (first writer): payout completion lands here so the
+        // finance desk reconciles against real executions, never an always-
+        // green empty table. Best-effort: never blocks the status flip.
+        if (nextStatus === "completed") {
+          try {
+            const wUser = String((before as { userName?: unknown } | null)?.userName ?? "");
+            const wAmount = Number((before as { amount?: unknown } | null)?.amount ?? 0);
+            const wMethod = String((before as { method?: unknown } | null)?.method ?? "bank");
+            await prisma.gatewayLog.create({
+              data: {
+                gateway: wMethod === "upi" ? "upi" : "bank",
+                event: `payout.completed:${String(id)}`,
+                amount: Number.isFinite(wAmount) ? wAmount : 0,
+                status: "success",
+                message: `Payout ${String(id)} to ${wUser || "unknown"} completed`,
+                createdAt: new Date(),
+              },
+            });
+          } catch {}
         }
       }
       // Staff order settlement (admin panel): the order-detail Cancel button
@@ -2307,6 +2443,16 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       // title checks) so a dispute ruling composes with — never doubles — a
       // refund on the same order. All legs idempotent by title.
       if (resource === "disputes" && data.status === "resolved") {
+        // Evidence gate (server half of the desk rule): a money-moving ruling
+        // with no justification is unauditable — refuse it here too, so a raw
+        // API call cannot bypass the desk's note requirement.
+        const rulingNote = String((data as Record<string, unknown>).note ?? "").trim();
+        if (rulingNote.length < 10) {
+          return NextResponse.json(
+            { error: "A ruling note (min 10 characters) is required — every money movement needs its justification." },
+            { status: 400 }
+          );
+        }
         // One-way state machine: an already-resolved dispute cannot be
         // re-resolved with a new outcome (that path double-pays via
         // cross-outcome titles). Reopen explicitly first (audit-trailed).
@@ -2450,14 +2596,31 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
                 }
               }
             }
-            // ANY dispute settlement (full or split, wallet or COD) marks the
-            // order refunded: the payout guard excludes refunded rows
-            // wholesale, so a COD ruling that only claws the seller can never
-            // leave the order "paid" and withdrawable again
-            // (withdraw-after-claw double-spend). Conservative by design:
-            // understates withdrawable, never overstates. Inside the locked
-            // tx, so concurrent rulings serialize on this write.
-            await prisma.order.update({ where: { id: order.id }, data: { paymentStatus: "refunded" } });
+            // Dispute settlement mark: full rulings mark the order refunded, so
+            // the payout guard excludes it wholesale and a COD ruling that
+            // only claws the seller can never leave the order "paid" and
+            // withdrawable again (withdraw-after-claw double-spend). A split
+            // marks partial_refund ONLY when the seller claw actually landed
+            // (this attempt or a retried one — re-derived from the idempotency
+            // titles, since a retry-after-503 skips moved legs as dups):
+            // partial with no claw row would credit the client half against
+            // zero server money. Pre-delivery splits (claw no-ops) and full
+            // rulings stay refunded. A ruling on an ALREADY-terminal mark
+            // (second ruling on settled legs — all paths skipped as dups)
+            // leaves the mark untouched: flipping partial→refunded with no new
+            // claw would strand the retained half, and a retry-after-crash
+            // that already marked stays idempotent. Non-terminal marks (first
+            // ruling, or retry-after-crash-before-mark) always apply.
+            // Conservative by design: understates withdrawable, never
+            // overstates. Inside the locked tx, so concurrent rulings
+            // serialize on this write.
+            const wasDelivered = String((order as { status?: unknown }).status ?? "") === "delivered";
+            const clawLanded =
+              sellerClawedPaid || (await settledElsewhere(clawTitle, order.sellerUsername));
+            const curMark = String((order as { paymentStatus?: unknown }).paymentStatus ?? "").trim().toLowerCase();
+            if (!["refunded", "cancelled", "partial_refund"].includes(curMark)) {
+              await prisma.order.update({ where: { id: order.id }, data: { paymentStatus: half && wasDelivered && clawLanded ? "partial_refund" : "refunded" } });
+            }
             // Ledger mirror for the ruling: LOUD, never swallowed (a ruling with
             // money moved but no mirror is unreconcilable). Count-guarded so a
             // retry after a partial failure never double-mirrors — the wallet
@@ -2775,11 +2938,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           }
         } catch {}
       }
-      // Product moderation flows BACK to the app feed: hidden listings leave
-      // the feed, featured ones get the boost, active restores published.
+      // Product moderation flows BACK to the app feed: hidden AND deleted
+      // listings leave the feed (a delete that republishes is a fail-OPEN
+      // moderation bypass), featured ones get the boost, active restores published.
       if (resource === "products" && typeof data.status === "string" && String(id).startsWith("lst_")) {
         const postId = String(id).slice(4);
-        const postStatus = data.status === "hidden" ? "hidden" : "published";
+        const postStatus = data.status === "hidden" || data.status === "deleted" ? "hidden" : "published";
         await prisma.post.update({
           where: { id: postId },
           data: { status: postStatus, ...(data.status === "featured" ? { featured: true } : data.status === "active" ? { featured: false } : {}) },
@@ -3134,6 +3298,34 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         (cleanPayloadPost as Record<string, unknown>).sellerName = String((linked as { sellerName?: unknown }).sellerName ?? "");
       }
       const row = await prisma[PRISMA_MODELS[resource]].create({ data: cleanPayloadPost });
+      // Block parity: creating a blocked/banned row must ALSO flip the linked
+      // User row, or the ban is label-only (DELETE already lifts it — the
+      // create side was missing, so offenders kept logging in). Mirrors the
+      // unblock resolution: exact username first, else provably-unique name.
+      if (resource === "blocked") {
+        try {
+          const key = String((row as { userName?: unknown }).userName ?? "").trim();
+          const kind = String((row as { kind?: unknown }).kind ?? "").toLowerCase();
+          // Desk kinds are "banned" (indefinite) and "blocked" (temporary) —
+          // map to the matching User status so a temporary block suspends
+          // instead of banning.
+          const status = kind.includes("block") && !kind.includes("ban") ? "suspended" : "banned";
+          if (key) {
+            const byUsername = await prisma.user.findUnique({ where: { username: key } }).catch(() => null);
+            let targetId: string | null = (byUsername as { id?: unknown } | null)?.id as string ?? null;
+            if (!targetId) {
+              const sameName = await prisma.user.count({ where: { name: key } }).catch(() => 2);
+              if (sameName === 1) {
+                const one = (await prisma.user.findFirst({ where: { name: key } }).catch(() => null)) as { id?: unknown } | null;
+                targetId = (one?.id as string) ?? null;
+              }
+            }
+            if (targetId) {
+              await prisma.user.update({ where: { id: targetId }, data: { status } }).catch(() => {});
+            }
+          }
+        } catch {}
+      }
       // Ticket body without a column: SupportTicket has no description field
       // (schema change needed for one), so the app's description rides as the
       // thread's first Message row — otherwise every app ticket arrives

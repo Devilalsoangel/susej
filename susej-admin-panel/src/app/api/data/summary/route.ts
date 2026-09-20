@@ -91,6 +91,9 @@ export async function GET(req: NextRequest) {
   ]);
 
   const gross = Number(deliveredAgg._sum.amount ?? 0);
+  const deliveredOrders = Number((deliveredAgg as { _count?: { _all?: unknown } })._count?._all ?? 0);
+  // AOV (delivered GMV ÷ delivered orders): the desk never had it — dividing
+  // by all-status orderCount would understate it with placed/cancelled rows.
   // Delivered-only, single-counted refundsOut:
   // - Refund rows: approved/refunded rows whose orderRef is a DELIVERED
   //   tracking (pre-delivery approvals cancelled out of gross already; their
@@ -171,11 +174,12 @@ export async function GET(req: NextRequest) {
       hiddenProducts: hiddenProductCount,
       communities: communityCount,
       totalOrders: orderCount,
+      deliveredOrders,
       ordersToday,
       pendingReports: reportedCount,
       openSupportTickets: openTickets,
     },
-    revenue: { gross, refundsOut, net: Math.max(0, gross - refundsOut) },
+    revenue: { gross, refundsOut, net: Math.max(0, gross - refundsOut), avgOrderValue: deliveredOrders > 0 ? Math.round(gross / deliveredOrders) : 0 },
     revenueByMonth: [...revByMonth.entries()].map(([month, revenue]) => ({ month, revenue })),
     revenueTrendComplete: deliveredForTrend.length < 5000,
     growthByMonth: [...growthByMonth.entries()].map(([month, v]) => ({ month, ...v })),

@@ -40,7 +40,9 @@ const formatTime = (time: number): string => {
 export default function RefundsScreen() {
   const insets = useSafeAreaInsets();
   const { orders } = useOrders();
-  const refunds = orders.filter((o) => o.refund);
+  // Refund rows + dispute-ruling wallet credits (no Refund row exists for
+  // rulings — without this, credited buyers saw an empty tab).
+  const refunds = orders.filter((o) => o.refund || (o.disputeCredit?.amount ?? 0) > 0);
 
   return (
     <View className="flex-1" style={{ backgroundColor: colors.surface }}>
@@ -57,18 +59,22 @@ export default function RefundsScreen() {
 
       <FlatList
         data={refunds}
-        keyExtractor={(item) => item.refund!.id}
+        keyExtractor={(item) => item.refund?.id ?? `dispute_${item.id}`}
         contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: insets.bottom + 40, paddingTop: 8 }}
         ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
         renderItem={({ item }) => {
-          const refund = item.refund!;
-          const chip = getChipColors(refund.status);
+          const dispute = !item.refund && (item.disputeCredit?.amount ?? 0) > 0 ? item.disputeCredit! : null;
+          const refund = item.refund;
+          const chip = dispute || !refund ? { bg: colors.successBg, fg: colors.success } : getChipColors(refund.status);
           const orderNumber = item.orderNumber.startsWith('#') ? item.orderNumber : `#${item.orderNumber}`;
+          // Dispute rows carry no Refund row (no requestedAt): fall back to
+          // the order's placed time — never touch refund.* when disputed.
+          const subTime = refund ? refund.requestedAt : item.placedAt;
           return (
             <TouchableOpacity
               className="p-4"
               style={{ backgroundColor: colors.surfaceContainerLowest, borderRadius: 16, shadowColor: colors.textPrimary, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 2 }}
-              onPress={() => router.push(`/refund/${item.id}`)}
+              onPress={() => router.push(dispute || !refund ? `/order/${item.id}` : `/refund/${item.id}`)}
             >
               <View className="flex-row items-center mb-3">
                 <View className="w-10 h-10 rounded-full items-center justify-center mr-3" style={{ backgroundColor: colors.surfaceContainer }}>
@@ -76,21 +82,21 @@ export default function RefundsScreen() {
                 </View>
                 <View className="flex-1 pr-2">
                   <Text className="font-inter-600 text-textPrimary" style={{ fontSize: 15, lineHeight: 20 }}>
-                    {refund.reason}
+                    {dispute || !refund ? `Dispute ruling · ${dispute?.kind === 'split' ? 'partial' : 'full'} credit to wallet` : refund.reason}
                   </Text>
                   <Text className="font-inter-400 text-textSecondary" style={{ fontSize: 12, lineHeight: 16 }}>
-                    {orderNumber} · {formatTime(refund.requestedAt)}
+                    {orderNumber} · {formatTime(subTime)}
                   </Text>
                 </View>
                 <View className="px-3 py-1 rounded-full" style={{ backgroundColor: chip.bg }}>
                   <Text className="font-inter-600" style={{ fontSize: 11, lineHeight: 14, color: chip.fg }}>
-                    {REFUND_STATUS_LABELS[refund.status]}
+                    {dispute || !refund ? 'Credited' : REFUND_STATUS_LABELS[refund.status]}
                   </Text>
                 </View>
               </View>
               <View className="flex-row items-center justify-between">
                 <Text className="font-inter-700 text-textPrimary" style={{ fontSize: 16, lineHeight: 20 }}>
-                  {formatPrice(item.chargedTotal ?? item.total)}
+                  {formatPrice(dispute ? dispute.amount : item.chargedTotal ?? item.total)}
                 </Text>
                 <View className="flex-row items-center">
                   <Text className="font-inter-600 text-primaryContainer mr-1" style={{ fontSize: 13, lineHeight: 16 }}>

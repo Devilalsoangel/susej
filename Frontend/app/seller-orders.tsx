@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, Image, Alert, TextInput } from 'react-native';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ChevronLeftIcon } from '../utils/icons';
 import { colors, formatPrice } from '../utils/theme';
@@ -57,7 +57,8 @@ function timeAgo(ts: number): string {
 }
 
 export default function SellerOrdersScreen() {
-  const insets = useSafeAreaInsets();
+    const params = useLocalSearchParams<{ orderId?: string }>();
+    const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { orders, loaded: ordersLoaded, updateOrderStatus, respondRefund, cancelOrder } = useOrders();
   const { posts } = usePosts();
@@ -66,6 +67,9 @@ export default function SellerOrdersScreen() {
   // Mark Delivered requires one — a bare tap used to settle COD with zero
   // evidence, and the server 400s without it.
   const [podNotes, setPodNotes] = useState<Record<string, string>>({});
+  // Decline-reason input per order (Amazon/Seller-Central parity): rejecting
+  // without a reason left the buyer and the desk with a bare "declined".
+  const [refundNotes, setRefundNotes] = useState<Record<string, string>>({});
 
   // Canonical listing image: the real post's own photo when available; seeded
   // fallback only when the listing is not in the local cache.
@@ -90,7 +94,20 @@ export default function SellerOrdersScreen() {
   }, [orders, user]);
   const queue = myOrders;
 
-  const visible = tab === 'All' ? queue : queue.filter((o) => TAB_STATUSES[tab]?.includes(o.status));
+  // Order search (order number / buyer name): the queue is unusable past a
+  // handful of rows without it. Filters the tab slice, not the counts.
+  const [orderQuery, setOrderQuery] = useState('');
+  const visible = useMemo(() => {
+    const slice = tab === 'All' ? queue : queue.filter((o) => TAB_STATUSES[tab]?.includes(o.status));
+    const q = orderQuery.trim().toLowerCase();
+    if (!q) return slice;
+    return slice.filter(
+      (o) =>
+        String(o.orderNumber ?? '').toLowerCase().includes(q) ||
+        String(o.buyerName ?? '').toLowerCase().includes(q) ||
+        String((o as { buyerUsername?: unknown }).buyerUsername ?? '').toLowerCase().includes(q)
+    );
+  }, [queue, tab, orderQuery]);
   const counts = useMemo(() => {
     const c: Record<string, number> = { All: queue.length };
     for (const t of Object.keys(TAB_STATUSES) as Tab[]) {
@@ -166,7 +183,8 @@ export default function SellerOrdersScreen() {
         approve
           ? `Refund approved${note ? `: ${note}` : ''}. The amount will be returned to the buyer's wallet.`
           : `Refund declined${note ? `: ${note}` : ''}.`,
-        approve ? 'approved' : 'rejected'
+        approve ? 'approved' : 'rejected',
+        note
       ).then((ok) => {
         if (!ok) {
           Alert.alert('Decision not recorded', 'The server refused or could not sync — the refund was rolled back. Check your connection and try again.');
@@ -174,9 +192,14 @@ export default function SellerOrdersScreen() {
       });
     };
     if (!approve) {
-      Alert.alert('Reject refund request', `${o.orderNumber} — ${o.refund?.reason || 'Buyer requested a refund'}. Reason for declining?`, [
+      const note = (refundNotes[o.id] ?? '').trim();
+      if (note.length < 10) {
+        Alert.alert('Reason needed', 'Type why you are declining (min 10 characters) in the box above — the buyer and support see it.');
+        return;
+      }
+      Alert.alert('Reject refund request', `${o.orderNumber} — ${o.refund?.reason || 'Buyer requested a refund'}.\n\nYour reason: "${note}"`, [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Reject refund', style: 'destructive', onPress: () => doRespond() },
+        { text: 'Reject refund', style: 'destructive', onPress: () => doRespond(note) },
       ]);
       return;
     }
@@ -214,6 +237,25 @@ export default function SellerOrdersScreen() {
           </Text>
         </TouchableOpacity>
 
+        {/* Order search — order number or buyer name (bulk confirm + GST
+            invoice export are still open as product work, noted). */}
+        <View className="mx-5 mb-3 px-4 py-2 rounded-full flex-row items-center" style={{ backgroundColor: colors.surfaceContainer }}>
+          <TextInput
+            className="flex-1 font-inter-400 text-textPrimary"
+            style={{ fontSize: 13, lineHeight: 18 }}
+            placeholder="Search order number or buyer…"
+            placeholderTextColor={colors.textSecondary}
+            value={orderQuery}
+            onChangeText={setOrderQuery}
+            returnKeyType="search"
+          />
+          {orderQuery.length > 0 && (
+            <TouchableOpacity onPress={() => setOrderQuery('')} accessibilityLabel="Clear search" accessibilityRole="button">
+              <Text className="font-inter-600" style={{ fontSize: 13, color: colors.primary }}>Clear</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
         {/* Status tabs */}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingHorizontal: 20 }}>
           {(['All', 'Placed', 'Confirmed', 'Preparing', 'Out for Delivery', 'Delivered', 'Cancelled'] as Tab[]).map((t) => {
@@ -240,14 +282,18 @@ export default function SellerOrdersScreen() {
           {ordersLoaded && visible.length === 0 && (
             <View className="p-6 rounded-figma-24 items-center" style={{ backgroundColor: colors.surfaceContainer }}>
               <Text className="font-inter-500 text-textSecondary" style={{ fontSize: 13, lineHeight: 18 }}>
-                No {tab === 'All' ? '' : tab.toLowerCase() + ' '}orders yet
+                {orderQuery.trim() ? `No orders match "${orderQuery.trim()}"` : `No ${tab === 'All' ? '' : tab.toLowerCase() + ' '}orders yet`}
               </Text>
             </View>
           )}
           {visible.map((o) => {
-            const action = primaryAction(o);
-            return (
-              <View key={o.id} className="p-4 rounded-figma-24" style={{ backgroundColor: colors.surfaceContainerLowest, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.04, shadowRadius: 20, elevation: 2 }}>
+              const action = primaryAction(o);
+              // Deep-link highlight: dashboard/hub rows land here with the
+              // order id, so the tapped order stands out instead of hiding
+              // atop the full queue.
+              const linked = params.orderId != null && String(params.orderId) === String(o.id);
+              return (
+                <View key={o.id} className="p-4 rounded-figma-24" style={{ backgroundColor: colors.surfaceContainerLowest, borderWidth: linked ? 2 : 0, borderColor: colors.primaryContainer, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.04, shadowRadius: 20, elevation: 2 }}>
                 <View className="flex-row items-center">
                   <Text className="font-inter-600 text-textPrimary" style={{ fontSize: 14, lineHeight: 18 }}>
                     Order {o.orderNumber}
@@ -301,9 +347,14 @@ export default function SellerOrdersScreen() {
                   <Text className="font-inter-500 text-textPrimary ml-2 flex-1" style={{ fontSize: 12, lineHeight: 16 }} numberOfLines={1}>
                     {o.buyerUsername || o.buyerName || 'via SUSEJ checkout'}
                   </Text>
-                  <Text className="font-inter-600 text-textPrimary" style={{ fontSize: 14, lineHeight: 18 }}>
-                    {formatPrice(o.chargedTotal ?? o.total)}
-                  </Text>
+                  <View className="items-end">
+                    <Text className="font-inter-600 text-textPrimary" style={{ fontSize: 14, lineHeight: 18 }}>
+                      {formatPrice(o.chargedTotal ?? o.total)}
+                    </Text>
+                    <Text className="font-inter-400 text-textSecondary" style={{ fontSize: 10, lineHeight: 12 }}>
+                      charged to buyer
+                    </Text>
+                  </View>
                 </View>
                 {/* Ship-to: the seller fulfils FROM this screen — address is mandatory. */}
                 <View className="mt-2 px-3 py-2 rounded-figma-12" style={{ backgroundColor: colors.surfaceContainer }}>
@@ -311,7 +362,7 @@ export default function SellerOrdersScreen() {
                     SHIP TO
                   </Text>
                   <Text className="font-inter-500 text-textPrimary mt-0.5" style={{ fontSize: 12, lineHeight: 16 }}>
-                    {o.address || 'Address not yet synced — pull to refresh before shipping.'}
+                    {o.address || 'Address not yet synced — reopen this screen to refresh before shipping.'}
                   </Text>
                 </View>
                 {/* POD note: required before Mark Delivered (server 400s without
@@ -332,10 +383,22 @@ export default function SellerOrdersScreen() {
                   </View>
                 )}
 
-                <View className="flex-row mt-3" style={{ gap: 10 }}>
-                  {o.refund && o.refund.status === 'requested' ? (
-                    <>
-                      <TouchableOpacity className="flex-1 h-11 rounded-figma-12 items-center justify-center" style={{ backgroundColor: colors.primaryContainer }} onPress={() => respondToRefund(o, true)}>
+                  {o.refund && o.refund.status === 'requested' && (
+                    <View className="mt-3 px-4 py-2 rounded-figma-12" style={{ backgroundColor: colors.surfaceContainer }}>
+                      <TextInput
+                        placeholder="Reason for declining (required, min 10 chars)…"
+                        placeholderTextColor={colors.textTertiary}
+                        value={refundNotes[o.id] ?? ''}
+                        onChangeText={(t) => setRefundNotes((prev) => ({ ...prev, [o.id]: t }))}
+                        multiline
+                        style={{ fontSize: 13, color: colors.textPrimary, minHeight: 36, textAlignVertical: 'top' }}
+                      />
+                    </View>
+                  )}
+                  <View className="flex-row mt-3" style={{ gap: 10 }}>
+                    {o.refund && o.refund.status === 'requested' ? (
+                      <>
+                        <TouchableOpacity className="flex-1 h-11 rounded-figma-12 items-center justify-center" style={{ backgroundColor: colors.primaryContainer }} onPress={() => respondToRefund(o, true)}>
                         <Text className="font-inter-600 text-white" style={{ fontSize: 13, lineHeight: 16 }}>
                           Approve refund
                         </Text>

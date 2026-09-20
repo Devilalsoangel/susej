@@ -141,7 +141,7 @@ export default function WalletScreen() {
   // same-amount requests inside 60s — either layer alone stops it.
   const [payoutBusy, setPayoutBusy] = useState(false);
   const [payoutAmount, setPayoutAmount] = useState('');
-  const [payoutMethod, setPayoutMethod] = useState<'bank' | 'upi'>('bank');
+  const [payoutMethod, setPayoutMethod] = useState<'bank' | 'upi'>('upi');
   const [payoutVpa, setPayoutVpa] = useState('');
   // UPI destination: explicit VPA per request — a phone number is NOT a VPA
   // (handles change, non-UPI phones exist). Bank goes to the KYC-verified
@@ -259,7 +259,14 @@ export default function WalletScreen() {
 
   const confirmAdd = async () => {
     const amount = Math.round(preset ?? Number(custom));
-    if (!amount || amount <= 0) return;
+    // Client mirrors the server top-up caps (wallet/route: integer 1..50000
+    // per tap, 10 taps / Rs100000 per 24h): uncapped custom input used to
+    // mint any typed figure as spendable local balance before the server
+    // rejected it. Fail fast with honest copy instead.
+    if (!Number.isFinite(amount) || amount < 1 || amount > 50000) {
+      Alert.alert('Invalid amount', 'Top-up must be between Rs1 and Rs50,000 per transaction (max 10 top-ups or Rs1,00,000 per day).');
+      return;
+    }
     setShowAdd(false);
     setCustom('');
     // Single guarded path (reconcile-on-ambiguous, server-truth balance):
@@ -341,7 +348,12 @@ export default function WalletScreen() {
   const frozenNet = sellerNetForOrders(frozenOrders, { includeFrozen: true });
   const frozenMaturedNet = sellerNetForOrders(frozenOrders.filter((o) => isMatured(o)), { includeFrozen: true });
   const maturedNet = Math.max(0, sellerNetForOrders(maturedOrders) - frozenMaturedNet);
-  const settlingNet = Math.max(0, netEarnings - maturedNet - frozenNet);
+  // Settling = delivered-but-unmatured non-frozen net. netEarnings already
+  // EXCLUDES frozen rows (shared filter), so subtracting frozenNet again
+  // double-excluded frozen money and understated settling (to zero in small
+  // cases). Identity: maturedNet + settlingNet = netEarnings; frozenNet is a
+  // separate memo bucket, never part of either.
+  const settlingNet = Math.max(0, netEarnings - maturedNet);
   // Next unlock date ("available on"): the earliest settling leg's unlock day.
   const nextUnlock = (() => {
     let earliest = Infinity;

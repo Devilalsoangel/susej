@@ -103,6 +103,9 @@ export default function StorefrontEditorScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const ownerKey = user?.username || '';
+  // Case-insensitive identity like every sibling seller surface (the server
+  // keeps exact casing, so a mixed-case sellerId at purchase time must still
+  // match here — exact === hid paid campaigns after a casing drift).
   const [tab, setTab] = useState<'banners' | 'deals'>('banners');
   const [banners, setBanners] = useState<Banner[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -126,7 +129,7 @@ export default function StorefrontEditorScreen() {
         : [];
       setLiveDeals(
         rows
-          .filter((p) => p.kind === 'hotDeal' && p.sellerId === ownerKey)
+          .filter((p) => p.kind === 'hotDeal' && String(p.sellerId ?? '').trim().toLowerCase() === ownerKey.trim().toLowerCase())
           .map((p) => ({ id: p.id, postTitle: p.postTitle, productName: p.productName, endsAt: p.endsAt ?? null, amountPaid: p.amountPaid }))
       );
     }).catch(() => {});
@@ -182,7 +185,11 @@ export default function StorefrontEditorScreen() {
         if (!alive) return;
         if (bRaw) {
           const arr = JSON.parse(bRaw);
-          if (Array.isArray(arr)) setBanners(arr);
+          if (Array.isArray(arr)) {
+            setBanners(arr);
+            // Entry replay for the create outbox (quiet).
+            if (alive) void replayBannerUpserts(arr);
+          }
         }
       } catch {}
       if (alive) setLoaded(true);
@@ -261,9 +268,10 @@ export default function StorefrontEditorScreen() {
 
   // Push one banner to the admin Marketing Banners table. The admin section is
   // the ONLY hero source in the user feed — a banner that fails to sync is
-  // saved locally but flagged honestly to the seller.
-  const syncBannerToServer = (b: Banner, wasSynced: boolean) => {
-    if (!ownerKey) return;
+  // saved locally but flagged honestly to the seller. Returns the ack so
+  // bulk paths (Save, entry replay) can summarize instead of alerting per row.
+  const syncBannerToServer = async (b: Banner, wasSynced: boolean, quiet = false): Promise<boolean> => {
+    if (!ownerKey) return false;
     const payload = {
       id: b.id,
       sellerUsername: ownerKey,
@@ -276,13 +284,29 @@ export default function StorefrontEditorScreen() {
       size: b.size || 'hero',
       status: 'active',
     };
-    serverApi.syncStorefrontBanner(payload, wasSynced ? 'PATCH' : 'POST').then((res) => {
+    try {
+      const res = await serverApi.syncStorefrontBanner(payload, wasSynced ? 'PATCH' : 'POST');
       if (!res.ok) {
-        Alert.alert('Admin sync failed', res.error || 'Banner saved on this device only.');
-        return;
+        if (!quiet) Alert.alert('Admin sync failed', res.error || 'Banner saved on this device only.');
+        return false;
       }
       setBanners((prev) => prev.map((x) => (x.id === b.id ? { ...x, synced: true } : x)));
-    });
+      return true;
+    } catch {
+      if (!quiet) Alert.alert('Admin sync failed', 'Banner saved on this device only.');
+      return false;
+    }
+  };
+
+  // Create outbox: every locally-saved but never-acked banner replays on
+  // entry (quiet — the Save path summarizes, entry stays silent).
+  const replayBannerUpserts = async (list: Banner[]): Promise<number> => {
+    let failed = 0;
+    for (const b of list.filter((x) => !x.synced)) {
+      const ok = await syncBannerToServer(b, false, true);
+      if (!ok) failed += 1;
+    }
+    return failed;
   };
 
   // Pick a REAL image from the device, upload it to the admin panel and store
@@ -333,7 +357,7 @@ export default function StorefrontEditorScreen() {
     if (target) {
       const updated = applyBannerDraft(target, draft);
       setBanners((prev) => prev.map((b) => (b.id === draft.id ? updated : b)));
-      syncBannerToServer(updated, !!target.synced);
+      void syncBannerToServer(updated, !!target.synced);
     }
     setPendingId(null);
     setDraft(null);
@@ -360,23 +384,45 @@ export default function StorefrontEditorScreen() {
     if (pendingId === id) setPendingId(null);
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     let nextBanners = banners;
+    // id -> wasSynced at touch time (PATCH vs POST).
+    const touched = new Map<string, boolean>();
     if (draft) {
       const target = nextBanners.find((b) => b.id === draft.id);
       if (target) {
         const updated = applyBannerDraft(target, draft);
         nextBanners = nextBanners.map((b) => (b.id === draft.id ? updated : b));
         setBanners(nextBanners);
-        syncBannerToServer(updated, !!target.synced);
+        touched.set(target.id, !!target.synced);
       }
       setPendingId(null);
       setDraft(null);
     }
+    // Create outbox: every unsynced row goes too, not just the draft.
+    for (const b of nextBanners) {
+      if (!b.synced && !touched.has(b.id)) touched.set(b.id, false);
+    }
     if (ownerKey) {
       AsyncStorage.setItem(`@susej_store_banners:${ownerKey}`, JSON.stringify(nextBanners)).catch(() => {});
     }
-    Alert.alert('Saved', 'Storefront banners updated.');
+    let failed = 0;
+    for (const [id, was] of touched) {
+      const row = nextBanners.find((b) => b.id === id);
+      if (!row) continue;
+      const ok = await syncBannerToServer(row, was, true);
+      if (!ok) failed += 1;
+    }
+    if (touched.size === 0) {
+      Alert.alert('Saved', 'Storefront banners updated.');
+    } else if (failed === 0) {
+      Alert.alert('Saved', 'Storefront banners are live.');
+    } else {
+      Alert.alert(
+        'Saved on this device',
+        `${failed} banner${failed === 1 ? '' : 's'} will go live when you reconnect — the rest are live now.`
+      );
+    }
   };
 
   const segPills = [
@@ -595,7 +641,7 @@ export default function StorefrontEditorScreen() {
                         {d.postTitle || d.productName || 'Hot deal'}
                       </Text>
                       <Text className="font-inter-400" style={{ fontSize: 12, lineHeight: 16, color: colors.textSecondary, marginTop: 4 }}>
-                        {d.endsAt ? `Ends ${new Date(d.endsAt).toLocaleDateString()}` : 'No end date'} · {formatPrice(d.amountPaid)} paid
+                        {d.endsAt ? `Ends ${new Date(d.endsAt).toLocaleDateString()}` : 'No end date'}{typeof d.amountPaid === 'number' ? ` · ${formatPrice(d.amountPaid)} paid` : ''}
                       </Text>
                     </View>
                     <TouchableOpacity

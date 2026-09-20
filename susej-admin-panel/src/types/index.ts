@@ -488,6 +488,10 @@ export interface KPIData {
   refundsOut: number;
   /** Delivered gross minus refundsOut (floored at 0). */
   netRevenue: number;
+  /** Delivered GMV ÷ delivered orders (server-computed, exact). */
+  avgOrderValue: number;
+  /** Orders in delivered status (the AOV denominator). */
+  deliveredOrders: number;
   pendingReports: number;
   openSupportTickets: number;
 }

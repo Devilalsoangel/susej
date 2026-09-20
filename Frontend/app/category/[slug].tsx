@@ -8,6 +8,7 @@ import { resolveListingImage, hasRealImage } from '../../utils/productImages';
 import { avatarInitials } from '../../utils/productImages';
 import { serverApi } from '../../utils/serverApi';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useBlockedSellers } from '../../utils/blockedSellers';
 
 const { width } = Dimensions.get('window');
 const CARD_W = (width - 52) / 2;
@@ -103,6 +104,8 @@ export default function CategoryDetailScreen() {
   );
   const insets = useSafeAreaInsets();
   const { posts, hiddenPostIds, mutedSellers } = usePosts();
+  // Blocked sellers hide here too (same device-local list as feed/search).
+  const { blockedSet } = useBlockedSellers();
 
   // Filter posts by active category + search term. Moderation parity with
   // Search/Explore: hidden posts, muted sellers and imageless rows render
@@ -116,9 +119,13 @@ export default function CategoryDetailScreen() {
       (p) =>
         !hiddenPostIds.includes(p.id) &&
         !mutedSellers.includes(p.sellerUsername) &&
+        !blockedSet.has(norm(p.sellerUsername)) &&
         hasRealImage(p) &&
         (allowedNames
-          ? allowedNames.some((n) => n.toLowerCase() === p.category.toLowerCase())
+          ? allowedNames.some((n) => n.toLowerCase() === p.category.toLowerCase()) ||
+            (Array.isArray((p as any).subCategories) &&
+              (p as any).subCategories.some((s: unknown) =>
+                allowedNames.some((n) => n.toLowerCase() === String(s ?? '').toLowerCase())))
           : matchesCategory(p.category, activeCategory)) &&
         (!term ||
           norm(p.title ?? '').includes(term) ||
@@ -127,7 +134,7 @@ export default function CategoryDetailScreen() {
           norm(p.sellerName).includes(term) ||
           norm(p.sellerUsername).includes(term))
     );
-  }, [posts, activeCategory, search, allowedNames, hiddenPostIds, mutedSellers]);
+  }, [posts, activeCategory, search, allowedNames, hiddenPostIds, mutedSellers, blockedSet]);
 
   const isServiceCategory = activeCategory === 'Services' || activeCategory === 'Home Services';
 

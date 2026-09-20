@@ -543,18 +543,42 @@ export async function PUT(req: NextRequest) {
       // the fee). Lifetime coupon-aware goods-net minus non-rejected payouts
       // = withdrawable. Matches the app's netEarnings gate, now enforced.
       const rate = await resolveCommissionRate(tx as never).catch(() => 0.08);
-      // Fail-closed (API-H2): refunded orders pay nothing withdrawable. A
+      // Fail-closed (API-H2): fully-refunded orders pay nothing withdrawable. A
       // seller refunded in full keeps status "delivered" with paymentStatus
       // "refunded" — counting it would let withdraw-after-refund double-spend
-      // (clawback already took the money back). Partial (split) refunds also
-      // exclude the whole order: understates withdrawable, never overstates.
+      // (clawback already took the money back). Post-delivery SPLIT rulings
+      // mark partial_refund instead: the retained half (legNet minus the
+      // actual split clawback, fail-closed to zero when no claw row exists)
+      // stays withdrawable — excluding it stranded real seller money.
       const soldRows = await tx.order.findMany({
         // Case-insensitive party match (write lanes already are — an
         // exact-match guard hid rows the PATCH lane would happily mutate,
         // and the lock above would miss them).
         where: { sellerUsername: { equals: user.username!, mode: "insensitive" }, status: "delivered", paymentStatus: { not: "refunded" } },
-        select: { itemsList: true, actualDelivery: true, trackingNumber: true },
+        select: { itemsList: true, actualDelivery: true, trackingNumber: true, paymentStatus: true },
       });
+      // Split-clawback map (authoritative money moved): tracking -> clawed abs
+      // amount, so partial_refund rows credit exactly the retained remainder.
+      let splitClawByTracking = new Map<string, number>();
+      try {
+        const clawRows = await tx.walletTransaction.findMany({
+          where: {
+            OR: [
+              { username: { equals: user.username!, mode: "insensitive" } },
+              { username: { equals: user.name || "", mode: "insensitive" } },
+            ],
+            title: { startsWith: "Dispute split clawback · " },
+          },
+          select: { title: true, amount: true },
+        }).catch(() => [] as Array<{ title: string; amount: number }>);
+        for (const r of clawRows) {
+          const tracking = String(r.title ?? "").slice("Dispute split clawback · ".length).trim();
+          if (!tracking) continue;
+          splitClawByTracking.set(tracking, Math.abs(Number(r.amount ?? 0)) || 0);
+        }
+      } catch {
+        splitClawByTracking = new Map<string, number>();
+      }
       // Disputed-funds freeze (Amazon pattern): an open/under_review dispute
       // freezes its order's net until ruling — otherwise the seller withdraws
       // the full lifetimeNet and a full_refund ruling claws into negative
@@ -596,16 +620,27 @@ export async function PUT(req: NextRequest) {
         const legNet = legFee !== null
           ? Math.max(0, Math.round(b as number) - legFee)
           : Math.max(0, Math.round((b as number) * (1 - rate)));
+        const tracking = String((o as { trackingNumber?: unknown }).trackingNumber ?? "");
+        const isPartial = String((o as { paymentStatus?: unknown }).paymentStatus ?? "") === "partial_refund";
+        // Retained-half credit for post-delivery splits (exact remainder of
+        // money moved; zero when no claw row exists — fail-closed, never
+        // overstates). Full rows credit legNet as before.
+        let creditNet = legNet;
+        if (isPartial) {
+          if (!splitClawByTracking.has(tracking)) continue;
+          creditNet = Math.max(0, legNet - (splitClawByTracking.get(tracking) ?? 0));
+          if (creditNet <= 0) continue;
+        }
         if (frozenTrackings.has(String((o as { trackingNumber?: unknown }).trackingNumber ?? ""))) {
-          frozenBack += legNet;
+          frozenBack += creditNet;
           continue;
         }
         const stamp = Date.parse(String((o as { actualDelivery?: unknown }).actualDelivery ?? ""));
         if (Number.isFinite(stamp) && holdNow - stamp < HOLD_MS) {
-          heldBack += legNet;
+          heldBack += creditNet;
           continue;
         }
-        lifetimeNet += legNet;
+        lifetimeNet += creditNet;
       }
       const priorWd = await tx.withdrawal.findMany({
         // Case-insensitive party match (lock + soldRows already are — exact
@@ -625,8 +660,9 @@ export async function PUT(req: NextRequest) {
       // amount+fee from the balance, so the earnings check must subtract the
       // same. The fee rides in the debit row's detail (`Payout request <id> ·
       // ₹<fee> fee`); unparseable legacy rows conservatively assume the
-      // CURRENT fee (overstates committed → understates withdrawable, never
-      // the reverse).
+      // MAXIMUM of the current fee and every parsed historic fee (overstates
+      // committed → understates withdrawable, never the reverse — assuming
+      // just the current fee fails OPEN when the fee was lowered since).
       let paidOut = 0;
       if (priorWd.length) {
         const debitRows = await tx.walletTransaction.findMany({
@@ -645,10 +681,12 @@ export async function PUT(req: NextRequest) {
           const m = String(r.detail ?? "").match(/^Payout request (\S+).*?([\d,]+) fee/);
           if (m) feeByWd.set(m[1], Number(m[2].replace(/,/g, "")) || 0);
         }
+        let maxHistoricFee = fee;
+        for (const f of feeByWd.values()) if (Number.isFinite(f) && f > maxHistoricFee) maxHistoricFee = f;
         for (const w of priorWd) {
           const principal = Math.max(0, Number((w as { amount?: unknown }).amount ?? 0));
           const wfee = feeByWd.get(String((w as { id?: unknown }).id ?? ""));
-          paidOut += principal + (wfee !== undefined ? Math.max(0, wfee) : fee);
+          paidOut += principal + (wfee !== undefined ? Math.max(0, wfee) : maxHistoricFee);
         }
       }
       if (amount > lifetimeNet - paidOut) {

@@ -226,8 +226,8 @@ export const serverApi = {
     request<{ ok: boolean }>(`/orders/${encodeURIComponent(id)}`, { method: 'PATCH', body: patch }),
   /** Seller refund decision — settles real money server-side (single writer).
    *  Rejects when the caller isn't the seller or no request is pending. */
-  respondRefund: (id: string, decision: 'approved' | 'rejected') =>
-    request<{ ok: boolean }>(`/orders/${encodeURIComponent(id)}`, { method: 'PATCH', body: { refundDecision: decision } }),
+  respondRefund: (id: string, decision: 'approved' | 'rejected', note?: string) =>
+    request<{ ok: boolean }>(`/orders/${encodeURIComponent(id)}`, { method: 'PATCH', body: { refundDecision: decision, ...(note ? { decisionNote: note } : {}) } }),
 
   // ── Wallet ───────────────────────────────────────────────────────────────
   getWallet: () => request<{ balance: number; loyaltyPoints: number; transactions: any[] }>('/wallet'),
@@ -250,7 +250,7 @@ export const serverApi = {
   /** Seller hero banners (public read): the cross-device truth. The editor
    *  syncs here; per-device AsyncStorage is fallback only. */
   getStorefrontBanners: (seller: string) =>
-    request<{ banners: { id: string; title: string; subtitle?: string | null; ctaLabel?: string | null; imageUrl?: string | null }[] }>(
+    request<{ banners: { id: string; title: string; subtitle?: string | null; ctaLabel?: string | null; imageUrl?: string | null; size?: string | null }[] }>(
       `/storefront-banners?seller=${encodeURIComponent(seller)}`
     ),
   /** My own seller application (server truth — survives reopen/relogin).
@@ -272,7 +272,7 @@ export const serverApi = {
     request<{ dispute: any }>('/disputes', { method: 'POST', body: dispute }),
   /** Server-owned campaign purchase: debit + ACTIVE placement in one tx.
    *  Idempotent on checkoutRef — safe to retry after a timeout. */
-  purchasePromotion: (order: { packageId: string; postId: string; checkoutRef: string }) =>
+  purchasePromotion: (order: { packageId: string; postId?: string; checkoutRef: string }) =>
     request<{ purchase: any }>('/promotions', { method: 'POST', body: order }),
   /** Accept / decline / counter a pending offer (either participant). */
   updateOfferStatus: (threadId: string, messageId: string, status: 'accepted' | 'declined' | 'countered') =>

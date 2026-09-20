@@ -152,6 +152,20 @@ export function getCommissionRate(): number {
   return liveConfig?.commissionRate ?? COMMISSION_RATE;
 }
 
+/** Category-aware rate (mirrors the server's per-line settlement legs):
+ *  admin category overrides win on exact (case-insensitive) match, else the
+ *  global rate. Listing-creation previews must use this — a flat 8% line
+ *  misquoted every override-category seller. */
+export function getCommissionRateFor(category?: string): number {
+  const fallback = liveConfig?.commissionRate ?? COMMISSION_RATE;
+  const name = String(category ?? '').trim().toLowerCase();
+  if (!name || !liveConfig || !Array.isArray(liveConfig.categoryOverrides)) return fallback;
+  const hit = liveConfig.categoryOverrides.find((o) => String(o.category ?? '').trim().toLowerCase() === name);
+  if (!hit) return fallback;
+  const r = Number(hit.rate);
+  return Number.isFinite(r) && r >= 0 ? (r > 1 ? r / 100 : r) : fallback;
+}
+
 /** Seller net for delivered orders: sums the SETTLED per-line legs the server
  *  persisted at placement (netPrice + commission per line, category-aware).
  *  Falls back to base-rate math only for legacy rows predating settled legs.
@@ -192,7 +206,11 @@ export function sellerNetForOrders(
         }
         return t + Math.round(unitNet * qty * (1 - rate));
       }, 0);
-      return sum + Math.max(0, Math.round(net));
+      const rounded = Math.max(0, Math.round(net));
+      // Post-delivery split rulings (paymentStatus partial_refund) leave the
+      // seller the retained half: ceil(net/2) mirrors the server payout guard
+      // (legNet minus floor(legNet/2) clawback). Full rows credit in full.
+      return sum + (o.paymentStatus === 'partial_refund' ? Math.ceil(rounded / 2) : rounded);
     }, 0);
 }
 

@@ -7,7 +7,7 @@ import { CloseIcon, CheckIcon, ChevronLeftIcon, MapPinIcon, CameraIcon, PencilIc
 import { colors, CATEGORIES, formatPrice, getCategoryColor } from '../../utils/theme';
 import { serverApi } from '../../utils/serverApi';
 import { getFlow } from '../../utils/categoryFlow';
-import { isApprovedSeller, sellerPendingReview } from '../../utils/marketplace';
+import { isApprovedSeller, sellerPendingReview, getCommissionRateFor } from '../../utils/marketplace';
 import CategoryPicker from '../../components/CategoryPicker';
 import { MapLocationPicker, type PickedLocation } from '../../components/MapLocationPicker';
 import { useAuth } from '../../contexts/AuthContext';
@@ -901,6 +901,18 @@ export default function CreateScreen() {
                   {formatPrice(numericPrice)} · shown to buyers
                 </Text>
               )}
+              {/* Net-after-commission preview (Amazon/Meesho norm): sellers
+                  used to discover the fee only post-sale in the wallet. Rate
+                  is category-aware when the admin configured overrides. */}
+              {priceValid && (() => {
+                const rate = getCommissionRateFor(category || storeCategory);
+                const net = Math.max(0, Math.round(numericPrice * (1 - rate)));
+                return (
+                  <Text style={{ fontSize: 13, lineHeight: 18, color: colors.textSecondary, marginTop: 4 }}>
+                    {`You'll net ~${formatPrice(net)} per sale after ${Math.round(rate * 1000) / 10}% commission`}
+                  </Text>
+                );
+              })()}
               {price.trim().length > 0 && !priceValid && (
                 <Text style={{ fontSize: 13, lineHeight: 18, color: colors.error, marginTop: 8 }}>
                   Enter a price between ₹1 and ₹1,00,00,000.

@@ -516,8 +516,7 @@ export default function OrderDetailsScreen() {
         </View>
 
         {/* Refund */}
-        {order.refund ? (
-          <TouchableOpacity
+        {order.refund ? (          <TouchableOpacity
             className="mx-5 rounded-[24px] p-4"
             style={{ backgroundColor: colors.surfaceContainerLowest, shadowColor: colors.textPrimary, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.04, shadowRadius: 20, elevation: 2 }}
             onPress={() => router.push(`/refund/${order!.id}`)}
@@ -597,6 +596,30 @@ export default function OrderDetailsScreen() {
                 </TouchableOpacity>
               </View>
             )}
+          </View>
+        ) : (order.disputeCredit?.amount ?? 0) > 0 ? (
+          <View
+            className="mx-5 rounded-[24px] p-4"
+            style={{ backgroundColor: colors.surfaceContainerLowest, shadowColor: colors.textPrimary, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.04, shadowRadius: 20, elevation: 2 }}
+          >
+            <View className="flex-row items-center justify-between">
+              <View className="flex-row items-center">
+                <Text className="text-[15px] font-inter-700 text-textPrimary" style={{ lineHeight: 22 }}>
+                  Dispute credit
+                </Text>
+                <View className="px-3 py-1 rounded-full ml-3" style={{ backgroundColor: colors.successBg }}>
+                  <Text className="text-[12px] font-inter-600" style={{ lineHeight: 16, color: colors.success }}>
+                    Credited
+                  </Text>
+                </View>
+              </View>
+            </View>
+            <Text className="text-[14px] font-inter-400 text-textSecondary mt-2" style={{ lineHeight: 20 }}>
+              {`Dispute ruling · ${order.disputeCredit!.kind === 'split' ? 'partial' : 'full'} credit to your wallet`}
+            </Text>
+            <Text className="text-[18px] font-inter-700 text-primary mt-1" style={{ lineHeight: 24 }}>
+              {formatPrice(order.disputeCredit!.amount)}
+            </Text>
           </View>
         ) : null}
 

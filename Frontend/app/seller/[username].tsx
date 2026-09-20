@@ -18,6 +18,7 @@ import type { ShopProfile, StorefrontArchetype, ListingItem, BulkProduct, Storef
 import { getFlow } from '../../utils/categoryFlow';
 import { getChildCategories, findMainCategory } from '../../utils/categories';
 import { serverApi } from '../../utils/serverApi';
+import { useBlockedSellers } from '../../utils/blockedSellers';
 import {
   ChipRail,
   StoreAccentProvider,
@@ -171,6 +172,18 @@ export default function SellerProfileScreen() {
   const { isFollowing, toggleFollow } = useFollow();
   const following = isFollowing(username || '');
   const { posts } = usePosts();
+  // Blocked sellers: follow/message/buy actions refuse with honest copy
+  // (listings already hide on feed/explore/search/category). Server-side
+  // block enforcement is still open — this is the device-local guard.
+  const { blockedSet } = useBlockedSellers();
+  const profileBlocked = !!username && blockedSet.has(username.toLowerCase());
+  const guardedToggleFollow = () => {
+    if (profileBlocked) {
+      Alert.alert('Seller blocked', `@${username} is blocked — unblock them from /blocked to follow or message.`);
+      return;
+    }
+    toggleFollow(username || '');
+  };
 
   // Approved-seller registry (@susej_sellers, written by become-seller) so a
   // seller with zero posts still routes to the storefront, never the insta view.
@@ -221,12 +234,12 @@ export default function SellerProfileScreen() {
     const topCategory = mappedNode?.id ?? '';
     const mainLabel = mappedNode?.label ?? topRaw;
     const generated = generateShopProfile(username || '', topCategory, username || 'Seller', sellerPosts, mainLabel);
-    return <StorefrontRoute username={username || ''} profile={generated} following={following} toggleFollow={() => toggleFollow(username || '')} sellerPosts={sellerPosts} insets={insets} />;
+    return <StorefrontRoute username={username || ''} profile={generated} following={following} toggleFollow={guardedToggleFollow} sellerPosts={sellerPosts} insets={insets} />;
   }
 
   // Everyone else is a regular user (no posts, no store). Instagram-style
   // profile: followable, but users cannot post — always zero posts.
-  return <UserProfile username={username} sellerInfo={sellerInfo} following={following} toggleFollow={() => toggleFollow(username || '')} insets={insets} />;
+  return <UserProfile username={username} sellerInfo={sellerInfo} following={following} toggleFollow={guardedToggleFollow} insets={insets} />;
 }
 
 function isRegisteredSellerCheck(sellers: string[] | null, username: string | undefined): boolean {
@@ -276,6 +289,7 @@ function StorefrontRoute({
   // Real post-delivery reviews for the storefront Reviews section (all visitors).
   const [storeReviews, setStoreReviews] = useState<StorefrontReview[]>([]);
   const { user } = useAuth();
+  const { blockedSet: blockedStoreSet } = useBlockedSellers();
   const flow = getFlow(ARCHETYPE_FLOW_CAT[profile.archetype]);
   const primaryCta = flow.primaryCta;
 
@@ -360,7 +374,7 @@ function StorefrontRoute({
   // dashboard is public marketing (audit fix Aug 24).
   const isOwnStore = !!user?.username && username === user.username;
   const [ownChildren, setOwnChildren] = useState<string[] | null>(null);
-  const [ownBanners, setOwnBanners] = useState<{ id: string; title: string; sub?: string; image?: any; cta?: string }[] | null>(null);
+  const [ownBanners, setOwnBanners] = useState<{ id: string; title: string; sub?: string; image?: any; cta?: string; size?: 'hero' | 'wide' | 'tall' }[] | null>(null);
   // Seller Pro theme accent — null = brand default violet.
   const [themeAccent, setThemeAccent] = useState<string | null>(null);
   // Seller Pro status: any purchased unlock (analytics/theme) shows the PRO
@@ -409,6 +423,7 @@ function StorefrontRoute({
                 title: String(b.title ?? ''),
                 sub: b.subtitle ? String(b.subtitle) : undefined,
                 cta: b.ctaLabel ? String(b.ctaLabel) : undefined,
+                size: b.size === 'wide' || b.size === 'tall' ? b.size : 'hero',
                 image: b.imageUrl
                   ? { uri: /^https?:/i.test(b.imageUrl) ? b.imageUrl : `${base}${b.imageUrl}` }
                   : undefined,
@@ -416,7 +431,14 @@ function StorefrontRoute({
             );
           }
         } catch {}
-        const theme = await loadStoreTheme(username);
+        // Theme honesty: device storage is viewer-local, so a buyer's phone
+        // can never hold the SELLER's choice. Apply a saved theme only on
+        // the seller's own store view — buyers always see brand default
+        // until the theme syncs server-side (Seller row has no theme column
+        // yet). Rendering PRO off viewer-local state was a false badge.
+        const theme = isOwnStore
+          ? await loadStoreTheme(username)
+          : { id: 'violet', accent: null, accentSoft: null, name: null };
         if (alive) {
           setThemeAccent(theme.id === 'violet' ? null : theme.accent);
           setThemeName(theme.id === 'violet' ? null : theme.name);
@@ -524,6 +546,12 @@ function StorefrontRoute({
   );
 
   const chatWithSeller = (msg?: string) => {
+    // Blocked seller: every CTA funnel (buy/book/apply/quote/enquire/message)
+    // refuses with honest copy instead of opening a chat with a blocked party.
+    if (!!username && blockedStoreSet.has(username.toLowerCase())) {
+      Alert.alert('Seller blocked', `@${username} is blocked — unblock them from /blocked to contact or buy.`);
+      return;
+    }
     router.push({ pathname: '/chat', params: msg ? { to: username, msg } : { to: username } });
   };
 
@@ -981,7 +1009,13 @@ function StorefrontRoute({
             hero for every viewer. No seller banner = no hero: identity-first
             layout, never a fabricated template banner (audit Aug 24). */}
         {storeBanners.length > 0 && (
-          <View style={{ height: 200, backgroundColor: colors.surfaceContainer }}>
+          <View style={{
+            // Honor the seller's chosen size preset (editor preview parity):
+            // hero 2:1, wide 16:9, tall 4:5. The old fixed 200px strip made
+            // the picker theater — every choice rendered identically.
+            aspectRatio: storeBanners[0].size === 'tall' ? 4 / 5 : storeBanners[0].size === 'wide' ? 16 / 9 : 2 / 1,
+            backgroundColor: colors.surfaceContainer,
+          }}>
             {storeBanners[0].image ? (
               <Image source={storeBanners[0].image} className="w-full h-full" resizeMode="cover" />
             ) : (
@@ -1011,6 +1045,20 @@ function StorefrontRoute({
                 <Text className="font-inter-400 mt-1" style={{ fontSize: 13, lineHeight: 18, color: colors.inverseOnSurface }}>
                   {storeBanners[0].sub}
                 </Text>
+              ) : null}
+              {/* Banner CTA the seller configured in the storefront editor:
+                  collected + synced but never rendered (dead promise). Routes
+                  to chat with the seller about this banner's offer. */}
+              {storeBanners[0].cta ? (
+                <TouchableOpacity
+                  className="mt-3 self-start px-5 py-2.5 rounded-full"
+                  style={{ backgroundColor: '#FFFFFF' }}
+                  onPress={() => router.push(`/(tabs)/chat?seller=${encodeURIComponent(username || '')}&product=${encodeURIComponent(storeBanners[0].title)}`)}
+                >
+                  <Text className="font-inter-600" style={{ fontSize: 13, lineHeight: 18, color: '#1A1A2E' }}>
+                    {storeBanners[0].cta}
+                  </Text>
+                </TouchableOpacity>
               ) : null}
             </View>
             {/* Theme signature on CUSTOM banners (GPT #1 insight, Aug 25):
@@ -1107,6 +1155,16 @@ function UserProfile({
   // REAL stats + identity from the server (Follow table + published posts). '…' while loading.
   const { user: currentUser } = useAuth();
   const accent = useStoreAccent();
+  // Blocked user: message refuses with honest copy (follow already guarded).
+  const { blockedSet: userBlockedSet } = useBlockedSellers();
+  const userBlocked = !!username && userBlockedSet.has(username.toLowerCase());
+  const guardUserMessage = () => {
+    if (userBlocked) {
+      Alert.alert('User blocked', `@${username} is blocked — unblock them from /blocked to message.`);
+      return;
+    }
+    if (username) router.push({ pathname: '/(tabs)/chat', params: { to: username } });
+  };
   const [stats, setStats] = useState<{ followers: number; following: number; posts: number } | null>(null);
   const [identity, setIdentity] = useState(sellerInfo);
   useEffect(() => {
@@ -1252,7 +1310,7 @@ function UserProfile({
             <TouchableOpacity
               className="flex-1 h-11 rounded-figma-12 items-center justify-center"
               style={{ backgroundColor: colors.surfaceContainer }}
-              onPress={() => username && router.push({ pathname: '/(tabs)/chat', params: { to: username } })}
+              onPress={guardUserMessage}
             >
               <Text className="font-inter-600 text-textPrimary" style={{ fontSize: 14, lineHeight: 16 }}>
                 Message

@@ -3,6 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { CartItem, DELIVERY_FEES } from './CartContext';
 import { serverApi } from '../utils/serverApi';
 import { useAuth } from './AuthContext';
+import { usePosts } from './PostContext';
 
 const ORDERS_KEY_BASE = '@susej_orders';
 const ORDERS_KEY = ORDERS_KEY_BASE;
@@ -108,6 +109,10 @@ export interface Order {
   /** Accepted-offer lock carried for sync retries (server re-verifies). */
   offer?: { threadId: string; messageId: string };
   refund?: Refund;
+  /** Dispute-ruling wallet credit (server-attached, no Refund row): the
+   *  refunds tab + detail card render this so credited buyers see money the
+   *  Refund table never recorded. */
+  disputeCredit?: { amount: number; kind: 'full' | 'split' };
   /** Settlement stamp ("" = pre-hold era = matured). Seller earnings unlock
    *  7 days after this date (payout hold); every surface reads the same value. */
   actualDelivery?: string;
@@ -174,7 +179,9 @@ interface OrderContextType {
     orderId: string,
     author: RefundTimelineAuthor,
     text: string,
-    newStatus?: RefundStatus
+    newStatus?: RefundStatus,
+    /** Seller decision reason — forwarded to the server for the Refund row. */
+    note?: string
   ) => Promise<boolean>;
   /**
    * Cancels an order. Contract: awaits the server ack — returns true only
@@ -220,6 +227,20 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loaded, setLoaded] = useState(false);
   const { user, tokenSeq } = useAuth();
+  const { decrementStock } = usePosts();
+  // Acked orders whose lines already decremented local cache stock (exactly-
+  // once: ack + retry-ack + refocus-pull must never double-decrement).
+  const decrementedRef = useRef(new Set<string>());
+  const reserveLocalStock = useCallback(
+    (o: Order) => {
+      if (decrementedRef.current.has(o.id)) return;
+      decrementedRef.current.add(o.id);
+      decrementStock(
+        o.items.map((i) => ({ listingId: i.listingId, quantity: i.quantity, variantLabel: i.variantLabel }))
+      );
+    },
+    [decrementStock]
+  );
   const ordersKey = user?.username ? `${ORDERS_KEY_BASE}:${user.username}` : ORDERS_KEY_BASE;
   const serverAuthoritative = useRef(false);
   const ordersRef = useRef<Order[]>([]);
@@ -378,6 +399,17 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
                 : {}),
             // No server columns (yet): preserve local values across pulls.
             ...(prior?.deliveryFee !== undefined ? { deliveryFee: prior.deliveryFee } : {}),
+            // Dispute-credit leg rides through like the refund row (server
+            // wins when present; no local equivalent to preserve).
+            ...((o as { disputeCredit?: { amount?: unknown; kind?: unknown } }).disputeCredit &&
+            Number((o as { disputeCredit?: { amount?: unknown } }).disputeCredit?.amount ?? 0) > 0
+              ? {
+                  disputeCredit: {
+                    amount: Number((o as { disputeCredit?: { amount?: unknown } }).disputeCredit?.amount ?? 0),
+                    kind: (o as { disputeCredit?: { kind?: unknown } }).disputeCredit?.kind === 'split' ? 'split' as const : 'full' as const,
+                  },
+                }
+              : {}),
             ...(prior?.promoCode !== undefined ? { promoCode: prior.promoCode } : {}),
             ...(prior?.bookingDate !== undefined ? { bookingDate: prior.bookingDate } : {}),
             ...(prior?.bookingTime !== undefined ? { bookingTime: prior.bookingTime } : {}),
@@ -421,6 +453,32 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
     AsyncStorage.setItem(ordersKey, JSON.stringify(next)).catch(() => {});
   }, [ordersKey]);
 
+  // Server-wins adoption shared by placement-ack AND explicit retry: the ack
+  // carries settled chargedTotal/deliveryFee (absent on older builds, where
+  // the optimistic preview stands until the next pull). Invalid figures are
+  // ignored, never written.
+  const adoptSettledFigures = useCallback((id: string, so: { chargedTotal?: unknown; deliveryFee?: unknown } | undefined) => {
+    if (!so) return;
+    const settledTotal = Number(so.chargedTotal);
+    const settledFee = Number(so.deliveryFee);
+    const hasTotal = Number.isFinite(settledTotal) && settledTotal >= 0;
+    const hasFee = Number.isFinite(settledFee) && settledFee >= 0;
+    if (!hasTotal && !hasFee) return;
+    setOrders((prev) => {
+      const next = prev.map((x) =>
+        x.id === id
+          ? {
+              ...x,
+              ...(hasTotal ? { chargedTotal: settledTotal } : {}),
+              ...(hasFee ? { deliveryFee: settledFee } : {}),
+            }
+          : x
+      );
+      persist(next);
+      return next;
+    });
+  }, [persist]);
+
   const placeOrders = useCallback(
     (cart: CartItem[], address?: string, paymentMethod?: string, options?: PlaceOrderOptions) => {
       const sellers = new Map<string, CartItem[]>();
@@ -431,19 +489,21 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
       const now = Date.now();
       const created: Order[] = [];
       let index = ordersRef.current.length;
-      const delivery =
-        cart.length > 0
-          ? cart.every((i) => i.type === 'service')
-            ? 0
-            : cart.some((i) => i.type === 'food_item')
-              ? DELIVERY_FEES.food_item
-              : DELIVERY_FEES.product
-          : 0;
       const discount = Math.max(0, Math.round(Number(options?.discountEstimate ?? 0)));
       let first = true;
       for (const [sellerUsername, items] of sellers) {
         const total = items.reduce((sum, i) => sum + i.price * i.quantity, 0);
-        const fee = first ? delivery : 0;
+        // Per-slice fee (server charges its fee PER order row, one row per
+        // seller here): the old first-takes-all preview understated multi-
+        // seller checkouts by (sellers-1)x fee vs the settled charge. Each
+        // slice prices its own types with the same rule the server enforces.
+        const fee = items.length > 0
+          ? items.every((i) => i.type === 'service')
+            ? 0
+            : items.some((i) => i.type === 'food_item')
+              ? DELIVERY_FEES.food_item
+              : DELIVERY_FEES.product
+          : 0;
         const disc = first ? discount : 0;
         const chargedTotal = Math.max(0, total + fee - disc);
         const isFood = items.some((i) => i.type === 'food_item');
@@ -516,7 +576,11 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
       // entity per order (duplicate cuid + order_ rows in the panel).
       // The server's cuid is captured as `serverId` so every later mutation
       // (accept/ship/review/cancel) targets the real row, not the local id.
-      const payload = (o: Order) => ({
+      // Per-slice fee (the slice's own deliveryFee, exact-matched server-side)
+      // and first-slice-only promoCode: the old code forwarded the global fee
+      // + the same coupon on EVERY slice, so a multi-seller cart settled N x
+      // fee correctly but applied the coupon N times (discount + usage count).
+      const payload = (o: Order, isFirst: boolean) => ({
         id: o.id,
         orderNumber: o.orderNumber,
         sellerUsername: o.sellerUsername,
@@ -531,20 +595,44 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
         paymentMethod: o.paymentMethod,
         bookingDate: o.bookingDate,
         bookingTime: o.bookingTime,
-        deliveryFee: options?.deliveryFee ?? 0,
-        promoCode: options?.promoCode ?? undefined,
+        // First slice keeps the checkout-computed fee when present (offer-mode
+        // live-type adjustments ride options.deliveryFee — the slice guess
+        // would 400 against the server's listing-truth fee); later slices
+        // send their own type-priced fee.
+        deliveryFee: isFirst && options?.deliveryFee !== undefined ? options.deliveryFee : o.deliveryFee ?? 0,
+        promoCode: isFirst ? options?.promoCode ?? undefined : undefined,
         ...(options?.offer ? { offer: options.offer } : {}),
         ...(options?.addressParts ?? {}),
       });
-      created.forEach((o) => {
-        void serverApi.placeOrder(payload(o)).then((res) => {
-          const sid = res.ok && res.data && res.data.order ? String(res.data.order.id) : undefined;
+      created.forEach((o, idx) => {
+        void serverApi.placeOrder(payload(o, idx === 0)).then((res) => {
+          const serverOrder = res.ok && res.data && (res.data as { order?: unknown }).order
+            ? (res.data as { order: { id?: unknown; chargedTotal?: unknown; deliveryFee?: unknown } }).order
+            : undefined;
+          const sid = serverOrder ? String(serverOrder.id ?? '') || undefined : undefined;
+          // Settled figures ride the ack (server-wins receipt); absent on
+          // older builds — the optimistic preview stands until the next pull.
+          const settledTotal = serverOrder ? Number(serverOrder.chargedTotal) : NaN;
+          const settledFee = serverOrder ? Number(serverOrder.deliveryFee) : NaN;
           if (sid) {
+            adoptSettledFigures(o.id, { chargedTotal: settledTotal, deliveryFee: settledFee });
             setOrders((prev) => {
-              const next = prev.map((x) => (x.id === o.id ? { ...x, serverId: sid, syncPending: false, syncFailed: undefined } : x));
+              const next = prev.map((x) =>
+                x.id === o.id
+                  ? {
+                      ...x,
+                      serverId: sid,
+                      syncPending: false,
+                      syncFailed: undefined,
+                    }
+                  : x
+              );
               persist(next);
               return next;
             });
+            // Server committed: reserve local cache stock exactly once
+            // (retry-ack for the same order is a guarded no-op).
+            reserveLocalStock(o);
             return;
           }
           if (!res.ok && res.error === 'offline') {
@@ -579,7 +667,7 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
       });
       return created;
     },
-    [persist, user?.username, user?.name]
+    [persist, user?.username, user?.name, reserveLocalStock, adoptSettledFigures]
   );
 
   const retryOrderSync = useCallback(
@@ -609,11 +697,18 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
         .catch(() => null);
       const sid = res && res.ok && res.data && res.data.order ? String(res.data.order.id) : undefined;
       if (sid) {
+        // Dedupe/retry acks carry settled figures too — same server-wins.
+        adoptSettledFigures(
+          id,
+          res?.data?.order as { chargedTotal?: unknown; deliveryFee?: unknown } | undefined
+        );
         setOrders((prev) => {
           const next = prev.map((x) => (x.id === id ? { ...x, serverId: sid, syncPending: false, syncFailed: undefined } : x));
           persist(next);
           return next;
         });
+        // Server committed: reserve local cache stock exactly once.
+        reserveLocalStock(order);
         return true;
       }
       // Explicit server reject on retry: flag the reason on the row (never
@@ -628,7 +723,7 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
       }
       return false;
     },
-    [persist]
+    [persist, reserveLocalStock, adoptSettledFigures]
   );
 
   const getOrder = useCallback(
@@ -802,7 +897,7 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
   );
 
   const respondRefund = useCallback(
-    async (orderId: string, author: RefundTimelineAuthor, text: string, newStatus?: RefundStatus): Promise<boolean> => {
+    async (orderId: string, author: RefundTimelineAuthor, text: string, newStatus?: RefundStatus, note?: string): Promise<boolean> => {
       const now = Date.now();
       const prevStatus = ordersRef.current.find((o) => o.id === orderId)?.refund?.status;
       setOrders((prev) => {
@@ -849,7 +944,9 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
           });
         };
         try {
-          const res = await serverApi.respondRefund(realId, newStatus);
+          // The seller's reason travels to the server (Refund row) — the old
+          // call sent the decision alone and the reason never left the device.
+          const res = await serverApi.respondRefund(realId, newStatus, note);
           if (!res.ok) rollback();
           return res.ok;
         } catch {

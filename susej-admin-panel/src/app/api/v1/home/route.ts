@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { checkAppKey, unauthorized } from "@/lib/promotions/api-auth";
+import { checkAppKeyAsync, unauthorized } from "@/lib/promotions/api-auth";
 import { getPrisma } from "@/lib/db";
 import { lazySweep } from "@/lib/promotions/activate";
 
 const ACTIVE = "active";
 
 export async function GET(request: NextRequest) {
-  if (!checkAppKey(request)) return unauthorized();
+  if (!await checkAppKeyAsync(request)) return unauthorized();
 
   await lazySweep();
   const prisma = await getPrisma();
@@ -33,10 +33,13 @@ export async function GET(request: NextRequest) {
     prisma.hotDeal.findMany({ where: { status: ACTIVE }, orderBy: { priority: "asc" }, take: 3 }),
     // Marketing banners: seller-uploaded banner images from the seller dashboard,
     // synced into storefrontBanner. Ordered by explicit position (lower first,
-    // nulls last) then newest.
+    // nulls last) then newest. Bounded like every other rail (the app hero
+    // renders the first row with an image — an unbounded payload only burns
+    // cold-start bytes after the first few rows).
     prisma.storefrontBanner.findMany({
       where: { status: ACTIVE },
       orderBy: [{ position: { sort: "asc", nulls: "last" } }, { createdAt: "desc" }],
+      take: 5,
     }),
     // Featured posts: paid promo placements (promo engine writes them on
     // purchase). Previously write-only — orphans rendered nowhere while money
@@ -132,36 +135,74 @@ export async function GET(request: NextRequest) {
   );
   const serveHotDeals = liveHotDeals.filter((d) => !postBlocked((d as { productId?: unknown }).productId));
 
-  // Seller identity for the app: TopSeller.sellerId is the Seller cuid, but
-  // the app navigates/follows by USERNAME (/seller/:u). Seed data keeps no
-  // shared email between Seller and User rows, so resolve by business name →
-  // owner name → order attribution, first hit wins. Missing mapping serves
-  // null — the app falls back to organic suggestions, never a dead chip.
+  // Seller identity for the app: TopSeller.sellerId is the Seller cuid on
+  // legacy rows and the bare username on desk/engine-written rows — the app
+  // navigates/follows by USERNAME (/seller/:u) either way. Cuid rows resolve
+  // by phone digits first (exact KYC binding), unique display names only as
+  // fallback; bare usernames resolve directly. A shared/colliding identity
+  // never attributes (first-hit-wins served A's stats on B's card). Missing
+  // mapping serves null — the app falls back to organic suggestions.
   const sellerIdToUsername = new Map<string, string>();
   try {
     const ids = Array.from(new Set(topSellers.map((t) => t.sellerId).filter(Boolean)));
     if (ids.length > 0) {
-      const sellers = await prisma.seller.findMany({ where: { id: { in: ids } }, select: { id: true, businessName: true, ownerName: true } });
-      const users = await prisma.user.findMany({ select: { username: true, name: true, businessName: true } });
+      const sellers = await prisma.seller.findMany({ where: { id: { in: ids } }, select: { id: true, businessName: true, ownerName: true, phone: true } });
+      const users = await prisma.user.findMany({ select: { username: true, name: true, businessName: true, phone: true } });
       const norm = (v: unknown) => String(v ?? "").trim().toLowerCase();
+      const digits = (v: unknown) => String(v ?? "").replace(/\D/g, "").slice(-10);
+      // EXACT identity first: Seller.phone <-> User.phone digits (the same
+      // binding the KYC propagation lane uses) — but UNIQUE bindings only:
+      // a family-shared phone hitting two User rows must not first-win any
+      // more than a shared display name did. Display-name maps are unique-only
+      // too. A colliding identity serves no username (snapshot fallback),
+      // never the wrong seller's numbers.
+      const phoneCount = new Map<string, number>();
+      for (const u of users) {
+        if (!u.username) continue;
+        const d = digits((u as { phone?: unknown }).phone);
+        if (d.length >= 4) phoneCount.set(d, (phoneCount.get(d) ?? 0) + 1);
+      }
+      const byPhone = new Map<string, string>();
+      const bizCount = new Map<string, number>();
+      const nameCount = new Map<string, number>();
+      for (const u of users) {
+        if (!u.username) continue;
+        const d = digits((u as { phone?: unknown }).phone);
+        if (d.length >= 4 && phoneCount.get(d) === 1 && !byPhone.has(d)) byPhone.set(d, u.username);
+        if (u.businessName) bizCount.set(norm(u.businessName), (bizCount.get(norm(u.businessName)) ?? 0) + 1);
+        if (u.name) nameCount.set(norm(u.name), (nameCount.get(norm(u.name)) ?? 0) + 1);
+      }
       const byBusiness = new Map<string, string>();
       const byName = new Map<string, string>();
       for (const u of users) {
         if (!u.username) continue;
-        if (u.businessName && !byBusiness.has(norm(u.businessName))) byBusiness.set(norm(u.businessName), u.username);
-        if (u.name && !byName.has(norm(u.name))) byName.set(norm(u.name), u.username);
+        if (u.businessName && bizCount.get(norm(u.businessName)) === 1 && !byBusiness.has(norm(u.businessName))) byBusiness.set(norm(u.businessName), u.username);
+        if (u.name && nameCount.get(norm(u.name)) === 1 && !byName.has(norm(u.name))) byName.set(norm(u.name), u.username);
       }
-      let orderPairs: { sellerUsername: string | null; sellerName: string | null }[] = [];
-      try {
-        orderPairs = await prisma.order.findMany({ select: { sellerUsername: true, sellerName: true }, take: 500 });
-      } catch { orderPairs = []; }
-      const byOrderName = new Map<string, string>();
-      for (const o of orderPairs) {
-        if (o.sellerUsername && o.sellerName && !byOrderName.has(norm(o.sellerName))) byOrderName.set(norm(o.sellerName), o.sellerUsername);
-      }
+      // Order-history fallback REMOVED (was first-hit-wins, then windowed-
+      // unique): display names are not identity — phone + unique names cover
+      // every real binding, anything else serves the honest snapshot fallback.
       for (const s of sellers) {
-        const hit = byBusiness.get(norm(s.businessName)) ?? byName.get(norm(s.ownerName)) ?? byOrderName.get(norm(s.businessName)) ?? null;
+        const phoneHit = byPhone.get(digits((s as { phone?: unknown }).phone)) ?? null;
+        const hit = phoneHit ?? byBusiness.get(norm(s.businessName)) ?? byName.get(norm(s.ownerName)) ?? null;
         if (hit) sellerIdToUsername.set(s.id, hit);
+      }
+      // Dual-shape sellerId: the desk/engine write bare usernames while legacy
+      // rows carry Seller cuids — resolve direct username hits first so new
+      // rows get live truth + navigation instead of snapshot-only.
+      try {
+        const unresolved = ids.filter((id) => !sellerIdToUsername.has(id));
+        if (unresolved.length) {
+          const direct = await prisma.user.findMany({
+            where: { username: { in: unresolved } },
+            select: { username: true },
+          });
+          for (const u of direct) {
+            if (u.username) sellerIdToUsername.set(u.username, u.username);
+          }
+        }
+      } catch {
+        // Direct-username miss falls through to the cuid path / snapshot.
       }
     }
   } catch {
@@ -224,6 +265,19 @@ export async function GET(request: NextRequest) {
       "featured-posts": !sectionOff.has("featured-posts"),
       "spotlight": !sectionOff.has("spotlight"),
     },
+    // Admin rail order (the desk drag-reorder persists position per section):
+    // enabled sections, lowest position first, rows without a position last.
+    // Additive — existing clients keep reading `sections` untouched.
+    sectionOrder: (sections as { name: string; isEnabled: boolean; position?: unknown }[])
+      .filter((s) => s && s.isEnabled !== false && typeof s.name === "string")
+      .sort((a, b) => {
+        const pa = Number(a.position);
+        const pb = Number(b.position);
+        const va = Number.isFinite(pa) ? pa : Number.MAX_SAFE_INTEGER;
+        const vb = Number.isFinite(pb) ? pb : Number.MAX_SAFE_INTEGER;
+        return va - vb;
+      })
+      .map((s) => s.name),
     topSellers: (sectionOff.has("top-sellers") ? [] : topSellers).map((t) => {
       const username = sellerIdToUsername.get(t.sellerId) ?? null;
       const live = username ? liveStats.get(username) : undefined;

@@ -5,6 +5,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { StatTile } from "@/components/shared/stat-tile";
 import { exportToCSV, exportToExcel } from "@/lib/export";
+import { useAuthStore } from "@/store/auth-store";
 import { Download, FileSpreadsheet, Clock } from "lucide-react";
 
 const RESOURCES: { value: string; label: string }[] = [
@@ -22,9 +23,31 @@ const RESOURCES: { value: string; label: string }[] = [
   { value: "carriers", label: "Carriers" },
   { value: "delivery-zones", label: "Delivery Zones" },
   { value: "tickets", label: "Support Tickets" },
+  { value: "withdrawals", label: "Withdrawals" },
+  { value: "refunds", label: "Refunds" },
+  { value: "disputes", label: "Disputes" },
   { value: "coupons", label: "Coupons" },
   { value: "promotions", label: "Promotions & Ads" },
   { value: "commission", label: "Commission & Fees" },
+  // Moderation + content queues the desk moderates (were API-only while the
+  // desk that judges them couldn't pull them for audit).
+  { value: "posts", label: "Posts" },
+  { value: "blocked", label: "Blocked Users" },
+  { value: "messages", label: "Messages" },
+  { value: "reported-products", label: "Reported Products" },
+  { value: "reported-messages", label: "Reported Messages" },
+  { value: "reported-comments", label: "Reported Comments" },
+  { value: "reported-users", label: "Reported Users" },
+  { value: "stories", label: "Stories" },
+  { value: "reels", label: "Reels" },
+  { value: "live", label: "Live Streams" },
+  { value: "hashtags", label: "Hashtags" },
+  { value: "bundles", label: "Bundles" },
+  { value: "bookings", label: "Bookings" },
+  { value: "auctions", label: "Auctions" },
+  { value: "loyalty", label: "Loyalty" },
+  { value: "seller-documents", label: "Seller Documents" },
+  { value: "webhook-events", label: "Webhook Events" },
   // Subscribers removed: no such resource exists (export 404ed). Re-add only
   // with a real newsletter/subscriber table behind it.
   { value: "audit-logs", label: "Audit Logs" },
@@ -48,13 +71,27 @@ interface RecentExport {
 
 export default function ExportCenterPage() {
   const [resource, setResource] = useState("users");
+  // Finance reconciliation scope: money datasets only — never sellers/users
+  // full PII, admins, or audit trails. The API read scope enforces the same
+  // boundary; the picker simply doesn't offer what the role cannot pull.
+  // Finance reconciliation scope: EXACTLY the API read scope. Role aliases
+  // (accountant/treasury normalize to finance in proxy + API) count too —
+  // otherwise those roles see the full picker but 403 on fetch.
+  const roleNorm = String(useAuthStore((s) => s.user?.role) ?? "").toLowerCase();
+  const financeOnly = roleNorm === "finance" || roleNorm === "accountant" || roleNorm === "treasury";
+  const MONEY_RESOURCES = new Set([
+    "orders", "transactions", "ledger", "gateway-logs", "commission",
+    "withdrawals", "refunds", "disputes",
+  ]);
+  const visibleResources = financeOnly ? RESOURCES.filter((r) => MONEY_RESOURCES.has(r.value)) : RESOURCES;
+  const effectiveResource = financeOnly && !MONEY_RESOURCES.has(resource) ? "orders" : resource;
   const [rows, setRows] = useState<Record<string, unknown>[] | null>(null);
   const [total, setTotal] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [recent, setRecent] = useState<RecentExport[]>([]);
 
-  const resourceLabel = RESOURCES.find((r) => r.value === resource)?.label ?? resource;
+  const resourceLabel = RESOURCES.find((r) => r.value === effectiveResource)?.label ?? effectiveResource;
 
   // Preview shows the first 12 columns; the FILE carries every column (the
   // old slice(0,12) silently dropped money/identity columns from exports).
@@ -74,8 +111,8 @@ export default function ExportCenterPage() {
       // the 100-row window is knowingly partial past 100 rows. The exported
       // file carries its own row-count marker (see doExport).
       const url = full
-        ? `/api/data/${resource}?export=1&take=5000`
-        : `/api/data/${resource}?take=100`;
+        ? `/api/data/${effectiveResource}?export=1&take=5000`
+        : `/api/data/${effectiveResource}?take=100`;
       const res = await fetch(url, { cache: "no-store", credentials: "include" });
       const body = await res.json();
       if (!res.ok) throw new Error(body?.error ?? "Failed to load");
@@ -94,7 +131,7 @@ export default function ExportCenterPage() {
   // just on the preview page (files travel without their page).
   function withMarker(data: Record<string, unknown>[]): Record<string, unknown>[] {
     const marker = {
-      __export: `susej ${resource} export ${new Date().toISOString()} — ${data.length} rows${typeof total === "number" && total > data.length ? ` (PARTIAL of ${total})` : " (complete)"}`,
+      __export: `susej ${effectiveResource} export ${new Date().toISOString()} — ${data.length} rows${typeof total === "number" && total > data.length ? ` (PARTIAL of ${total})` : " (complete)"}`,
     };
     return [marker, ...data];
   }
@@ -102,8 +139,8 @@ export default function ExportCenterPage() {
   function doExport(format: "CSV" | "Excel") {
     if (!rows) return;
     const stamped = withMarker(rows);
-    if (format === "CSV") exportToCSV(stamped, `susej-${resource}`, [{ key: "__export", label: "export_info" }, ...allColumns]);
-    else exportToExcel(stamped, `susej-${resource}`, [{ key: "__export", label: "export_info" }, ...allColumns]);
+    if (format === "CSV") exportToCSV(stamped, `susej-${effectiveResource}`, [{ key: "__export", label: "export_info" }, ...allColumns]);
+    else exportToExcel(stamped, `susej-${effectiveResource}`, [{ key: "__export", label: "export_info" }, ...allColumns]);
     record(format);
   }
 
@@ -132,11 +169,11 @@ export default function ExportCenterPage() {
             <div className="w-full max-w-xs">
               <label className="mb-1.5 block text-sm font-medium text-[#18181B]">Dataset</label>
               <select
-                value={resource}
+                value={effectiveResource}
                 onChange={(e) => setResource(e.target.value)}
                 className="h-9 w-full rounded-[6px] border border-[#E4E4E7] bg-white px-3 text-sm text-[#18181B] outline-none focus:border-[#6C3BFF]"
               >
-                {RESOURCES.map((r) => (
+                {visibleResources.map((r) => (
                   <option key={r.value} value={r.value}>{r.label}</option>
                 ))}
               </select>
@@ -202,7 +239,7 @@ export default function ExportCenterPage() {
       </Card>
 
       <div className="grid grid-cols-4 gap-4">
-        <StatTile label="Datasets available" value={RESOURCES.length} tone="purple" />
+        <StatTile label="Datasets available" value={visibleResources.length} tone="purple" />
         <StatTile label="Loaded rows" value={rows?.length ?? 0} />
         <StatTile label="This session exports" value={recent.length} tone="green" />
         <StatTile label="Last export" value={recent[0] ? `${recent[0].format} · ${recent[0].rows} rows` : "—"} />

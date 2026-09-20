@@ -138,9 +138,21 @@ export default function OrdersPage() {
   const { data: orders, loading: ordersLoading, total: ordersTotal, refresh } = useDbResource<Order>("orders", { take: 100 });
   const [filter, setFilter] = useState<string>("all");
 
+  // Exception view (Amazon late-shipment discipline, minimal): non-terminal
+  // orders older than 72h — a 20-day stuck out_for_delivery no longer looks
+  // identical to a 2-hour one. Window-scoped (first-100 caption applies).
+  const STALE_MS = 72 * 3600 * 1000;
+  const isStale = (o: Order) => {
+    if (o.status === "delivered" || o.status === "cancelled") return false;
+    const t = Date.parse(String((o as { createdAt?: unknown }).createdAt ?? ""));
+    return Number.isFinite(t) && Date.now() - t > STALE_MS;
+  };
+
   const filtered = useMemo(() => {
     const all = orders ?? [];
-    return filter === "all" ? all : all.filter((o) => o.status === filter);
+    if (filter === "all") return all;
+    if (filter === "stale") return all.filter(isStale);
+    return all.filter((o) => o.status === filter);
   }, [orders, filter]);
 
   const counts = useMemo(() => {
@@ -178,6 +190,13 @@ export default function OrdersPage() {
             {s.replaceAll("_", " ")} ({counts[s] ?? 0})
           </Button>
         ))}
+        <Button
+          variant={filter === "stale" ? "primary" : "secondary"}
+          size="sm"
+          onClick={() => setFilter("stale")}
+        >
+          Stale 72h+ ({(orders ?? []).filter(isStale).length})
+        </Button>
       </div>
 
       <Card>

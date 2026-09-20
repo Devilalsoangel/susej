@@ -200,11 +200,35 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
           changed.push(key);
         }
       }
-      if (changed.length) {
+      // Bundle totals ride as `bundle:<id>` entries (live Bundle-row truth
+      // from checkout revalidation): when the row price moved, re-split the
+      // preview across member lines with the same share rule as addBundle
+      // (floor share, remainder on the cart-first line). Totals always agree
+      // with the charge; per-line displays can differ ≤₹1 from the server's
+      // id-sorted remainder split (logged). Qty-edited groups are skipped —
+      // the server settles those rows, the receipt shows settled truth.
+      const resplit = new Map<string, number>();
+      for (const k of Object.keys(prices)) {
+        if (!k.startsWith('bundle:')) continue;
+        const bid = k.slice('bundle:'.length);
+        const liveTotal = prices[k];
+        if (!Number.isFinite(liveTotal) || liveTotal < 0) continue;
+        const members = cart.filter((i) => i.bundleId === bid);
+        if (!members.length || members.some((m) => (m.quantity ?? 1) !== 1)) continue;
+        const cur = members.reduce((s, m) => s + m.price, 0);
+        if (Math.abs(cur - liveTotal) < 0.5) continue;
+        const n = members.length;
+        const share = Math.floor(liveTotal / n);
+        members.forEach((m, i) => {
+          resplit.set(cartLineKey(m), i === 0 ? liveTotal - share * (n - 1) : share);
+        });
+      }
+      if (changed.length || resplit.size) {
         const changedSet = new Set(changed);
         setCart((prev) => {
           const next = prev.map((item) => {
             const key = cartLineKey(item);
+            if (item.bundleId && resplit.has(key)) return { ...item, price: resplit.get(key)! };
             if (!changedSet.has(key)) return item;
             const price = prices[key] ?? prices[item.listingId];
             return { ...item, price };
@@ -213,7 +237,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
           return next;
         });
       }
-      return changed;
+      return [...changed, ...resplit.keys()];
     },
     [persist, cart]
   );

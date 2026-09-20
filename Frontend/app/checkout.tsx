@@ -275,6 +275,14 @@ export default function CheckoutScreen() {
       router.push('/address-book');
       return;
     }
+    // PIN gate: legacy rows saved before the address-book PIN rule carry no
+    // 6-digit PIN — couriers cannot route them. Bounce to the book with an
+    // honest reason instead of shipping a PIN-less SHIP-TO to the seller.
+    if (!/(^|\D)\d{6}(\D|$)/.test(address.city ?? '')) {
+      Alert.alert('Delivery PIN missing', 'This address has no 6-digit delivery PIN. Please edit it in the address book before ordering.');
+      router.push('/address-book');
+      return;
+    }
     if (!payment) {
       router.push('/payment-methods');
       return;
@@ -453,6 +461,23 @@ export default function CheckoutScreen() {
         if ((f as { bundle?: boolean }).bundle) continue;
         if (Number.isFinite(f.price) && f.price >= 0) truth[f.key] = f.price;
       }
+      // Bundle reconfirm: the server re-prices combos from the live Bundle
+      // row at placement — a seller edit since add-to-cart must surface for
+      // review like any other price change, never charge silently.
+      try {
+        const bundleIds = [...new Set(cart.filter((c) => c.bundleId).map((c) => String(c.bundleId)))];
+        if (bundleIds.length > 0) {
+          const bres = await serverApi.getBundles().catch(() => null);
+          const rows = bres?.ok && Array.isArray((bres.data as { bundles?: unknown })?.bundles)
+            ? (bres.data as { bundles: Array<{ id?: unknown; price?: unknown }> }).bundles
+            : [];
+          for (const bid of bundleIds) {
+            const row = rows.find((r) => String(r.id ?? '') === bid);
+            const live = Number(row?.price);
+            if (row && Number.isFinite(live) && live >= 0) truth[`bundle:${bid}`] = live;
+          }
+        }
+      } catch {}
       const changed = updatePrices(truth);
       if (changed.length > 0) {
         setPlacing(false);

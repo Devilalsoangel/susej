@@ -14,6 +14,56 @@ class OrderError extends Error {
   }
 }
 
+/**
+ * Settled fee+discount for idempotent acks (dedupe + race-winner): the row
+ * stores amount + settled per-line legs (price = pre-coupon receipt truth,
+ * netPrice = post-coupon), so pre-coupon items + the placement fee rule
+ * recover the exact split. The fee is cross-checked against the booked
+ * shipping leg (derived fee must cover it). Returns null when underivable
+ * (deleted listings, legacy rows) — the ack omits figures rather than
+ * guessing them, and the client keeps its preview until the next pull.
+ */
+async function settledFiguresForAck(
+  prisma: any,
+  row: { id: string; itemsList?: unknown; amount?: unknown }
+): Promise<{ deliveryFee: number; discount: number } | null> {
+  try {
+    const list = Array.isArray(row.itemsList) ? (row.itemsList as Array<Record<string, unknown>>) : [];
+    if (!list.length) return null;
+    let preCoupon = 0;
+    const lids: string[] = [];
+    for (const l of list) {
+      const unit = Number(l.price ?? NaN);
+      const q = Math.max(1, Math.round(Number(l.qty ?? l.quantity ?? 1)));
+      if (!Number.isFinite(unit) || unit < 0 || !Number.isFinite(q)) return null;
+      preCoupon += unit * q;
+      if (typeof l.listingId === "string" && l.listingId) lids.push(l.listingId);
+    }
+    const uniq = [...new Set(lids)];
+    const posts = uniq.length
+      ? await prisma.post.findMany({ where: { id: { in: uniq } }, select: { id: true, type: true } }).catch(() => [])
+      : [];
+    if (posts.length !== uniq.length) return null;
+    const types = (posts as Array<{ type?: unknown }>).map((p) => String(p.type ?? ""));
+    const fee = types.length > 0 && types.every((t) => t === "service")
+      ? 0
+      : types.some((t) => t === "food_item" || t === "food")
+        ? 30
+        : 12;
+    const shipLegs = await prisma.ledgerEntry.findMany({
+      where: { orderId: row.id, type: "shipping", direction: "in", status: { in: ["success", "pending"] } },
+      select: { amount: true },
+    }).catch(() => []);
+    const shipBooked = (shipLegs as Array<{ amount?: unknown }>).reduce((s, r) => s + Math.max(0, Number(r.amount ?? 0)), 0);
+    if (fee < shipBooked) return null;
+    const amount = Math.round(Number(row.amount ?? NaN));
+    if (!Number.isFinite(amount)) return null;
+    return { deliveryFee: fee, discount: Math.max(0, Math.round(preCoupon + fee - amount)) };
+  } catch {
+    return null;
+  }
+}
+
 /** Collapse whitespace runs and cap length so a corrupted client field can
  *  never persist interleaved multi-line garbage into the admin panel. */
 function cleanAddressPart(value: unknown): string {
@@ -84,6 +134,10 @@ export async function GET(req: NextRequest) {
   const trackings = Array.from(new Set(rows.map((o) => o.trackingNumber).filter(Boolean)));
   const refundByRef = new Map<string, { id: string; status: string; reason: string; requestedAt: number }>();
   const frozenByTracking = new Set<string>();
+  // Dispute-credit legs (buyer wallet credits with NO Refund row): without
+  // this the refunds tab + detail card show zero for dispute rulings even
+  // though the wallet was credited — "where is my refund" tickets.
+  const disputeCreditByRef = new Map<string, { amount: number; kind: "full" | "split" }>();
   if (trackings.length) {
     try {
       const refundRows = await prisma.refund.findMany({
@@ -107,6 +161,23 @@ export async function GET(req: NextRequest) {
         select: { orderId: true },
       });
       for (const d of frozenRows) frozenByTracking.add(String(d.orderId));
+    } catch {}
+    try {
+      const creditRows = await prisma.walletTransaction.findMany({
+        where: {
+          username: username,
+          amount: { gt: 0 },
+          OR: [{ title: { startsWith: "Dispute refund · " } }, { title: { startsWith: "Dispute split refund · " } }],
+        },
+        select: { title: true, amount: true },
+      }).catch(() => [] as Array<{ title: string; amount: number }>);
+      for (const c of creditRows) {
+        const title = String(c.title ?? "");
+        const split = title.startsWith("Dispute split refund · ");
+        const tracking = title.slice(split ? "Dispute split refund · ".length : "Dispute refund · ".length).trim();
+        if (!tracking || disputeCreditByRef.has(tracking)) continue;
+        disputeCreditByRef.set(tracking, { amount: Math.max(0, Number(c.amount ?? 0)), kind: split ? "split" : "full" });
+      }
     } catch {}
   }
 
@@ -148,6 +219,9 @@ export async function GET(req: NextRequest) {
       paymentMethod: o.paymentMethod,
       trackingNumber: o.trackingNumber,
       refund: refundByRef.get(o.trackingNumber) ?? undefined,
+      // Dispute-ruling credit (wallet leg, no Refund row): the refunds tab +
+      // detail card render this so credited buyers see their money.
+      disputeCredit: disputeCreditByRef.get(o.trackingNumber) ?? undefined,
       // Settlement stamp ("" = pre-hold era = matured). Drives the 7-day
       // payout hold + seller "available on" dates on every device.
       actualDelivery: (o as { actualDelivery?: unknown }).actualDelivery
@@ -202,10 +276,14 @@ export async function POST(req: NextRequest) {
   }
   const username = auth.user.username!;
   // Idempotency: retry with same orderNumber returns existing — prevents double-debit.
+  // Settled figures ride the ack too (server-wins receipt): derived from the
+  // settled legs + listing types with the placement fee rule, cross-checked
+  // against the booked shipping leg — omitted (never guessed) when underivable.
   if (body.orderNumber?.trim()) {
     const existing = await prisma.order.findFirst({ where: { trackingNumber: body.orderNumber.trim(), buyerUsername: username } });
     if (existing) {
-      return NextResponse.json({ order: { id: existing.id, orderNumber: existing.trackingNumber, status: existing.status, placedAt: existing.createdAt.getTime(), chargedTotal: existing.amount } }, { status: 200 });
+      const settled = await settledFiguresForAck(prisma, existing).catch(() => null);
+      return NextResponse.json({ order: { id: existing.id, orderNumber: existing.trackingNumber, status: existing.status, placedAt: existing.createdAt.getTime(), chargedTotal: existing.amount, ...(settled ?? {}) } }, { status: 200 });
     }
   }
   const items = Array.isArray(body.items) ? body.items : [];
@@ -254,6 +332,10 @@ export async function POST(req: NextRequest) {
     }
   }
   try {
+    // Settled figures hoisted for the ack payload (server-wins receipt):
+    // assigned inside the tx from the authoritative fee/total/discount.
+    let settledFee = 0;
+    let settledDiscount = 0;
     const created = await prisma.$transaction(async (tx) => {
       const commissionRate = await resolveCommissionRate(tx);
 
@@ -515,16 +597,29 @@ export async function POST(req: NextRequest) {
           if ((post as { category?: unknown }).category) {
             line.category = String((post as { category?: unknown }).category);
           }
-          // Server-authoritative price: when listingId is supplied the Product
-          // mirror is the truth. Client price fallback is NOT allowed for
-          // resolver listings — reject cheap-buy spoof instead.
+          // Mirror-vs-Post divergence heal: the mirror sync is best-effort
+          // (silent .catch) while checkout revalidates the Post price — a
+          // stale mirror used to charge a different figure than the buyer
+          // approved. Both hold the BASE price (variant deltas add below).
+          // The buyer-approved Post figure wins (displayed-price honors,
+          // Amazon norm) and the mirror is repaired in-tx so the next order
+          // and every settlement reader see one truth. A failed repair
+          // fails the placement closed — never charge either figure.
           const listing = await tx.product.findUnique({ where: { id: `lst_${line.listingId}` } });
           if (!listing || !Number.isFinite(listing.price)) {
             const postPrice = Number((post as unknown as { price?: unknown }).price ?? NaN);
             if (Number.isFinite(postPrice) && postPrice > 0) line.unitPrice = postPrice;
             else throw new OrderError(400, "Listing price unavailable — refresh and try again");
           } else {
-            line.unitPrice = listing.price;
+            const postBase = Number((post as unknown as { price?: unknown }).price ?? NaN);
+            if (Number.isFinite(postBase) && postBase > 0 && Math.abs(Number(listing.price) - postBase) > 0.5) {
+              await tx.product.update({ where: { id: `lst_${line.listingId}` }, data: { price: postBase } }).catch(() => {
+                throw new OrderError(400, "Listing price changed — refresh and try again");
+              });
+              line.unitPrice = postBase;
+            } else {
+              line.unitPrice = listing.price;
+            }
           }
           // Variant delta pricing: the cart carries base+delta (PDP
           // effectivePrice) but the mirror only holds the base — charging the
@@ -826,6 +921,9 @@ export async function POST(req: NextRequest) {
           variantLabel: String((i.raw as any)?.variantLabel ?? "").slice(0, 120),
         });
       }
+      // Ack figures (server-wins receipt): settled fee + discount as charged.
+      settledFee = Math.round(deliveryFee);
+      settledDiscount = Math.max(0, Math.round(itemsTotal + deliveryFee - chargedTotal));
       const order = await tx.order.create({
         data: {
           buyerName: auth.user.name,
@@ -909,7 +1007,11 @@ export async function POST(req: NextRequest) {
           orderNumber: created.trackingNumber,
           status: created.status,
           placedAt: created.createdAt.getTime(),
+          // Settled figures (server-wins): the client receipt adopts these on
+          // ack instead of showing the optimistic preview as paid.
           chargedTotal: created.amount,
+          deliveryFee: settledFee,
+          discount: settledDiscount,
         },
       },
       { status: 201 }
@@ -928,8 +1030,9 @@ export async function POST(req: NextRequest) {
         .findFirst({ where: { trackingNumber: body.orderNumber.trim(), buyerUsername: username } })
         .catch(() => null);
       if (winner) {
+        const settled = await settledFiguresForAck(prisma, winner).catch(() => null);
         return NextResponse.json(
-          { order: { id: winner.id, orderNumber: winner.trackingNumber, status: winner.status, placedAt: winner.createdAt.getTime(), chargedTotal: winner.amount } },
+          { order: { id: winner.id, orderNumber: winner.trackingNumber, status: winner.status, placedAt: winner.createdAt.getTime(), chargedTotal: winner.amount, ...(settled ?? {}) } },
           { status: 200 }
         );
       }

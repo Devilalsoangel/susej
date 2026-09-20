@@ -71,8 +71,11 @@ export async function POST(req: NextRequest) {
   }
   // Terminal orders can't host a new dispute: cancelled/refunded rows have no
   // live money to rule on, and ruling stamps paymentStatus on a dead order
-  // (phantom-mirror trigger). Resolved-then-reopened flows stay desk-side.
-  if (String(order.status ?? "") === "cancelled" || String(order.paymentStatus ?? "") === "refunded") {
+  // (phantom-mirror trigger). A split-ruled order (partial_refund) is equally
+  // closed — a second ruling moves no money (cross-outcome guards) but would
+  // flip the mark to refunded and strand the seller's retained half with no
+  // claw behind it. Resolved-then-reopened flows stay desk-side.
+  if (String(order.status ?? "") === "cancelled" || ["refunded", "partial_refund"].includes(String(order.paymentStatus ?? ""))) {
     return NextResponse.json({ error: "This order is already closed — contact support instead" }, { status: 400 });
   }
   // Serialized open-or-return: check-then-create double-tapped twin "open"
@@ -94,7 +97,7 @@ export async function POST(req: NextRequest) {
     if (!fresh) throw new Error("ORDER_CLOSED");
     const freshStatus = String(fresh.status ?? "");
     const freshPay = String((fresh as { paymentStatus?: unknown }).paymentStatus ?? "");
-    if (freshStatus === "cancelled" || freshPay === "refunded") {
+    if (freshStatus === "cancelled" || ["refunded", "partial_refund"].includes(freshPay)) {
       throw new Error("ORDER_CLOSED");
     }
     const open = await tx.dispute.findFirst({

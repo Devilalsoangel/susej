@@ -448,9 +448,30 @@ export default function ChatScreen() {
     );
   };
 
+  // One alert per blocked target (both deep-link lanes share it).
+  const blockedAlertRef = useRef<string | null>(null);
+
   useEffect(() => {
     if (rawTo) return;
     if (!rawProduct && !rawSeller) return;
+    if (!blockedLoaded) return;
+    // Blocked target via the product-page `seller=` lane (same gate as the
+    // `to=` lane below — this lane previously opened + thread-created).
+    const sellerNorm = String(rawSeller ?? '').toLowerCase();
+    if (
+      sellerNorm &&
+      blockedUsers.some(
+        (b) =>
+          String(b.username ?? '').toLowerCase() === sellerNorm ||
+          (b.name ? String(b.name).toLowerCase() === sellerNorm : false)
+      )
+    ) {
+      if (blockedAlertRef.current !== sellerNorm) {
+        blockedAlertRef.current = sellerNorm;
+        Alert.alert('Blocked', 'You blocked this seller. Unblock them from Blocked Users to message again.');
+      }
+      return;
+    }
     const sellerName = rawSeller ?? 'Seller';
     const chat: ChatItem = {
       id: `seller_${sellerName}`,
@@ -514,13 +535,11 @@ export default function ChatScreen() {
         );
       })
       .catch(() => {});
-  }, [rawProduct, rawSeller]);
+  }, [rawProduct, rawSeller, blockedLoaded, blockedUsers]);
 
   // Deep link `to=<sellerUsername>`: focus an existing thread for that seller
   // or open a fresh enquiry thread (with optional prefilled `msg`).
-  const blockedAlertRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!rawTo || !blockedLoaded) return;
+  useEffect(() => {    if (!rawTo || !blockedLoaded) return;
     const normalized = rawTo.toLowerCase();
     if (blockedUsers.some((b) => b.username.toLowerCase() === normalized)) {
       // Blocked target: say so (was a silent dead tap — no chat, no message).
