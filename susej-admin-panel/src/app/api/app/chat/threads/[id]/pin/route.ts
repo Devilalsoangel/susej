@@ -95,6 +95,15 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     let debited: Date | null = null;
     try {
       debited = await prisma.$transaction(async (tx) => {
+        // 3-pin cap must be atomic: count+create under an advisory lock
+        // (spotlight pattern) or two same-tick POSTs both read 2 and commit 4.
+        // Parameterized (no string interpolation — legacy quote-bearing
+        // usernames must not break the SQL). Fail-closed: lock failure aborts,
+        // never proceeds unlocked.
+        await (tx as any).$queryRawUnsafe?.(
+          `SELECT pg_advisory_xact_lock(hashtext($1))`,
+          `chat-pin:${username}`
+        );
         const activePins = await tx.chatThread.count({
           where: { pinnedBy: username, pinnedUntil: { gt: now }, id: { not: thread.id } },
         });
@@ -145,9 +154,14 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     return NextResponse.json({ pinnedUntil: debited.getTime(), days, charged: pinPrice }, { status: 200 });
   }
 
-  // Free pin path (pinPrice 0) still needs atomic limit check.
+  // Free pin path (pinPrice 0) still needs atomic limit check — same
+  // advisory lock or two same-tick free POSTs both read 2 and commit 4.
   try {
     const pinnedUntil = await prisma.$transaction(async (tx) => {
+      await (tx as any).$queryRawUnsafe?.(
+        `SELECT pg_advisory_xact_lock(hashtext($1))`,
+        `chat-pin:${username}`
+      );
       const activePins = await tx.chatThread.count({
         where: { pinnedBy: username, pinnedUntil: { gt: now }, id: { not: thread.id } },
       });

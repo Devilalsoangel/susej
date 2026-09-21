@@ -129,17 +129,27 @@ export default function OffersPage() {
     }
   }
 
-  function handleDelete() {
+  async function handleDelete() {
     if (!deleteTarget) return;
-    setList((prev) => (prev ?? []).filter((c) => c.id !== deleteTarget.id));
-    fetch("/api/data/coupons", {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: deleteTarget.id }),
-    }).finally(() => {
-      setDeleteTarget(null);
+    const target = deleteTarget;
+    const snapshot = list;
+    // ok-checked + revert + toast (toggle parity): a refused DELETE
+    // (role-denied, offline) must not ghost-delete a coupon that still redeems.
+    setList((prev) => (prev ?? []).filter((c) => c.id !== target.id));
+    setDeleteTarget(null);
+    try {
+      const res = await fetch("/api/data/coupons", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: target.id }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => null))?.error ?? `Coupon delete failed (${res.status})`);
       refresh();
-    });
+    } catch (e: unknown) {
+      setList(snapshot);
+      const { toast } = await import("@/components/ui/toast");
+      toast.error(e instanceof Error ? e.message : "Coupon delete failed — reverted.");
+    }
   }
 
   function handleCreate() {

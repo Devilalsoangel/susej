@@ -113,6 +113,10 @@ export default function CategoryDetailScreen() {
   // Unicode NFC like search.tsx: composed vs decomposed Indic/accented text
   // must match identically on both screens.
   const norm = (s: string) => (s ?? '').normalize('NFC').toLowerCase();
+  // Admin renames drift (casing/spacing/hyphens) vs the static 17 seller
+  // labels — exact match empties the page online while offline fuzzy fills
+  // it. Normalize both sides (strip non-alnum) before compare.
+  const normCat = (s: string) => norm(s).replace(/[^a-z0-9]/g, '');
   const categoryPosts = useMemo(() => {
     const term = norm(search.trim());
     return posts.filter(
@@ -122,10 +126,10 @@ export default function CategoryDetailScreen() {
         !blockedSet.has(norm(p.sellerUsername)) &&
         hasRealImage(p) &&
         (allowedNames
-          ? allowedNames.some((n) => n.toLowerCase() === p.category.toLowerCase()) ||
+          ? allowedNames.some((n) => normCat(n) === normCat(p.category)) ||
             (Array.isArray((p as any).subCategories) &&
               (p as any).subCategories.some((s: unknown) =>
-                allowedNames.some((n) => n.toLowerCase() === String(s ?? '').toLowerCase())))
+                allowedNames.some((n) => normCat(n) === normCat(String(s ?? '')))))
           : matchesCategory(p.category, activeCategory)) &&
         (!term ||
           norm(p.title ?? '').includes(term) ||

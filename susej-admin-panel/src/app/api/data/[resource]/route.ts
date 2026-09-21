@@ -181,6 +181,12 @@ function readAllowed(resource: string, role: Role): boolean {
 
 function writeAllowed(resource: string, role: Role): boolean {
   if (role === "app") return APP_SYNC_RESOURCES.has(resource);
+  // Immutable money books are append-only for EVERYONE including super_admin:
+  // hand-edited ledger/transaction legs move no wallet money and break
+  // wallet<->ledger parity silently. Corrections are new reversal rows via
+  // the settlement machines, never row writes. Commission stays writable
+  // (validated 0-30 path below) — it is config, not a money leg.
+  if (resource === "ledger" || resource === "transactions") return false;
   if (role === "super_admin") return !READ_ONLY_RESOURCES.has(resource);
   // Manager deny-list (F5): sessions tokens (= app-impersonation via Bearer),
   // app-settings (secrets/pricing), and the immutable money books

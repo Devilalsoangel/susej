@@ -110,7 +110,8 @@ export default function SellerDashboardScreen() {
   const salesOrders = useMemo(() => {
     const me = (user?.username ?? '').trim().toLowerCase();
     if (!me) return [];
-    return orders.filter((o) => (o.sellerUsername ?? '').toLowerCase() === me);
+    // Hub parity: cancelled orders are not sales (hub excludes them).
+    return orders.filter((o) => (o.sellerUsername ?? '').toLowerCase() === me && o.status !== 'cancelled');
   }, [orders, user]);
   const salesCount = salesOrders.length;
   // Live commission config (category overrides + edited global rate): without

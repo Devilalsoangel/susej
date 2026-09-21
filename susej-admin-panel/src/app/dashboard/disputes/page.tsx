@@ -145,6 +145,12 @@ export default function DisputesPage() {
 
   function submitResolution() {
     if (!resolving) return;
+    // Evidence gate: money-moving rulings with no justification are
+    // unauditable — require a note before anything optimistic happens.
+    if (note.trim().length < 10) {
+      setResolveError("Add a ruling note (min 10 characters) — every money movement needs its justification on the record.");
+      return;
+    }
     const snapshot = items;
     const resolvedAt = new Date().toISOString();
     setItems((prev) =>

@@ -362,9 +362,21 @@ function FeedContent() {
       // Kill-switch honored like every other home rail: OFF hides the
       // TOP SELLER chips too.
       if (!sectionOn('top-sellers')) return new Set<string>();
-      return new Set(activePromos.filter((p) => p.kind === 'topSeller').map((p) => p.sellerId ?? p.sellerUsername));
+      // Id-keyed promos resolve via the server top-sellers map (cuid ->
+      // username) — raw cuid never matches a chip username.
+      const idToUser = new Map(homeTopSellers.map((t) => [String(t.sellerId), String(t.sellerUsername ?? '')]));
+      return new Set(
+        activePromos
+          .filter((p) => p.kind === 'topSeller')
+          .map((p) => {
+            if (p.sellerUsername) return String(p.sellerUsername);
+            const mapped = p.sellerId ? idToUser.get(String(p.sellerId)) : undefined;
+            return mapped || String(p.sellerId ?? '');
+          })
+          .filter(Boolean)
+      );
     },
-    [activePromos, homeSections]
+    [activePromos, homeSections, homeTopSellers]
   );
 
   // PAID Hot Deal campaigns ONLY (kind=hotDeal with a real post). Organic MRP

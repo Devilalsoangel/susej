@@ -204,7 +204,7 @@ export default function PromotionsPage() {
               </div>
               <p className="mt-1.5 text-[12px] leading-5 text-[#71717A]">
                 {kind === "topSeller" && "Pins the seller in the home Top Sellers rail. 7d ₹599 / 30d ₹1999."}
-                {kind === "hotDeal" && "Pins a product in Hot Deals with a URGENT badge. 7d ₹499 / 30d ₹1499."}
+                {kind === "hotDeal" && "Pins a product in Hot Deals with an honest discount badge. 7d ₹499 / 30d ₹1499."}
                 {kind === "featuredPost" && "Shows the post as Sponsored in buyer feeds. 7d ₹349 / 30d ₹999."}
                 {kind === "spotlight" && "Pin-to-Top: listing #1 in buyer feeds for a day. 24h ₹49 (impulse SKU)."}
               </p>

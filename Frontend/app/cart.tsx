@@ -33,8 +33,9 @@ export default function CartScreen() {
   );
   // Stepper cap (Amazon parity): clamp +1 at live per-variant/base stock so
   // rendered quantities stay buyable. Unknown (cold cache) stays uncapped —
-  // the server revalidates at checkout; untracked picks fall back to the
-  // tightest tracked SKU (safe direction: never oversells).
+  // the server revalidates at checkout. Untracked variant picks cap at 1
+  // (server rule — checkout rejects untracked qty>1 with "Variant out of
+  // stock", so the cart must never offer 2+).
   const stockCapFor = (item: CartItem): number | null => {
     const post = posts.find((p) => p.id === item.listingId);
     if (!post) return null;
@@ -44,14 +45,20 @@ export default function CartScreen() {
         return i >= 0 ? { group: s.slice(0, i).trim(), label: s.slice(i + 1).trim() } : null;
       }).filter((x): x is { group: string; label: string } => !!x);
       let cap: number | null = null;
+      let matchedGroup = false;
       for (const pk of picks) {
         const g = (post.variants ?? []).find((v) => String(v.name ?? '').trim().toLowerCase() === pk.group.toLowerCase());
+        if (g) matchedGroup = true;
         const m = g?.values.find((val) => String(val.label ?? '').trim().toLowerCase() === pk.label.toLowerCase());
         if (m && typeof m.stock === 'number' && m.stock >= 0) {
           cap = cap === null ? Math.floor(m.stock) : Math.min(cap, Math.floor(m.stock));
         }
       }
       if (cap !== null) return cap;
+      // Known group but untracked value: server caps at 1 (409 above).
+      // Unknown group (mislabeled pick): server falls through to stockLeft
+      // bulk — return null so the cart stays uncapped and server-backstopped.
+      if (matchedGroup) return 1;
     }
     // No usable pick (legacy line or untracked value): tightest tracked SKU.
     let floor: number | null = null;

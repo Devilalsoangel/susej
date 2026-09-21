@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { checkAppKey, unauthorized } from "@/lib/promotions/api-auth";
+import { checkAppKeyAsync, unauthorized } from "@/lib/promotions/api-auth";
 import { getPrisma } from "@/lib/db";
 import {
   PROMOTION_PACKAGES,
@@ -29,7 +29,7 @@ function asRate(n: number): number {
 }
 
 export async function GET(request: NextRequest) {
-  if (!checkAppKey(request)) return unauthorized();
+  if (!await checkAppKeyAsync(request)) return unauthorized();
 
   let commission = FALLBACK;
   let priceOverrides: Record<string, unknown> | null = null;

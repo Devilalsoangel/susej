@@ -554,6 +554,37 @@ export async function PUT(req: NextRequest) {
         select: { id: true, username: true, name: true },
       });
       if (!user) throw new PayoutError("User not found", 404);
+      // One-time legacy heal (mirrors withdrawals/route.ts): display-name
+      // keyed payout rows re-key to the username ONLY when the name is
+      // provably unique — so the username-only guard below sees healed money
+      // instead of orphaning it fail-open. Wallet legs heal too (same proof,
+      // collision-safe: titles already present under the username are left
+      // under the display name rather than double-minting).
+      try {
+        const displayName = String((user as { name?: unknown }).name ?? "").trim();
+        const username = String((user as { username?: unknown }).username ?? "").trim();
+        if (displayName && username && displayName !== username) {
+          const sameName = await tx.user.count({ where: { name: displayName } }).catch(() => 2);
+          if (sameName <= 1) {
+            await tx.withdrawal.updateMany({ where: { userName: displayName }, data: { userName: username } });
+            try {
+              const existing = await tx.walletTransaction.findMany({
+                where: { username },
+                select: { title: true },
+              }).catch(() => [] as Array<{ title: string }>);
+              const taken = new Set(existing.map((r) => String(r.title)));
+              const legacyLegs = await tx.walletTransaction.findMany({
+                where: { username: displayName },
+                select: { id: true, title: true },
+              }).catch(() => [] as Array<{ id: string; title: string }>);
+              for (const leg of legacyLegs) {
+                if (taken.has(String(leg.title))) continue;
+                await tx.walletTransaction.update({ where: { id: leg.id }, data: { username } }).catch(() => {});
+              }
+            } catch {}
+          }
+        }
+      } catch {}
       // LOCK ORDER (deadlock discipline, system-wide): Order rows BEFORE User
       // rows, matching every refund/dispute/cancel/deliver path. The payout
       // used to lock User first while settlement paths lock Order first —
@@ -602,10 +633,10 @@ export async function PUT(req: NextRequest) {
       try {
         const clawRows = await tx.walletTransaction.findMany({
           where: {
-            OR: [
-              { username: { equals: user.username!, mode: "insensitive" } },
-              { username: { equals: user.name || "", mode: "insensitive" } },
-            ],
+            // Username-only: display-name OR merged same-name sellers'
+            // accounting (fail-closed but wrong-seller). Legacy display-name
+            // rows heal via withdrawals/route.ts self-heal; never re-merge here.
+            username: { equals: user.username!, mode: "insensitive" },
             title: { startsWith: "Dispute split clawback · " },
           },
           select: { title: true, amount: true },
@@ -682,15 +713,11 @@ export async function PUT(req: NextRequest) {
         lifetimeNet += creditNet;
       }
       const priorWd = await tx.withdrawal.findMany({
-        // Case-insensitive party match (lock + soldRows already are — exact
-        // here missed legacy mixed-case rows, understating paidOut and
-        // overstating withdrawable; split-casing across users merges in
-        // soldRows, so this must match that semantics exactly).
+        // Username-only (see clawRows above): the withdrawals self-heal
+        // re-keys legacy display-name rows, so OR-name here only re-merges
+        // same-name sellers.
         where: {
-          OR: [
-            { userName: { equals: user.username!, mode: "insensitive" } },
-            { userName: { equals: user.name || "", mode: "insensitive" } },
-          ],
+          userName: { equals: user.username!, mode: "insensitive" },
           status: { in: ["requested", "approved", "completed"] },
         },
         select: { id: true, amount: true },
@@ -706,10 +733,8 @@ export async function PUT(req: NextRequest) {
       if (priorWd.length) {
         const debitRows = await tx.walletTransaction.findMany({
           where: {
-            OR: [
-              { username: { equals: user.username!, mode: "insensitive" } },
-              { username: { equals: user.name || "", mode: "insensitive" } },
-            ],
+            // Username-only (see clawRows above).
+            username: { equals: user.username!, mode: "insensitive" },
             amount: { lt: 0 },
             detail: { startsWith: "Payout request " },
           },

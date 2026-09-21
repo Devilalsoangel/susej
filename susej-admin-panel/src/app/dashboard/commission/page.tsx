@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { StatTile } from "@/components/shared/stat-tile";
 import { useDbResource } from "@/hooks/use-db-resource";
+import { useAuthStore } from "@/store/auth-store";
 import { apiPatch, apiPost } from "@/lib/api-mutate";
 import { Percent, Trash2, Plus, Save, IndianRupee, Wallet, Megaphone } from "lucide-react";
 import type { CommissionSettings, Order, PromotionPurchase, WithdrawalRequest } from "@/types";
@@ -116,6 +117,11 @@ function PromoPricingCard() {
     }
   }
 
+  // Manager role cannot write app-settings (API 403s) — disable with copy
+  // instead of letting the edit die after the click.
+  const promoReadOnly =
+    String(useAuthStore((s) => s.user?.role) ?? "").toLowerCase() === "manager";
+
   return (
     <Card>
       <CardHeader>
@@ -157,9 +163,12 @@ function PromoPricingCard() {
           );
         })}
         <div className="flex items-center gap-3 pt-1">
-          <Button size="sm" onClick={save}>
+          <Button size="sm" onClick={save} disabled={promoReadOnly} title={promoReadOnly ? "Super Admin only" : undefined}>
             <Save className="h-3.5 w-3.5" /> Save promo pricing
           </Button>
+          {promoReadOnly && (
+            <span className="text-[12px] font-medium text-[#92400E]">Super Admin only — your edits cannot save on this role.</span>
+          )}
           {saved && (
             <span className="text-[12px] font-medium text-[#16A34A]">Saved — the seller app picks this up live</span>
           )}
@@ -186,6 +195,10 @@ export default function CommissionPage() {
   const [settings, setSettings] = useState<CommissionSettings | null>(rows?.[0] ?? null);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Manager role cannot write money controls (API 403s) — say so on the card
+  // instead of letting every edit die after the click.
+  const adminRole = String(useAuthStore((s) => s.user?.role) ?? "").toLowerCase();
+  const moneyReadOnly = adminRole === "manager";
 
   useEffect(() => {
     if (rows?.[0]) setSettings(rows[0]);
@@ -418,9 +431,10 @@ export default function CommissionPage() {
       </Card>
 
       <div className="flex items-center gap-4">
-        <Button onClick={save}>
+        <Button onClick={save} disabled={moneyReadOnly} title={moneyReadOnly ? "Super Admin only" : undefined}>
           <Save className="h-4 w-4" /> Save commission settings
         </Button>
+        {moneyReadOnly && <span className="text-[13px] font-medium text-[#92400E]">Super Admin only — your edits cannot save on this role.</span>}
         {saved && <span className="text-[13px] font-medium text-[#16A34A]">Saved — seller wallets now use these rates</span>}
         {saveError && <span className="text-[13px] font-medium text-[#B91C1C]">{saveError}</span>}
       </div>

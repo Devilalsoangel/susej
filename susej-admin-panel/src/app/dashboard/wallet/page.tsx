@@ -59,7 +59,10 @@ export default function WalletPage() {
   const { data: pendingRf } = useDbResource<RefundRequest>("refunds", { status: "requested", take: 100 });
 
   const totals = useMemo(() => {
-    const inTotal = (ledger ?? []).filter((l) => l.direction === "in").reduce((s, l) => s + l.amount, 0);
+    // Paid-out = seller net only (settlement/payout legs in). Fee/shipping
+    // legs are platform take — including them inflated "Paid out" and
+    // understated "Held by platform".
+    const inTotal = (ledger ?? []).filter((l) => l.direction === "in" && (l.type === "settlement" || l.type === "payout")).reduce((s, l) => s + l.amount, 0);
     const outTotal = (ledger ?? []).filter((l) => l.direction === "out").reduce((s, l) => s + l.amount, 0);
     const pending =
       (pendingWd ?? []).reduce((s, w) => s + Math.max(0, Number(w.amount) || 0), 0) +

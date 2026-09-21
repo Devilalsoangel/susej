@@ -13,7 +13,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BookmarkIcon, ChevronLeftIcon } from '../utils/icons';
-import { colors } from '../utils/theme';
+import { colors, formatPrice } from '../utils/theme';
 import { useBookmark, type BookmarkedProduct } from '../contexts/BookmarkContext';
 import { resolveAvatar, resolveListingImage } from '../utils/productImages';
 import { useAuth } from '../contexts/AuthContext';
@@ -135,17 +135,27 @@ export default function SavedScreen() {
     : [];
 
   const renderBookmarkTile = (p: BookmarkedProduct) => (
-    <TouchableOpacity
-      className="flex-1 overflow-hidden"
-      style={{ aspectRatio: 1, backgroundColor: colors.surfaceContainer, borderRadius: 8 }}
-      onPress={() => router.push(`/product/${p.productId}`)}
-    >
-      <Image
-        source={resolveListingImage({ image: p.imageUrl }, p.productId)}
-        className="w-full h-full"
-        resizeMode="cover"
-      />
-    </TouchableOpacity>
+    <View className="flex-1">
+      <TouchableOpacity
+        className="overflow-hidden"
+        style={{ aspectRatio: 1, backgroundColor: colors.surfaceContainer, borderRadius: 8 }}
+        onPress={() => router.push(`/product/${p.productId}`)}
+      >
+        <Image
+          source={resolveListingImage({ image: p.imageUrl }, p.productId)}
+          className="w-full h-full"
+          resizeMode="cover"
+        />
+        <View className="absolute left-1.5 bottom-1.5 px-2 py-1 rounded-full" style={{ backgroundColor: 'rgba(0,0,0,0.65)' }}>
+          <Text className="font-inter-700" style={{ fontSize: 11, lineHeight: 14, color: '#FFFFFF' }}>
+            {formatPrice(p.price)}
+          </Text>
+        </View>
+      </TouchableOpacity>
+      <Text className="font-inter-400 text-textSecondary mt-1" numberOfLines={1} style={{ fontSize: 11, lineHeight: 14 }}>
+        {(p.description || '').split('\n')[0] || p.sellerName}
+      </Text>
+    </View>
   );
 
   const renderHeader = () => (

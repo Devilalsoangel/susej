@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors } from '../utils/theme';
 import { BackIcon, CheckIcon, CameraIcon, ShopIcon, StarIcon, LockArrowIcon, ArrowRightIcon } from '../utils/icons';
 import { useAuth } from '../contexts/AuthContext';
+import { isApprovedSeller } from '../utils/marketplace';
 import { sellerImages } from '../utils/screenImages';
 import { CATEGORY_TREE } from '../utils/categories';
 import { serverApi } from '../utils/serverApi';
@@ -196,6 +197,9 @@ export default function BecomeSellerScreen() {
   const [serverApp, setServerApp] = useState<ServerApplication | null>(null);
   const [serverAppLoaded, setServerAppLoaded] = useState(false);
   const [withdrawing, setWithdrawing] = useState(false);
+  // Refresh keeps stale truth mounted (spinner on the button, never a wizard
+  // flash): unmounting the tracker mid-refetch strands pending sellers.
+  const [refreshing, setRefreshing] = useState(false);
   // Rejected sellers may file a fresh application (server upserts by
   // app_<username> and resets rejected -> pending for re-review).
   const [reapplying, setReapplying] = useState(false);
@@ -543,6 +547,35 @@ export default function BecomeSellerScreen() {
     idNumber: 'sec_iddoc', idFront: 'sec_iddoc', idBack: 'sec_iddoc',
     addrProof: 'sec_address', gstCert: 'sec_business',
     selfie: 'sec_selfie', consent: 'sec_selfie',
+    // Step-2 shop fields scroll to their own anchors (same pattern as step 3).
+    shopName: 'sec_shop', shopCategory: 'sec_shop',
+    shopCity: 'sec_shoploc', shopPin: 'sec_shoploc',
+    shopGstin: 'sec_shopbiz', shopPan: 'sec_shopbiz', shopBank: 'sec_shopbiz',
+    shopTerms: 'sec_feeterms',
+  };
+
+  // ---------- Step-2 shop validation (per-field, same pattern as step 3) ----------
+  // Industry-standard explicitness: every Continue attempt names EACH missing
+  // field under the field itself. A single generic banner is what stranded
+  // sellers who could not tell which field the form wanted.
+  const STEP2_ORDER = [
+    'shopName', 'shopCategory', 'shopCity', 'shopPin',
+    'shopGstin', 'shopPan', 'shopBank', 'shopTerms',
+  ];
+
+  const validateStep2 = (): Record<string, string> => {
+    const errs: Record<string, string> = {};
+    if (!businessName.trim()) errs.shopName = 'Enter your official store name';
+    if (!category) errs.shopCategory = 'Pick one category for your shop';
+    if (city.trim().length < 2) errs.shopCity = 'Enter your city';
+    if (!/^\d{6}$/.test(pincode.trim())) errs.shopPin = 'Pincode must be exactly 6 digits';
+    if (sellerType === 'business') {
+      if (!/^[0-9A-Z]{15}$/i.test(gstin.trim())) errs.shopGstin = 'GSTIN looks like 27ABCDE1234F1Z5 (15 characters)';
+      if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/i.test(pan.trim())) errs.shopPan = 'PAN looks like ABCDE1234F';
+      if (!/^\d{9,18}$/.test(bankAccount.trim())) errs.shopBank = 'Bank account must be 9–18 digits';
+    }
+    if (!agreeTerms) errs.shopTerms = 'Please agree to the Seller Terms to continue';
+    return errs;
   };
 
   const isSequentialDigits = (s: string) => {
@@ -639,18 +672,9 @@ export default function BecomeSellerScreen() {
   const canContinue = () => {
     if (step === 1) return !!sellerType;
     if (step === 2) {
-      const pin = pincode.trim();
-      const pinOk = /^\d{6}$/.test(pin);
-      // Business sellers must supply the tax identity the step-1 card
-      // promises (GSTIN + PAN + bank account): an approved business with no
-      // verified bank dead-ends at the first bank-rail payout (guaranteed
-      // server 400). Collect it here, verified server-side at submit.
-      const bizOk =
-        sellerType !== 'business' ||
-        (/^[0-9A-Z]{15}$/i.test(gstin.trim()) &&
-          /^[A-Z]{5}[0-9]{4}[A-Z]$/i.test(pan.trim()) &&
-          /^\d{9,18}$/.test(bankAccount.trim()));
-      return !!businessName.trim() && !!category && !!city.trim() && pinOk && city.trim().length >= 2 && agreeTerms && bizOk;
+      // Single source of truth with validateStep2: the gate and the messages
+      // can never disagree about what is missing.
+      return Object.keys(validateStep2()).length === 0;
     }
     if (step === 3) {
       return Object.keys(validateStep3()).length === 0;
@@ -662,6 +686,23 @@ export default function BecomeSellerScreen() {
   };
 
   const handleNext = () => {
+    // Step 2 validates per-field like step 3: every fault appears under its
+    // own field and the view scrolls to the first one. The generic banner
+    // becomes a count summary instead of the only signal.
+    if (step === 2) {
+      const errs = validateStep2();
+      setFieldErrors(errs);
+      setShowFieldErrors(true);
+      const keys = STEP2_ORDER.filter((k) => errs[k]);
+      if (keys.length > 0) {
+        setError(`${keys.length} item${keys.length === 1 ? '' : 's'} need${keys.length === 1 ? 's' : ''} attention above`);
+        scrollToField(keys[0]);
+        return;
+      }
+      setError('');
+      setStep(3);
+      return;
+    }
     // Step 3 validates per-field: every fault appears under its own field
     // and the view scrolls to the first one. The generic banner becomes a
     // count summary instead of the only signal.
@@ -688,7 +729,6 @@ export default function BecomeSellerScreen() {
     if (submitting) return;
     setError('');
     if (step === 1) setStep(2);
-    else if (step === 2) setStep(3);
     else if (step === 4) {
       // REAL submission — no fake timers. The captured ID document + selfie are
       // uploaded to the admin panel FIRST; an application without its actual
@@ -1080,10 +1120,15 @@ export default function BecomeSellerScreen() {
           </View>
           <TouchableOpacity
             className="rounded-figma-16 p-4 items-center mt-6"
-            style={{ backgroundColor: colors.primaryContainer }}
-            onPress={() => { setServerAppLoaded(false); void refreshServerApp(); }}
+            style={{ backgroundColor: colors.primaryContainer, opacity: refreshing ? 0.6 : 1 }}
+            disabled={refreshing}
+            onPress={() => {
+              if (refreshing) return;
+              setRefreshing(true);
+              void refreshServerApp().finally(() => setRefreshing(false));
+            }}
           >
-            <Text className="font-inter-600 text-white" style={{ fontSize: 15, lineHeight: 20 }}>Refresh status</Text>
+            <Text className="font-inter-600 text-white" style={{ fontSize: 15, lineHeight: 20 }}>{refreshing ? 'Checking…' : 'Refresh status'}</Text>
           </TouchableOpacity>
           {rejected ? (
             <TouchableOpacity
@@ -1250,39 +1295,45 @@ export default function BecomeSellerScreen() {
             </Text>
 
             <Text className="font-inter-500 text-textSecondary mb-2" style={{ fontSize: 13, lineHeight: 18 }}>
-              Official Store Name
+              Official Store Name · Required
             </Text>
-            <View className="flex-row items-center px-4 mb-5" style={{ height: 52, borderRadius: 16, backgroundColor: colors.surfaceContainer }}>
-              <TextInput
-                className="flex-1 font-inter-400 text-textPrimary"
-                style={{ fontSize: 14 }}
-                placeholder="Elara Finds"
-                placeholderTextColor={colors.secondary}
-                value={businessName}
-                onChangeText={setBusinessName}
-              />
+            <View onLayout={(e) => { sectionY.current.sec_shop = e.nativeEvent.layout.y; }}>
+              <View className="flex-row items-center px-4" style={{ height: 52, borderRadius: 16, backgroundColor: colors.surfaceContainer, borderWidth: showErr('shopName') ? 1 : 0, borderColor: colors.error }}>
+                <TextInput
+                  className="flex-1 font-inter-400 text-textPrimary"
+                  style={{ fontSize: 14 }}
+                  placeholder="Elara Finds"
+                  placeholderTextColor={colors.secondary}
+                  value={businessName}
+                  onChangeText={(t) => { setBusinessName(t); clearFieldError('shopName'); }}
+                />
+              </View>
             </View>
+            <FieldErr msg={showErr('shopName')} />
 
             <Text className="font-inter-500 text-textSecondary mb-2" style={{ fontSize: 13, lineHeight: 18 }}>
-              Shop Category (one category per shop){isCategoryLocked ? ' · Locked' : ''}
+              Shop Category (one category per shop) · Required{isCategoryLocked ? ' · Locked' : ''}
             </Text>
             {isCategoryLocked ? (
               <Text className="font-inter-400 mb-5" style={{ fontSize: 12, lineHeight: 16, color: colors.textSecondary }}>
                 Approved as {lockedCategory} — one category per shop. Contact support to change.
               </Text>
             ) : null}
-            <View className="flex-row flex-wrap mb-5" style={{ gap: 8 }}>
+            <View className="flex-row flex-wrap" style={{ gap: 8 }}>
               {shopCategories.map((c) => {
                 const on = category === c;
                 const disabled = isCategoryLocked && c !== lockedCategory;
                 return (
-                  <TouchableOpacity key={c} onPress={() => { if (!disabled) setCategory(c); }} disabled={disabled} className="px-4 py-2.5 rounded-full" style={{ backgroundColor: on ? colors.primaryContainer : colors.surfaceContainer, opacity: disabled ? 0.45 : 1 }}>
+                  <TouchableOpacity key={c} onPress={() => { if (!disabled) { setCategory(c); clearFieldError('shopCategory'); } }} disabled={disabled} className="px-4 py-2.5 rounded-full" style={{ backgroundColor: on ? colors.primaryContainer : colors.surfaceContainer, opacity: disabled ? 0.45 : 1 }}>
                     <Text className="font-inter-500" style={{ fontSize: 13, lineHeight: 18, color: on ? colors.onPrimary : colors.textPrimary }}>
                       {c}
                     </Text>
                   </TouchableOpacity>
                 );
               })}
+            </View>
+            <View className="mb-5">
+              <FieldErr msg={showErr('shopCategory')} />
             </View>
 
             <Text className="font-inter-500 text-textSecondary mb-2" style={{ fontSize: 13, lineHeight: 18 }}>
@@ -1300,24 +1351,29 @@ export default function BecomeSellerScreen() {
               />
             </View>
 
-            <View className="flex-row mb-5" style={{ gap: 12 }}>
-              <View className="flex-1">
-                <Text className="font-inter-500 text-textSecondary mb-2" style={{ fontSize: 13, lineHeight: 18 }}>
-                  City
-                </Text>
-                <View className="flex-row items-center px-4" style={{ height: 52, borderRadius: 16, backgroundColor: colors.surfaceContainer }}>
-                  <TextInput className="flex-1 font-inter-400 text-textPrimary" style={{ fontSize: 14 }} placeholder="Mumbai" placeholderTextColor={colors.secondary} value={city} onChangeText={setCity} />
+            <View onLayout={(e) => { sectionY.current.sec_shoploc = e.nativeEvent.layout.y; }}>
+              <View className="flex-row" style={{ gap: 12 }}>
+                <View className="flex-1">
+                  <Text className="font-inter-500 text-textSecondary mb-2" style={{ fontSize: 13, lineHeight: 18 }}>
+                    City · Required
+                  </Text>
+                  <View className="flex-row items-center px-4" style={{ height: 52, borderRadius: 16, backgroundColor: colors.surfaceContainer, borderWidth: showErr('shopCity') ? 1 : 0, borderColor: colors.error }}>
+                    <TextInput className="flex-1 font-inter-400 text-textPrimary" style={{ fontSize: 14 }} placeholder="Mumbai" placeholderTextColor={colors.secondary} value={city} onChangeText={(t) => { setCity(t); clearFieldError('shopCity'); }} />
+                  </View>
+                  <FieldErr msg={showErr('shopCity')} />
                 </View>
-              </View>
-              <View className="flex-1">
-                <Text className="font-inter-500 text-textSecondary mb-2" style={{ fontSize: 13, lineHeight: 18 }}>
-                  Pincode
-                </Text>
-                <View className="flex-row items-center px-4" style={{ height: 52, borderRadius: 16, backgroundColor: colors.surfaceContainer }}>
-                  <TextInput className="flex-1 font-inter-400 text-textPrimary" style={{ fontSize: 14 }} placeholder="400001" placeholderTextColor={colors.secondary} value={pincode} onChangeText={(t) => setPincode(t.replace(/[^0-9]/g, '').slice(0, 6))} keyboardType="number-pad" />
+                <View className="flex-1">
+                  <Text className="font-inter-500 text-textSecondary mb-2" style={{ fontSize: 13, lineHeight: 18 }}>
+                    Pincode · Required
+                  </Text>
+                  <View className="flex-row items-center px-4" style={{ height: 52, borderRadius: 16, backgroundColor: colors.surfaceContainer, borderWidth: showErr('shopPin') ? 1 : 0, borderColor: colors.error }}>
+                    <TextInput className="flex-1 font-inter-400 text-textPrimary" style={{ fontSize: 14 }} placeholder="400001" placeholderTextColor={colors.secondary} value={pincode} onChangeText={(t) => { setPincode(t.replace(/[^0-9]/g, '').slice(0, 6)); clearFieldError('shopPin'); }} keyboardType="number-pad" />
+                  </View>
+                  <FieldErr msg={showErr('shopPin')} />
                 </View>
               </View>
             </View>
+            <View className="mb-5" />
 
             <Text className="font-inter-500 text-textSecondary mb-2" style={{ fontSize: 13, lineHeight: 18 }}>
               Store logo (optional)
@@ -1348,31 +1404,34 @@ export default function BecomeSellerScreen() {
             </TouchableOpacity>
 
             {sellerType === 'business' && (
-              <>
+              <View onLayout={(e) => { sectionY.current.sec_shopbiz = e.nativeEvent.layout.y; }}>
                 <Text className="font-inter-500 text-textSecondary mb-2" style={{ fontSize: 13, lineHeight: 18 }}>
-                  GSTIN
+                  GSTIN · Required
                 </Text>
-                <View className="flex-row items-center px-4 mb-5" style={{ height: 52, borderRadius: 16, backgroundColor: colors.surfaceContainer }}>
-                  <TextInput className="flex-1 font-inter-400 text-textPrimary" style={{ fontSize: 14 }} placeholder="27ABCDE1234F1Z5" placeholderTextColor={colors.secondary} value={gstin} onChangeText={(t) => setGstin(t.toUpperCase().replace(/[^0-9A-Z]/g, '').slice(0, 15))} autoCapitalize="characters" />
+                <View className="flex-row items-center px-4 mb-1" style={{ height: 52, borderRadius: 16, backgroundColor: colors.surfaceContainer, borderWidth: showErr('shopGstin') ? 1 : 0, borderColor: colors.error }}>
+                  <TextInput className="flex-1 font-inter-400 text-textPrimary" style={{ fontSize: 14 }} placeholder="27ABCDE1234F1Z5" placeholderTextColor={colors.secondary} value={gstin} onChangeText={(t) => { setGstin(t.toUpperCase().replace(/[^0-9A-Z]/g, '').slice(0, 15)); clearFieldError('shopGstin'); }} autoCapitalize="characters" />
                 </View>
+                <FieldErr msg={showErr('shopGstin')} />
 
                 <Text className="font-inter-500 text-textSecondary mb-2" style={{ fontSize: 13, lineHeight: 18 }}>
-                  PAN
+                  PAN · Required
                 </Text>
-                <View className="flex-row items-center px-4 mb-5" style={{ height: 52, borderRadius: 16, backgroundColor: colors.surfaceContainer }}>
-                  <TextInput className="flex-1 font-inter-400 text-textPrimary" style={{ fontSize: 14 }} placeholder="ABCDE1234F" placeholderTextColor={colors.secondary} value={pan} onChangeText={(t) => setPan(t.toUpperCase().replace(/[^0-9A-Z]/g, '').slice(0, 10))} autoCapitalize="characters" />
+                <View className="flex-row items-center px-4 mb-1" style={{ height: 52, borderRadius: 16, backgroundColor: colors.surfaceContainer, borderWidth: showErr('shopPan') ? 1 : 0, borderColor: colors.error }}>
+                  <TextInput className="flex-1 font-inter-400 text-textPrimary" style={{ fontSize: 14 }} placeholder="ABCDE1234F" placeholderTextColor={colors.secondary} value={pan} onChangeText={(t) => { setPan(t.toUpperCase().replace(/[^0-9A-Z]/g, '').slice(0, 10)); clearFieldError('shopPan'); }} autoCapitalize="characters" />
                 </View>
+                <FieldErr msg={showErr('shopPan')} />
 
                 <Text className="font-inter-500 text-textSecondary mb-2" style={{ fontSize: 13, lineHeight: 18 }}>
-                  Bank account (for payouts, required)
+                  Bank account (for payouts) · Required
                 </Text>
-                <View className="flex-row items-center px-4" style={{ height: 52, borderRadius: 16, backgroundColor: colors.surfaceContainer }}>
-                  <TextInput className="flex-1 font-inter-400 text-textPrimary" style={{ fontSize: 14 }} placeholder="Account number" placeholderTextColor={colors.secondary} value={bankAccount} onChangeText={(t) => setBankAccount(t.replace(/[^0-9]/g, '').slice(0, 18))} keyboardType="number-pad" />
+                <View className="flex-row items-center px-4" style={{ height: 52, borderRadius: 16, backgroundColor: colors.surfaceContainer, borderWidth: showErr('shopBank') ? 1 : 0, borderColor: colors.error }}>
+                  <TextInput className="flex-1 font-inter-400 text-textPrimary" style={{ fontSize: 14 }} placeholder="Account number" placeholderTextColor={colors.secondary} value={bankAccount} onChangeText={(t) => { setBankAccount(t.replace(/[^0-9]/g, '').slice(0, 18)); clearFieldError('shopBank'); }} keyboardType="number-pad" />
                 </View>
+                <FieldErr msg={showErr('shopBank')} />
                 <Text className="font-inter-400 text-textSecondary mt-1 mb-5" style={{ fontSize: 11, lineHeight: 15 }}>
                   9–18 digits. Payouts verify this account before the first transfer — a wrong number fails honestly there, not silently.
                 </Text>
-              </>
+              </View>
             )}
 
             <Text className="font-inter-600 text-textPrimary mb-1" style={{ fontSize: 15, lineHeight: 20 }}>
@@ -1382,14 +1441,22 @@ export default function BecomeSellerScreen() {
               Flat 8% commission per sale. Promotions and ad boosts are pay-per-use from the wallet — no subscriptions, ever.
             </Text>
 
-            <TouchableOpacity className="flex-row items-start mb-2" onPress={() => setAgreeTerms(!agreeTerms)}>
-              <View className="w-5 h-5 rounded-md items-center justify-center mt-0.5" style={{ backgroundColor: agreeTerms ? colors.primaryContainer : colors.surfaceContainer }}>
-                {agreeTerms && <CheckIcon size={13} color={colors.onPrimary} />}
-              </View>
-              <Text className="font-inter-400 text-textSecondary flex-1 ml-2.5" style={{ fontSize: 12, lineHeight: 17 }}>
-                I agree to the Seller Terms — 8% commission per sale, pay-per-use promotions
-              </Text>
-            </TouchableOpacity>
+            <View onLayout={(e) => { sectionY.current.sec_feeterms = e.nativeEvent.layout.y; }}>
+              <TouchableOpacity className="flex-row items-start mb-2" onPress={() => { setAgreeTerms(!agreeTerms); clearFieldError('shopTerms'); }}>
+                <View className="w-5 h-5 rounded-md items-center justify-center mt-0.5" style={{ backgroundColor: agreeTerms ? colors.primaryContainer : colors.surfaceContainer, borderWidth: showErr('shopTerms') ? 1 : 0, borderColor: colors.error }}>
+                  {agreeTerms && <CheckIcon size={13} color={colors.onPrimary} />}
+                </View>
+                <View className="flex-1 ml-2.5">
+                  <Text className="font-inter-400 text-textSecondary" style={{ fontSize: 12, lineHeight: 17 }}>
+                    I agree to the Seller Terms — 8% commission per sale, pay-per-use promotions · Required
+                  </Text>
+                  <Text className="font-inter-600" style={{ fontSize: 11, lineHeight: 15, color: agreeTerms ? colors.primaryContainer : colors.error }}>
+                    {agreeTerms ? 'Agreed' : 'Not agreed yet — tap the box to agree'}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+              <FieldErr msg={showErr('shopTerms')} />
+            </View>
 
             <TouchableOpacity className="mt-4 self-start" onPress={() => setStep(1)}>
               <Text className="font-inter-500" style={{ fontSize: 13, lineHeight: 18, color: colors.primaryContainer }}>
@@ -1635,7 +1702,7 @@ export default function BecomeSellerScreen() {
 
             <MapLocationPicker value={storeLoc} onChange={setStoreLoc} />
 
-            <TouchableOpacity className="mt-5 self-start" onPress={() => setStep(2)}>
+            <TouchableOpacity className="mt-5 self-start" onPress={() => setStep(3)}>
               <Text className="font-inter-500" style={{ fontSize: 13, lineHeight: 18, color: colors.primaryContainer }}>
                 ← Back
               </Text>
@@ -1701,16 +1768,33 @@ export default function BecomeSellerScreen() {
             </View>
 
             <View className="mt-6" style={{ gap: 10 }}>
-              <TouchableOpacity className="h-14 rounded-figma-16 items-center justify-center" style={{ backgroundColor: colors.primaryContainer }} onPress={() => router.replace('/seller-dashboard-hub')}>
-                <Text className="font-inter-600 text-white" style={{ fontSize: 15, lineHeight: 20 }}>
-                  Go to My Store
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity className="h-14 rounded-figma-16 items-center justify-center" style={{ backgroundColor: colors.surfaceContainer }} onPress={() => router.replace('/(tabs)/create')}>
-                <Text className="font-inter-600 text-textPrimary" style={{ fontSize: 15, lineHeight: 20 }}>
-                  Create first post
-                </Text>
-              </TouchableOpacity>
+              {isApprovedSeller(user) ? (
+                <>
+                  <TouchableOpacity className="h-14 rounded-figma-16 items-center justify-center" style={{ backgroundColor: colors.primaryContainer }} onPress={() => router.replace('/seller-dashboard-hub')}>
+                    <Text className="font-inter-600 text-white" style={{ fontSize: 15, lineHeight: 20 }}>
+                      Go to My Store
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity className="h-14 rounded-figma-16 items-center justify-center" style={{ backgroundColor: colors.surfaceContainer }} onPress={() => router.replace('/(tabs)/create')}>
+                    <Text className="font-inter-600 text-textPrimary" style={{ fontSize: 15, lineHeight: 20 }}>
+                      Create first post
+                    </Text>
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <>
+                  <TouchableOpacity className="h-14 rounded-figma-16 items-center justify-center" style={{ backgroundColor: colors.primaryContainer }} onPress={() => setStep(1)}>
+                    <Text className="font-inter-600 text-white" style={{ fontSize: 15, lineHeight: 20 }}>
+                      Track application status
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity className="h-14 rounded-figma-16 items-center justify-center" style={{ backgroundColor: colors.surfaceContainer }} onPress={() => router.replace('/(tabs)/feed')}>
+                    <Text className="font-inter-600 text-textPrimary" style={{ fontSize: 15, lineHeight: 20 }}>
+                      Continue shopping
+                    </Text>
+                  </TouchableOpacity>
+                </>
+              )}
             </View>
           </>
         )}

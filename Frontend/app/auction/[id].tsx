@@ -122,8 +122,9 @@ export default function AuctionDetailScreen() {
   // Server-resolved top bid (winner truth across devices). Null = unfetched
   // or offline — the local thread is the fallback, never the verdict.
   const [serverTop, setServerTop] = useState<{ bidder: string; amount: number; iAmWinning: boolean } | null>(null);
-  const { posts } = usePosts();
+  const { posts, updatePost } = usePosts();
   const { user } = useAuth();
+  const [relisting, setRelisting] = useState(false);
   // The auction photo IS the linked listing photo — resolved live so the
   // hammer price always shows the real item, never a stock photo.
   const listingPost = useMemo(
@@ -467,22 +468,56 @@ export default function AuctionDetailScreen() {
           {ended ? (
             <View
               className="mx-5 mt-4 px-5 py-4"
-              style={{ borderRadius: 16, backgroundColor: winnerBid?.you ? colors.primaryFixed : colors.errorContainer }}
+              style={{ borderRadius: 16, backgroundColor: winnerBid?.you && !auction.localOnly ? colors.primaryFixed : colors.errorContainer }}
             >
               <Text
                 className="font-inter-700"
-                style={{ fontSize: 16, lineHeight: 22, color: winnerBid?.you ? colors.onPrimaryFixedVariant : colors.onErrorContainer }}
+                style={{ fontSize: 16, lineHeight: 22, color: winnerBid?.you && !auction.localOnly ? colors.onPrimaryFixedVariant : colors.onErrorContainer }}
               >
-                {winnerBid?.you ? 'You won!' : 'Auction ended'}
+                {auction.localOnly ? 'Not published — no winner' : winnerBid?.you ? 'You won!' : 'Auction ended'}
               </Text>
               <Text
                 className="font-inter-400 mt-0.5"
-                style={{ fontSize: 13, lineHeight: 18, color: winnerBid?.you ? colors.onPrimaryFixedVariant : colors.onErrorContainer }}
+                style={{ fontSize: 13, lineHeight: 18, color: winnerBid?.you && !auction.localOnly ? colors.onPrimaryFixedVariant : colors.onErrorContainer }}
               >
-                {winnerBid?.you
-                  ? `Won at ${formatPrice(winnerBid.amount)}`
-                  : `Won by ${winnerBid?.bidder ?? '—'} at ${winnerBid ? formatPrice(winnerBid.amount) : '—'}`}
+                {auction.localOnly
+                  ? 'This lot never reached the Auction House, so no bids here could settle.'
+                  : winnerBid?.you
+                    ? `Won at ${formatPrice(winnerBid.amount)}`
+                    : `Won by ${winnerBid?.bidder ?? '—'} at ${winnerBid ? formatPrice(winnerBid.amount) : '—'}`}
               </Text>
+            </View>
+          ) : null}
+
+          {/* Relist: the hammer hid the backing listing from direct sale — the
+              seller gets it back with one tap instead of a stranded Hidden row.
+              Offered whenever the linked row isn't provably live (hidden OR
+              cold cache), never for sold rows. Server vocab is published. */}
+          {ended && isOwnAuction && !(listingPost as any)?.isSold && (listingPost as any)?.status !== 'published' ? (
+            <View className="mx-5 mt-3 px-4 py-3 rounded-figma-12" style={{ backgroundColor: colors.surfaceContainer }}>
+              <Text className="font-inter-500 text-textSecondary" style={{ fontSize: 12, lineHeight: 16 }}>
+                The linked listing is still hidden from direct sale after the hammer. Relist it to sell normally again.
+              </Text>
+              <TouchableOpacity
+                className="mt-2 h-11 items-center justify-center"
+                style={{ borderRadius: 12, backgroundColor: colors.primaryContainer, opacity: relisting ? 0.6 : 1 }}
+                disabled={relisting}
+                onPress={() => {
+                  if (!auction || relisting) return;
+                  setRelisting(true);
+                  updatePost(auction.imageKey, { status: 'published' } as any)
+                    .then((ok) => {
+                      if (ok === false) Alert.alert('Could not relist', 'The server refused — try again from Listings.');
+                      else Alert.alert('Relisted', 'Your listing is visible for direct sale again.');
+                    })
+                    .catch(() => Alert.alert('Could not relist', 'Check your connection and try again from Listings.'))
+                    .finally(() => setRelisting(false));
+                }}
+              >
+                <Text className="font-inter-600" style={{ fontSize: 14, lineHeight: 20, color: colors.onPrimary }}>
+                  {relisting ? 'Relisting…' : 'Relist item for direct sale'}
+                </Text>
+              </TouchableOpacity>
             </View>
           ) : null}
 

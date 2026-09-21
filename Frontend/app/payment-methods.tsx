@@ -40,10 +40,16 @@ async function getPaymentKey(): Promise<string> {
 
 // Industry-standard honesty: only offer rails the platform actually settles.
 // Server truth: wallet = atomic server debit; COD = settles on delivery.
-// UPI/Card have NO backend settlement path yet - offering them would be fake
-// rails, so they stay OUT until wired (UPI intent + KYC'd merchant ID).
+// UPI/Card have NO backend settlement path yet - offering them as selectable
+// would be fake rails, so UPI renders as an explicitly DISABLED row with the
+// reason (no dead tap: tapping explains instead of navigating). Server
+// allow-list (wallet/COD) stays fail-closed until a gateway webhook exists.
+// Pincode SLA: DeliveryZone has no PIN-prefix columns yet (name/region only),
+// so no invented PIN->zone mapping here — the checkout PIN gate + honest ETA
+// copy remain the serviceability surface until that model lands (P0-3 NOTE).
 export const PAYMENT_METHODS: PaymentMethod[] = [
   { id: 'cod', label: 'Cash on Delivery', detail: 'Pay at your doorstep' },
+  { id: 'upi-coming-soon', label: 'UPI (coming soon)', detail: 'No settlement path yet — wallet or COD for now' },
 ];
 
 export async function getSelectedPayment(username?: string | null): Promise<PaymentMethod | null> {
@@ -105,6 +111,13 @@ export default function PaymentMethodsScreen() {
   }, [tokenSeq, retrySeq, sessionUsername]);
 
   const selectMethod = useCallback((method: PaymentMethod) => {
+    // UPI has no settlement path yet: never store it as the selection (the
+    // server allow-list would reject it at placement). Explain instead of a
+    // dead tap or a fake selectable rail.
+    if (method.id === 'upi-coming-soon') {
+      Alert.alert('UPI is coming soon', 'UPI has no settlement path yet. Pay with wallet or Cash on Delivery for now.');
+      return;
+    }
     // Numeric gate on the synced balance — never a formatted-string match.
     // Stale (unsynced) balances never false-block: the checkout re-gates on
     // live money at place time anyway.

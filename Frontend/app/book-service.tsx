@@ -85,8 +85,10 @@ export default function BookServiceScreen() {
   // Packages come from the REAL listing price (server truth) — the old
   // hardcoded Starter/Premium/Business tiers charged invented prices for a
   // fake 'service-photo-shoot' id the server always rejected (dead flow).
-  const [pkgs, setPkgs] = useState<{ name: string; price: number }[]>(servicePackages);
-  const [selectedPackage, setSelectedPackage] = useState(servicePackages[1]);
+  // Init EMPTY with a loading skeleton: showing fake tiers first, even
+  // briefly on slow networks, is a trust violation on a pay screen.
+  const [pkgs, setPkgs] = useState<{ name: string; price: number }[]>([]);
+  const [selectedPackage, setSelectedPackage] = useState<{ name: string; price: number } | null>(null);
   const [listingLoading, setListingLoading] = useState(!!listingIdParam);
   const [listingGone, setListingGone] = useState(false);
   const [listingOwner, setListingOwner] = useState<string | null>(null);
@@ -142,7 +144,7 @@ export default function BookServiceScreen() {
   // server's seller binding as falsy — refuse instead of minting a stroker row.
   const bookingSeller = listingOwner || sellerUsernameParam || '';
   const ownerless = !!listingIdParam && !listingLoading && !listingGone && !bookingSeller;
-  const canBook = !!selectedDate && !!selectedTime && !placing && !listingLoading && !listingGone && !!listingIdParam && !!bookingSeller;
+  const canBook = !!selectedDate && !!selectedTime && !placing && !listingLoading && !listingGone && !!listingIdParam && !!bookingSeller && !!selectedPackage;
 
   useEffect(() => {
     setSellerRating(null);
@@ -173,7 +175,8 @@ export default function BookServiceScreen() {
   };
 
   const handleBook = async () => {
-    if (!selectedDate || !selectedTime || placing || !listingIdParam || listingGone || !bookingSeller) return;
+    const pkg = selectedPackage;
+    if (!selectedDate || !selectedTime || placing || !listingIdParam || listingGone || !bookingSeller || !pkg) return;
     if (slotInPast(selectedTime)) {
       Alert.alert('Slot passed', 'That time already passed today — pick a later slot.');
       return;
@@ -181,7 +184,7 @@ export default function BookServiceScreen() {
     // Wallet pre-check (checkout parity): bookings debit the wallet on the
     // server, so a ₹0 wallet must hear "top up" BEFORE the confirm screen —
     // not a live tracking page for a doomed order that later syncFails.
-    const price = Math.round(selectedPackage.price);
+    const price = Math.round(pkg.price);
     await syncWalletFromServer().catch(() => {});
     const wallet = await getWallet().catch(() => null);
     if (wallet && wallet.balance < price) {
@@ -200,11 +203,11 @@ export default function BookServiceScreen() {
     // + slot BEFORE anything moves.
     Alert.alert(
       'Confirm booking',
-      `${serviceTitle}\n${summaryLine}\n${formatPrice(Math.round(selectedPackage.price))} · pays from Wallet`,
+      `${serviceTitle}\n${summaryLine}\n${formatPrice(Math.round(pkg.price))} · pays from Wallet`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: `Pay ${formatPrice(Math.round(selectedPackage.price))}`,
+          text: `Pay ${formatPrice(Math.round(pkg.price))}`,
           onPress: () => {
             setPlacing(true);
             try {
@@ -214,7 +217,7 @@ export default function BookServiceScreen() {
                     listingId: listingIdParam,
                     type: 'service',
                     name: serviceTitle,
-                    price: Math.round(selectedPackage.price),
+                    price: Math.round(pkg.price),
                     quantity: 1,
                     seller: sellerNameParam || 'Service Provider',
                     sellerUsername: bookingSeller,
@@ -225,7 +228,10 @@ export default function BookServiceScreen() {
                 { bookingDate: toISODate(selectedDate), bookingTime: selectedTime, deliveryFee: 0 }
               );
               if (order) {
-                router.push(`/track-order?id=${order.id}`);
+                // Order detail (not live-track): the server ack lands async —
+                // detail shows syncPending + syncFailed retry, track assumes a
+                // held server row and strands a ghost timeline on reject.
+                router.push(`/order/${order.id}`);
               }
             } catch {
               Alert.alert("Couldn't place booking", 'Something went wrong. Please try again.');
@@ -298,19 +304,26 @@ export default function BookServiceScreen() {
 
           {!listingGone && (
           <View className="flex-row gap-3 mb-6">
-            {pkgs.map((pkg) => {
-              const active = selectedPackage.name === pkg.name;
-              return (
-                <TouchableOpacity
-                  key={pkg.name}
-                  className={`flex-1 ${active ? 'bg-primaryContainer' : 'bg-surfaceContainerLow'} rounded-figma-12 p-3 items-center`}
-                  onPress={() => setSelectedPackage(pkg)}
-                >
-                  <Text className={`text-figma-20 font-inter-700 ${active ? 'text-white' : 'text-textPrimary'}`}>{formatPrice(pkg.price)}</Text>
-                  <Text className={`text-figma-11 font-inter-400 ${active ? 'text-white/80' : 'text-textSecondary'}`}>{pkg.name}</Text>
-                </TouchableOpacity>
-              );
-            })}
+            {listingLoading ? (
+              <View className="flex-1 rounded-figma-12 p-3 items-center" style={{ backgroundColor: colors.surfaceContainerLow }}>
+                <ActivityIndicator size="small" color={colors.primary} />
+                <Text className="text-figma-11 font-inter-400 text-textSecondary mt-1">Loading price…</Text>
+              </View>
+            ) : (
+              pkgs.map((pkg) => {
+                const active = selectedPackage?.name === pkg.name;
+                return (
+                  <TouchableOpacity
+                    key={pkg.name}
+                    className={`flex-1 ${active ? 'bg-primaryContainer' : 'bg-surfaceContainerLow'} rounded-figma-12 p-3 items-center`}
+                    onPress={() => setSelectedPackage(pkg)}
+                  >
+                    <Text className={`text-figma-20 font-inter-700 ${active ? 'text-white' : 'text-textPrimary'}`}>{formatPrice(pkg.price)}</Text>
+                    <Text className={`text-figma-11 font-inter-400 ${active ? 'text-white/80' : 'text-textSecondary'}`}>{pkg.name}</Text>
+                  </TouchableOpacity>
+                );
+              })
+            )}
           </View>
           )}
 
@@ -401,7 +414,7 @@ export default function BookServiceScreen() {
             <ActivityIndicator color={colors.onPrimary} />
           ) : (
             <Text className={`text-figma-16 font-inter-600 ${canBook ? 'text-white' : 'text-textTertiary'}`}>
-              Book Now · {formatPrice(selectedPackage.price)}
+              {selectedPackage ? `Book Now · ${formatPrice(selectedPackage.price)}` : 'Loading price…'}
             </Text>
           )}
         </TouchableOpacity>

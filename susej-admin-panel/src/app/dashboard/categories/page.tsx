@@ -203,6 +203,10 @@ export default function CategoriesPage() {
       id: `cat_${Date.now()}`,
       name: `${cat.name} (Copy)`,
       slug: `${cat.slug}-copy`,
+      // Duplicates start HIDDEN: a "(Copy)" name must never reach buyers
+      // before the manager renames + reactivates it.
+      status: "hidden",
+      featured: false,
       productCount: 0,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),

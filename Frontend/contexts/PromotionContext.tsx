@@ -18,6 +18,9 @@ export interface Promotion {
   sellerUsername: string;
   /** Target listing (featuredPost / hotDeal promos). */
   postId?: string;
+  /** Server purchase row id (adopted at buy time): end-early matches by
+      this, so listing-free rows (postId null) can deactivate too. */
+  serverId?: string;
   productTitle?: string;
   status: PromotionStatus;
   startsAt: number;
@@ -35,6 +38,7 @@ interface PromotionContextValue {
     postId?: string;
     productTitle?: string;
     sellerUsername: string;
+    serverId?: string;
   }) => Promotion | null;
   endPromotion: (id: string) => Promise<boolean>;
 }
@@ -89,8 +93,10 @@ export function PromotionProvider({ children }: { children: React.ReactNode }) {
               (p: Promotion) => p && !/^PRM-100[1-4]$/.test(String(p.id))
             );
             // Keep only promotions belonging to current user (safety when migrating).
-            const u = user?.username?.trim();
-            const owned = u ? real.filter((p: Promotion) => !p.sellerUsername || p.sellerUsername === u) : real;
+            // Ownerless legacy rows are dropped (never leak across accounts) and
+            // the match is case-insensitive like every other seller surface.
+            const u = user?.username?.trim().toLowerCase();
+            const owned = u ? real.filter((p: Promotion) => String(p.sellerUsername ?? '').trim().toLowerCase() === u) : real;
             setPromotions(
               owned.map((p: Promotion) =>
                 p && p.status === 'active' && p.endsAt && p.endsAt < now ? { ...p, status: 'expired' } : p
@@ -115,8 +121,8 @@ export function PromotionProvider({ children }: { children: React.ReactNode }) {
   }, [promotions, getKey]);
 
   const createPromotion = useCallback(
-    (input: { packageId: string; postId?: string; productTitle?: string; sellerUsername: string }): Promotion | null => {
-      if (input.sellerUsername !== user?.username) return null;
+    (input: { packageId: string; postId?: string; productTitle?: string; sellerUsername: string; serverId?: string }): Promotion | null => {
+      if (String(input.sellerUsername ?? '').trim().toLowerCase() !== String(user?.username ?? '').trim().toLowerCase()) return null;
       const pkg = getPackage(input.packageId);
       if (!pkg) return null;
       const now = Date.now();
@@ -129,6 +135,7 @@ export function PromotionProvider({ children }: { children: React.ReactNode }) {
         durationDays: pkg.days,
         sellerUsername: input.sellerUsername,
         postId: input.postId,
+        serverId: input.serverId,
         productTitle: input.productTitle,
         status: 'active',
         startsAt: now,
@@ -143,13 +150,18 @@ export function PromotionProvider({ children }: { children: React.ReactNode }) {
   );
 
   const endPromotion = useCallback((id: string): Promise<boolean> => {
-    const postId = promotionsRef.current.find((p) => p.id === id)?.postId;
+    // Prefer the server purchase id: listing-free rows have no postId, and
+    // the server matches by id first — the postId fallback only ever saved
+    // listing promos.
+    const mirror = promotionsRef.current.find((p) => p.id === id);
+    const serverId = mirror?.serverId;
+    const postId = mirror?.postId;
     setPromotions((prev) => prev.map((p) => (p.id === id ? { ...p, status: 'expired' } : p)));
     // Server owns billing time: ending must deactivate the paid placement
     // there too. Roll back the local mirror on refusal/offline so the two
     // never disagree about what is still running (and billing). Returns the
     // ack so screens refresh server truth AFTER the deactivation lands.
-    return serverApi.endPromotion(id, postId).then((res) => {
+    return serverApi.endPromotion(serverId ?? id, postId).then((res) => {
       if (!res.ok) {
         setPromotions((prev) => prev.map((p) => (p.id === id ? { ...p, status: 'active' } : p)));
       }

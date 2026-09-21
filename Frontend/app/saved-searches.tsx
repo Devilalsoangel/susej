@@ -209,7 +209,7 @@ export default function SavedSearchesScreen() {
               </Text>
             </View>
             <Text className="font-inter-400 text-textSecondary px-1 mb-3" style={{ fontSize: 12, lineHeight: 16 }}>
-              Tap a search to run it. Price-drop alerts are not available yet.
+              Tap a search to run it. Price-drop alerts fire once per matching deal (local notification).
             </Text>
           </View>
         }

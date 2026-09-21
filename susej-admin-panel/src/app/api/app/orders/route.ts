@@ -246,6 +246,12 @@ export async function POST(req: NextRequest) {
   }
   const auth = await getAppUser(req);
   if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  // Per-account second bucket (same in-memory, per-instance limits): rotating
+  // IPs no longer multiplies the 20/min money cap per account. A shared store
+  // (Upstash/Neon) is still tracked for cross-isolate enforcement.
+  if (!checkWriteRate(`orders-post-user:${auth.user.username!.toLowerCase()}`, 20)) {
+    return NextResponse.json({ error: "Too many requests — slow down" }, { status: 429 });
+  }
   const prisma = await getPrisma();
   if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
 

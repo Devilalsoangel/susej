@@ -11,6 +11,22 @@ from typing import Any, Dict
 
 SECRET_KEY = os.getenv("UNIHUB_TOKEN_SECRET")
 if not SECRET_KEY:
+    # Fail loud in production (mirrors susej-admin-panel/src/lib/auth.ts):
+    # an ephemeral per-boot secret would silently invalidate every session on
+    # restart / across serverless isolates. Local dev + tests keep the loud
+    # warning + ephemeral secret; production refuses to boot without the env.
+    _is_prod = (
+        os.getenv("NODE_ENV") == "production"
+        or os.getenv("ENV") == "production"
+        or os.getenv("UNIHUB_ENV") == "production"
+        or bool(os.getenv("RAILWAY_ENVIRONMENT"))
+    )
+    if _is_prod:
+        raise RuntimeError(
+            "[auth_tokens] UNIHUB_TOKEN_SECRET is not set in production — "
+            "refusing to boot with an ephemeral secret. Set UNIHUB_TOKEN_SECRET "
+            "and redeploy."
+        )
     # Dev-safe fallback: an ephemeral per-boot secret (never a hardcoded value).
     # Tokens signed with it are invalidated on every restart. Production must
     # set UNIHUB_TOKEN_SECRET.

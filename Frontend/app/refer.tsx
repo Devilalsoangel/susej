@@ -10,7 +10,18 @@ import { useAuth } from '../contexts/AuthContext';
 
 const REFERRALS_KEY_BASE = '@susej_referrals';
 
-const REFER_CODE = 'SUSEJ100';
+// Per-user referral code (deterministic from username): one global string
+// meant every share was unattributable. Server-side attribution still ships
+// separately — until then the code is distinct per user and rewards stay
+// labeled coming-soon, never promised.
+function referralCodeFor(username?: string | null): string {
+  const u = (username ?? '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '') || 'GUEST';
+  let h = 0;
+  for (let i = 0; i < u.length; i++) h = (h * 31 + u.charCodeAt(i)) >>> 0;
+  return `SUSEJ-${u.slice(0, 4)}${(h % 46656).toString(36).toUpperCase().padStart(3, '0')}`;
+}
+
+// (Legacy global code retired: every user now gets a distinct code above.)
 
 interface Referral {
   id: string;
@@ -21,7 +32,7 @@ interface Referral {
 }
 
 const STEPS = [
-  { title: 'Share your code', detail: 'Send SUSEJ100 to a friend on WhatsApp or anywhere else.' },
+  { title: 'Share your code', detail: 'Send your personal code above to a friend on WhatsApp or anywhere else.' },
   { title: 'Friend joins & buys', detail: 'They sign up with susej and place their first order.' },
   { title: 'Rewards are on the way', detail: 'Referral rewards are coming soon — your code is ready to share today.' },
 ];
@@ -110,8 +121,9 @@ export default function ReferScreen() {
   }, [referrals, loaded, getKey]);
 
   // No clipboard dependency installed - share sheet is the real system action.
+  const myCode = referralCodeFor(user?.username);
   const handleShareCode = () => {
-    Share.share({ message: REFER_CODE })
+    Share.share({ message: myCode })
       .then((res) => {
         if (res.action !== 'sharedAction' && res.action !== 'dismissedAction') return;
         setCopied(true);
@@ -123,8 +135,8 @@ export default function ReferScreen() {
   const handleShare = (channel: 'whatsapp' | 'generic') => {
     const message =
       channel === 'whatsapp'
-        ? `Join me on susej — India's social marketplace! Use my code ${REFER_CODE}.`
-        : `Check out susej — shop, sell and socialise. Use my code ${REFER_CODE} when you sign up.`;
+        ? `Join me on susej — India's social marketplace! Use my code ${myCode}.`
+        : `Check out susej — shop, sell and socialise. Use my code ${myCode} when you sign up.`;
     Share.share({ message }).catch(() => {});
   };
 
@@ -201,7 +213,7 @@ export default function ReferScreen() {
                       Your referral code
                     </Text>
                     <Text className="font-inter-700 mt-0.5" style={{ fontSize: 20, lineHeight: 24, letterSpacing: 1, color: colors.textPrimary }}>
-                      {REFER_CODE}
+                      {myCode}
                     </Text>
                   </View>
                   {copied ? (
@@ -265,7 +277,7 @@ export default function ReferScreen() {
               </View>
 
               <Text className="font-inter-700 mt-6 mb-2" style={{ fontSize: 16, lineHeight: 24, color: colors.textPrimary }}>
-                Referral history
+                Referral history (this device)
               </Text>
             </View>
           }

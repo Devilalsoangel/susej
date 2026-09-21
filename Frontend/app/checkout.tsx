@@ -171,9 +171,14 @@ export default function CheckoutScreen() {
     ? offerLiveFeeType
     : hasOnlyServices ? 'service' : hasFood ? 'food_item' : 'product';
   // Component-scope (used by the preview lines AND the place-time reconfirm
-  // above — a local const there was a TDZ crash).
+  // above — a local const there was a TDZ crash). Fresh revalidation wins:
+  // the passed live type (post-edit truth) beats mount-state, so a listing
+  // type edit between mount and placement never sends a stale fee that 400s.
   const feeForPreview = (t: string | undefined): number => {
-    if (offerMode && !offerTypeGiven && offerLiveFeeType) t = offerLiveFeeType;
+    if (offerMode && !offerTypeGiven) {
+      if (t) return t === 'service' ? 0 : t === 'food_item' ? DELIVERY_FEES.food_item : DELIVERY_FEES.product;
+      if (offerLiveFeeType) t = offerLiveFeeType;
+    }
     return t === 'service' ? 0 : t === 'food_item' ? DELIVERY_FEES.food_item : DELIVERY_FEES.product;
   };
   const rawDelivery = cart.length > 0
@@ -213,15 +218,17 @@ export default function CheckoutScreen() {
         return;
       }
       // Preview mirrors the SERVER settlement (orders route): flat/fixed =
-      // rupees off, percent/percentage = subtotal %, free_delivery = fee off.
+      // rupees off, percent/percentage = subtotal % CAPPED AT 90 (server
+      // clamps min(value,90)), free_delivery = fee off.
       // Anything else previews 0 (server is truth at placement). Stored face
       // amount never exceeds what the server honors (base−1).
       const previewBase = Math.round(subtotal) + Math.round(delivery);
+      const pctValue = Math.min(Number(found.value) || 0, 90);
       const rawAmount =
         found.type === 'flat' || found.type === 'fixed'
           ? found.value
           : found.type === 'percent' || found.type === 'percentage'
-            ? Math.max(0, Math.round(((subtotal + delivery) * found.value) / 100))
+            ? Math.max(0, Math.round(((subtotal + delivery) * pctValue) / 100))
             : 0;
       const promo: AppliedPromo = {
         code: found.code,

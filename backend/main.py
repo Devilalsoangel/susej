@@ -766,6 +766,7 @@ class Trade(BaseModel):
 class CheckoutRequest(BaseModel):
     address: str
     payment_intent_id: Optional[str] = None
+    cod: Optional[bool] = False
 
 
 class AmountRequest(BaseModel):
@@ -1028,7 +1029,10 @@ async def create_post(
     return {"success": True, "post_id": new_id}
 
 @app.post("/posts/{post_id}/like")
-async def like_post(post_id: int):
+async def like_post(post_id: int, current_user: Dict[str, Any] = Depends(get_current_user)):
+    # Authed only: unauthenticated like spam forged storefront trust.
+    # Per-user dedupe lives in the Next lane (PostLike @@unique); this legacy
+    # lane requires auth so bots cannot inflate unbounded.
     for post in POSTS:
         if post.id == post_id:
             post.likes += 1
@@ -1280,6 +1284,26 @@ async def get_cart(user_id: int, current_user: Dict[str, Any] = Depends(get_curr
 @app.post("/cart/{user_id}/add")
 async def add_to_cart(user_id: int, item: CartItem, current_user: Dict[str, Any] = Depends(get_current_user)):
     _require_user_access(user_id, current_user)
+    catalog = {p.id: p for p in _catalog_products()}
+    product = catalog.get(item.product_id)
+    if product is None:
+        # Never accept client price: reject unresolvable lines (Next lane
+        # parity — orders/route rejects instead of trusting client).
+        return {"error": "Product not found"}
+    else:
+        if int(item.seller_id) != int(product.seller_id):
+            return {"error": "Seller mismatch for product"}
+        if int(item.quantity) <= 0:
+            return {"error": "Quantity must be > 0"}
+        if int(item.quantity) > int(product.stock):
+            return {"error": "Insufficient stock"}
+        # Server-authoritative price: ignore client-supplied price (free-order guard).
+        item = CartItem(
+            product_id=item.product_id,
+            seller_id=product.seller_id,
+            quantity=int(item.quantity),
+            price=float(product.price),
+        )
     if user_id not in CART:
         CART[user_id] = []
     CART[user_id].append(item)
@@ -1313,8 +1337,35 @@ async def checkout(
     _require_user_access(user_id, current_user)
     if user_id not in CART or not CART[user_id]:
         return {"error": "Cart is empty"}
-    
-    total = sum(item.quantity * item.price for item in CART[user_id])
+
+    # Silence no longer means free: an explicit payment intent or COD flag is
+    # required. Server recomputes the total from the catalog (never the stored
+    # client-supplied cart prices) so price spoofing cannot mint free orders.
+    is_cod = bool(getattr(payload, "cod", False))
+    if not payload.payment_intent_id and not is_cod:
+        return {"error": "Payment required: provide payment_intent_id or cod=true"}
+
+    catalog = {p.id: p for p in _catalog_products()}
+    repriced: List[CartItem] = []
+    for line in CART[user_id]:
+        product = catalog.get(line.product_id)
+        if product is None:
+            # No catalog truth: reject the line instead of carrying a
+            # client-supplied price (free-order guard, Next lane parity).
+            return {"error": f"Product {line.product_id} not found"}
+        if int(line.quantity) <= 0:
+            return {"error": "Invalid quantity"}
+        if int(line.quantity) > int(product.stock):
+            return {"error": f"Insufficient stock for {product.name}"}
+        repriced.append(
+            CartItem(
+                product_id=product.id,
+                seller_id=product.seller_id,
+                quantity=int(line.quantity),
+                price=float(product.price),
+            )
+        )
+    total = sum(item.quantity * item.price for item in repriced)
     payment_status = "not_required"
     if payload.payment_intent_id:
         matched = next((p for p in PAYMENT_INTENTS if p["intent_id"] == payload.payment_intent_id), None)
@@ -1332,7 +1383,7 @@ async def checkout(
     order = Order(
         id=order_id,
         user_id=user_id,
-        items=CART[user_id],
+        items=repriced,
         total_price=total,
         shipping_address=payload.address,
         status=OrderStatus.PENDING,
@@ -1365,9 +1416,13 @@ async def get_order(user_id: int, order_id: int, current_user: Dict[str, Any] = 
     return {"error": "Order not found"}
 
 @app.post("/orders/{order_id}/cancel")
-async def cancel_order(order_id: int):
+async def cancel_order(order_id: int, current_user: Dict[str, Any] = Depends(get_current_user)):
+    # Ownership-checked: any-caller cancel of anyone's PENDING order is closed.
+    me = int(current_user["id"])
     for order in ORDERS:
         if order.id == order_id and order.status == OrderStatus.PENDING:
+            if int(order.user_id) != me:
+                raise HTTPException(status_code=403, detail="Forbidden: not your order.")
             order.status = OrderStatus.CANCELLED
             _persist_state(STATE_KEYS["orders"], ORDERS)
             return {"success": True, "message": "Order cancelled"}

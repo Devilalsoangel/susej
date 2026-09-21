@@ -258,6 +258,14 @@ export default function SellerDetailPage({ params }: { params: Promise<{ id: str
     const prev = seller;
     if (!prev) return;
     const docs = prev.documents ?? [];
+    // Industry-standard evidence gate: approval with zero submitted documents
+    // would certify nothing. Request documents instead — the button stays
+    // honest about what approval means.
+    if (docs.length === 0) {
+      const { toast } = await import("@/components/ui/toast");
+      toast.error("No documents submitted yet — request documents first, approval needs evidence.");
+      return;
+    }
     setSeller({ ...prev, kycStatus: "approved", gstStatus: "verified", documents: docs.map((d) => ({ ...d, verified: true })) });
     try {
       await apiPatch("sellers", prev.id, { kycStatus: "approved", gstStatus: "verified" });

@@ -199,7 +199,7 @@ export function sellerNetForOrders(
     .filter((o) => o.status === 'delivered' && o.paymentStatus !== 'refunded' && (allowFrozen || !o.disputeFrozen))
     .reduce((sum, o) => {
       const net = o.items.reduce((t, i) => {
-        const qty = Math.max(1, Math.round(Number(i.quantity ?? 1)));
+        const qty = Math.max(0, Math.round(Number(i.quantity ?? 1)));
         const unitNet = Number(i.netPrice ?? i.price ?? 0);
         if (typeof i.commission === 'number' && Number.isFinite(i.commission)) {
           return t + Math.max(0, unitNet * qty - Math.max(0, Math.round(i.commission)));

@@ -62,7 +62,7 @@ export default function SettlementsPage() {
       id: s.id,
       sellerName: s.partyName,
       orderId: s.orderId,
-      gross: s.direction === "out" ? s.amount + (feeMap.get(s.orderId) ?? 0) : s.amount,
+      gross: s.amount + (feeMap.get(s.orderId) ?? 0),
       commission: feeMap.get(s.orderId) ?? 0,
       net: s.amount,
       method: s.method,

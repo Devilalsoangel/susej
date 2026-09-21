@@ -55,6 +55,40 @@ function hashPassword(password: string): string {
   return `${salt}:${scryptSync(password, salt, 64).toString("hex")}`;
 }
 
+// Plus-address farm guard (no migration): test+1@gmail.com and
+// test+2@gmail.com are distinct verified rows, each minting 500. Canonicalize
+// (strip +tag; strip dots for gmail) and cap same-canonical accounts per week.
+function canonicalEmail(email: string): string {
+  const [local = "", domain = ""] = email.split("@");
+  const base = local.split("+")[0];
+  // googlemail.com IS gmail.com (same inbox) — one canonical domain.
+  const canonDomain = domain === "googlemail.com" ? "gmail.com" : domain;
+  const canonLocal = canonDomain === "gmail.com" ? base.replace(/\./g, "") : base;
+  return `${canonLocal}@${canonDomain}`;
+}
+// Returns the count, or -1 when the check itself fails — the register path
+// fails CLOSED on -1 (503 try-again): a DB hiccup must never mint money.
+async function canonicalFarmCount(prisma: any, canonical: string): Promise<number> {
+  const domain = canonical.split("@")[1] ?? "";
+  const weekAgo = new Date(Date.now() - 7 * 24 * 3600 * 1000);
+  try {
+    const rows = await prisma.user.findMany({
+      where: { email: { endsWith: `@${domain}` } },
+      select: { email: true, joinedAt: true },
+      orderBy: { joinedAt: "desc" },
+      take: 100,
+    });
+    return rows.filter(
+      (r: { email?: string | null; joinedAt?: Date | null }) =>
+        typeof r.email === "string" &&
+        canonicalEmail(r.email.trim().toLowerCase()) === canonical &&
+        r.joinedAt instanceof Date && r.joinedAt >= weekAgo
+    ).length;
+  } catch {
+    return -1;
+  }
+}
+
 function verifyPassword(password: string, stored: string): boolean {
   const [salt, hex] = stored.split(":");
   if (!salt || !hex) return false;
@@ -91,6 +125,16 @@ export async function POST(req: NextRequest) {
     if (name.length < 2) return NextResponse.json({ error: "Enter your full name" }, { status: 400 });
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) return NextResponse.json({ error: "An account with this email already exists. Sign in instead." }, { status: 409 });
+    // Plus-address farm gate: 2 same-canonical accounts per 7 days max
+    // (throttle, not a close — full close needs phone-proof bonus via
+    // account linking). Check failure fails closed (503, no mint).
+    const farmCount = await canonicalFarmCount(prisma, canonicalEmail(email));
+    if (farmCount < 0) {
+      return NextResponse.json({ error: "Could not verify — try again" }, { status: 503 });
+    }
+    if (farmCount >= 2) {
+      return NextResponse.json({ error: "Too many accounts from this mailbox — try again later" }, { status: 429 });
+    }
     // Username: derived from email local-part, retried until unique (a
     // single retry still 500s on the second collision).
     const base = email.split("@")[0].replace(/[^a-z0-9_]/g, "").slice(0, 20) || "user";

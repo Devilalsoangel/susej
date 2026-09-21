@@ -50,7 +50,7 @@ export default function BlockedScreen() {
           const parsed = JSON.parse(data);
           if (Array.isArray(parsed)) {
             const real = (parsed as BlockedUser[]).filter(
-              (b) => b && b.username && b.username !== 'hype_vault'
+              (b) => b && b.username
             );
             setBlocked(real);
           }
@@ -71,7 +71,7 @@ export default function BlockedScreen() {
   const unblock = (user: BlockedUser) => {
     Alert.alert(
       `Unblock @${user.username}?`,
-      'They will be able to see your profile, posts and message you again.',
+      'Their chats will reappear in your inbox on this device.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -111,13 +111,15 @@ export default function BlockedScreen() {
             No blocked users
           </Text>
           <Text className="font-inter-400 text-textSecondary mt-1 text-center" style={{ fontSize: 13, lineHeight: 18 }}>
-            Users you block won't be able to see your profile, posts or message you.
+            Users you block are hidden on this device — their chats disappear
+            from your inbox and you won't see their messages.
           </Text>
         </View>
       ) : (
         <ScrollView className="flex-1" contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 128 + insets.bottom }}>
           <Text className="font-inter-400 text-textSecondary mb-4" style={{ fontSize: 13, lineHeight: 18 }}>
-            Users you block can't see your profile, posts or send you messages.
+            Blocked users are hidden on this device — chats and messages from
+            them won't show up here.
           </Text>
           {blocked.map((user) => (
             <View

@@ -46,6 +46,38 @@ function recordGoogleMint(ip: string): void {
   }
 }
 
+// Plus-address farm guard (no migration): same canonicalization as the email
+// lane — distinct verified plus-variants of one Gmail mint 500 each.
+function canonicalEmail(email: string): string {
+  const [local = "", domain = ""] = email.split("@");
+  const base = local.split("+")[0];
+  // googlemail.com IS gmail.com (same inbox) — one canonical domain.
+  const canonDomain = domain === "googlemail.com" ? "gmail.com" : domain;
+  const canonLocal = canonDomain === "gmail.com" ? base.replace(/\./g, "") : base;
+  return `${canonLocal}@${canonDomain}`;
+}
+// -1 on check failure: mint paths fail CLOSED (503, no mint).
+async function canonicalFarmCount(prisma: any, canonical: string): Promise<number> {
+  const domain = canonical.split("@")[1] ?? "";
+  const weekAgo = new Date(Date.now() - 7 * 24 * 3600 * 1000);
+  try {
+    const rows = await prisma.user.findMany({
+      where: { email: { endsWith: `@${domain}` } },
+      select: { email: true, joinedAt: true },
+      orderBy: { joinedAt: "desc" },
+      take: 100,
+    });
+    return rows.filter(
+      (r: { email?: string | null; joinedAt?: Date | null }) =>
+        typeof r.email === "string" &&
+        canonicalEmail(r.email.trim().toLowerCase()) === canonical &&
+        r.joinedAt instanceof Date && r.joinedAt >= weekAgo
+    ).length;
+  } catch {
+    return -1;
+  }
+}
+
 export async function POST(req: NextRequest) {
   let body: { idToken?: string; devBypass?: boolean; email?: string; name?: string };
   try {
@@ -95,6 +127,15 @@ export async function POST(req: NextRequest) {
       }
       if (!googleMintAllowed(getClientIp(req))) {
         return NextResponse.json({ error: "Too many new accounts from this network — try again later" }, { status: 429 });
+      }
+      {
+        const farmCount = await canonicalFarmCount(prisma, canonicalEmail(email));
+        if (farmCount < 0) {
+          return NextResponse.json({ error: "Could not verify — try again" }, { status: 503 });
+        }
+        if (farmCount >= 2) {
+          return NextResponse.json({ error: "Too many accounts from this mailbox — try again later" }, { status: 429 });
+        }
       }
       try {
         user = await prisma.user.create({
@@ -264,6 +305,15 @@ export async function POST(req: NextRequest) {
     const avatar = typeof info.picture === "string" ? info.picture.trim() : null;
     if (!googleMintAllowed(getClientIp(req))) {
       return NextResponse.json({ error: "Too many new accounts from this network — try again later" }, { status: 429 });
+    }
+    {
+      const farmCount = await canonicalFarmCount(prisma, canonicalEmail(email));
+      if (farmCount < 0) {
+        return NextResponse.json({ error: "Could not verify — try again" }, { status: 503 });
+      }
+      if (farmCount >= 2) {
+        return NextResponse.json({ error: "Too many accounts from this mailbox — try again later" }, { status: 429 });
+      }
     }
     try {
       user = await prisma.user.create({

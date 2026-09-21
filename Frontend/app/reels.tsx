@@ -2,7 +2,7 @@ import { useState, useCallback, useRef } from 'react';
 import { View, Text, TouchableOpacity, ActivityIndicator, Animated, Share } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 import PagerView from 'react-native-pager-view';
-import { router, useFocusEffect } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -147,7 +147,10 @@ function UserReelCard({ reel }: { reel: MyReel }) {
 
   const owner = reel.owner?.trim() ? reel.owner.trim() : null;
   const handleShare = () => {
-    Share.share({ message: `Watch this reel on susej: susej.app/r/${reel.serverId ?? reel.id} — ${reel.caption}` }).catch(
+    // Deep-link to the existing screen with the reel id (susej://reels?id=):
+    // the old susej.app/r/<id> web route never existed, so every external
+    // share was a dead link. The screen jumps to the shared reel on open.
+    Share.share({ message: `Watch this reel on susej: susej://reels?id=${reel.serverId ?? reel.id} — ${reel.caption}` }).catch(
       () => {},
     );
   };
@@ -208,8 +211,10 @@ function UserReelCard({ reel }: { reel: MyReel }) {
 
 export default function ReelsScreen() {
   const insets = useSafeAreaInsets();
+  const params = useLocalSearchParams<{ id?: string }>();
   const [myReels, setMyReels] = useState<MyReel[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const pagerRef = useRef<{ setPage?: (index: number) => void } | null>(null);
   // Counted watches this visit (reset per focus): one increment per reel.
   const countedRefs = useRef<Set<string>>(new Set());
   // ROLE-BASED UI: reel publishing is seller-only; buyers watch reels.
@@ -258,8 +263,16 @@ export default function ReelsScreen() {
         if (!active) return;
         const seen = new Set(server.map((r) => r.serverId));
         const pending = local.filter((r) => !r.serverId || !seen.has(r.serverId));
-        setMyReels([...server, ...pending].slice(0, 50));
+        const rows = [...server, ...pending].slice(0, 50);
+        setMyReels(rows);
         setLoaded(true);
+        // Shared-reel deep link: jump the pager to the shared reel once rows
+        // land (miss = first reel, never a blank screen).
+        const want = typeof params.id === 'string' ? params.id : '';
+        if (want) {
+          const idx = rows.findIndex((r) => r.serverId === want || r.id === want || r.id === `srv_${want}`);
+          pagerRef.current?.setPage?.(idx >= 0 ? idx : 0);
+        }
       })().catch(() => {
         if (active) {
           setMyReels([]);
@@ -310,6 +323,7 @@ export default function ReelsScreen() {
   return (
     <View className="flex-1" style={{ backgroundColor: colors.inverseSurface }}>
       <PagerView
+        ref={pagerRef as never}
         style={{ flex: 1 }}
         orientation="vertical"
         onPageSelected={(e) => {

@@ -23,6 +23,10 @@ export interface Dispute {
   /** Shared server row id (adopted after create) — lets every device and the
    *  detail screen resolve the same dispute under either id. */
   serverId?: string;
+  /** Offline outbox: true while the server create has not acked. Desk never
+   *  sees these rows until retry succeeds (orders parity). */
+  syncPending?: boolean;
+  syncFailed?: string;
   orderRef: string;
   reason: string;
   description: string;
@@ -202,11 +206,13 @@ export default function DisputesScreen() {
       status: 'open',
       timeline: [{ id: `t${now}`, author: 'you', text: `Raised a dispute: ${reason}.`, time: now }],
       createdAt: now,
+      syncPending: true,
     };
     // Optimistic local row first (instant UI), then the shared server row —
     // creations used to live on this device only: sellers, the platform and
     // the admin desk never saw them. Adopt the server id on success so later
-    // pulls merge instead of duplicating.
+    // pulls merge instead of duplicating. Offline rows stay syncPending with
+    // an explicit retry (orders outbox parity) — never silent local-only.
     setDisputes((prev) => [dispute, ...prev]);
     setShowForm(false);
     void import('../utils/serverApi').then(({ serverApi }) =>
@@ -214,15 +220,53 @@ export default function DisputesScreen() {
         .createDispute({ orderRef: dispute.orderRef, reason, description: description.trim() })
         .then((res) => {
           const s = res.ok ? res.data?.dispute : null;
-          if (!s?.id) return; // offline: local-only row stays (documented fallback)
+          if (!s?.id) {
+            const reasonMsg = !res.ok && res.error === 'offline' ? 'Waiting for connection — tap Retry to send.' : 'Server refused — tap Retry.';
+            setDisputes((prev) =>
+              prev.map((d) => (d.id === tempId ? { ...d, syncPending: true, syncFailed: reasonMsg } : d))
+            );
+            return;
+          }
           const serverId = String(s.id);
           setDisputes((prev) =>
-            prev.map((d) => (d.id === tempId ? { ...d, serverId } : d))
+            prev.map((d) => (d.id === tempId ? { ...d, serverId, syncPending: false, syncFailed: undefined } : d))
           );
         })
-        .catch(() => {})
+        .catch(() => {
+          setDisputes((prev) =>
+            prev.map((d) => (d.id === tempId ? { ...d, syncPending: true, syncFailed: 'Waiting for connection — tap Retry to send.' } : d))
+          );
+        })
     );
     router.push(`/dispute/${dispute.id}`);
+  };
+
+  const retryDispute = (id: string) => {
+    const row = disputes.find((d) => d.id === id);
+    if (!row) return;
+    setDisputes((prev) => prev.map((d) => (d.id === id ? { ...d, syncPending: true, syncFailed: undefined } : d)));
+    void import('../utils/serverApi').then(({ serverApi }) =>
+      serverApi
+        .createDispute({ orderRef: row.orderRef, reason: row.reason, description: row.description })
+        .then((res) => {
+          const s = res.ok ? res.data?.dispute : null;
+          if (!s?.id) {
+            setDisputes((prev) =>
+              prev.map((d) => (d.id === id ? { ...d, syncPending: true, syncFailed: 'Still offline — kept locally, retry again.' } : d))
+            );
+            return;
+          }
+          const serverId = String(s.id);
+          setDisputes((prev) =>
+            prev.map((d) => (d.id === id ? { ...d, serverId, syncPending: false, syncFailed: undefined } : d))
+          );
+        })
+        .catch(() => {
+          setDisputes((prev) =>
+            prev.map((d) => (d.id === id ? { ...d, syncPending: true, syncFailed: 'Still offline — kept locally, retry again.' } : d))
+          );
+        })
+    );
   };
 
   const canSubmit = Boolean(orderRef.trim() && reason && description.trim());
@@ -262,6 +306,20 @@ export default function DisputesScreen() {
         <Text className="font-inter-400 text-textPrimary" numberOfLines={2} style={{ fontSize: 14, lineHeight: 20 }}>
           {dispute.description}
         </Text>
+        {(dispute.syncPending || dispute.syncFailed) && (
+          <View className="flex-row items-center mt-3" style={{ gap: 8 }}>
+            <Text className="font-inter-500 flex-1" style={{ fontSize: 12, lineHeight: 16, color: colors.textSecondary }}>
+              {dispute.syncFailed ?? 'Sending to support…'}
+            </Text>
+            <TouchableOpacity
+              className="px-3 py-1 rounded-full"
+              style={{ backgroundColor: colors.primaryContainer }}
+              onPress={() => retryDispute(dispute.id)}
+            >
+              <Text className="font-inter-600 text-white" style={{ fontSize: 12, lineHeight: 16 }}>Retry</Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </TouchableOpacity>
     );
   };
