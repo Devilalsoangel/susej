@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, Image, Alert } from 'react-native';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -7,9 +7,9 @@ import { BackIcon, VerifiedIcon, HeartIcon } from '../utils/icons';
 import { colors, formatPrice } from '../utils/theme';
 import { useAuth } from '../contexts/AuthContext';
 import { usePosts, Post } from '../contexts/PostContext';
-import { useOrders } from '../contexts/OrderContext';
+import { useOrders, type OrderStatus } from '../contexts/OrderContext';
 import { resolveListingImage } from '../utils/productImages';
-import { sellerNetForOrders, isApprovedSeller } from '../utils/marketplace';
+import { sellerNetForOrders, sellerBucketsForOrders, loadMarketplaceConfig, isApprovedSeller } from '../utils/marketplace';
 import SellerGate from '../components/SellerGate';
 
 function ViewIcon({ size = 14, color = colors.primaryContainer }: { size?: number; color?: string }) {
@@ -113,16 +113,33 @@ export default function SellerDashboardScreen() {
     return orders.filter((o) => (o.sellerUsername ?? '').toLowerCase() === me);
   }, [orders, user]);
   const salesCount = salesOrders.length;
-  // Industry-standard: sellers see NET (after 8% commission) — the number
-  // that matches their wallet. Gross here would contradict the hub + wallet.
+  // Live commission config (category overrides + edited global rate): without
+  // this, cold deep-links priced legacy rows at the 8% fallback while hub +
+  // wallet used the live rate. Fire-and-forget — cached config stands.
+  useEffect(() => {
+    loadMarketplaceConfig().catch(() => {});
+  }, []);
+  // Industry-standard: sellers see NET (blended settled rate, category-aware)
+  // — the number that matches their wallet. Gross here would contradict the
+  // hub + wallet.
   const salesRevenue = sellerNetForOrders(salesOrders);
+  const salesBuckets = useMemo(() => sellerBucketsForOrders(salesOrders), [salesOrders]);
+  const salesBucketCaption = (() => {
+    const parts: string[] = [];
+    if (salesBuckets.settling > 0) parts.push(`${formatPrice(salesBuckets.settling)} settling`);
+    if (salesBuckets.frozen > 0) parts.push(`${formatPrice(salesBuckets.frozen)} frozen`);
+    return parts.length ? parts.join(' · ') : salesCount === 0 ? 'No orders yet' : 'delivered · blended rate';
+  })();
 
-  // Orders needing the seller's attention first (placed/confirmed), then latest.
+  // Orders needing the seller's attention first (hub parity: placed /
+  // confirmed / preparing / out_for_delivery all need action — the old
+  // placed/confirmed-only set hid preparing lots from the dashboard).
+  const NEEDS_ACTION: OrderStatus[] = ['placed', 'confirmed', 'preparing', 'out_for_delivery'];
   const recentOrders = useMemo(() => {
     const sorted = [...salesOrders].sort((a, b) => b.placedAt - a.placedAt);
     return sorted
       .slice()
-      .sort((a, b) => Number(b.status === 'placed' || b.status === 'confirmed') - Number(a.status === 'placed' || a.status === 'confirmed'))
+      .sort((a, b) => Number(NEEDS_ACTION.includes(b.status)) - Number(NEEDS_ACTION.includes(a.status)))
       .slice(0, 4);
   }, [salesOrders]);
 
@@ -268,7 +285,7 @@ export default function SellerDashboardScreen() {
             <Text className="text-figma-12 font-inter-400 text-textSecondary mb-1">Revenue (net)</Text>
             <Text className="text-figma-20 font-inter-700 text-textPrimary">{formatPrice(salesRevenue)}</Text>
             <Text className="text-figma-10 font-inter-500 text-textTertiary mt-0.5">
-              {salesCount === 0 ? 'No orders yet' : 'delivered · after 8% fee'}
+              {salesBucketCaption}
             </Text>
           </View>
           <View className="flex-1 bg-surfaceContainerLow rounded-figma-16 p-4">
@@ -374,7 +391,7 @@ export default function SellerDashboardScreen() {
                       {formatPrice(item.price)}
                     </Text>
                     <Text className="text-figma-10 font-inter-500 text-textTertiary mt-0.5">
-                      {item.isSold ? 'Sold' : 'Active'}
+                      {item.isSold ? 'Sold' : item.status === 'hidden' ? 'Hidden' : 'Active'}
                     </Text>
                   </View>
                 </TouchableOpacity>
@@ -430,7 +447,7 @@ export default function SellerDashboardScreen() {
             <TouchableOpacity
               key={item.id}
               className="flex-row items-center bg-surfaceContainerLowest rounded-figma-16 p-4 mb-2"
-              onPress={() => router.push('/seller-orders')}
+              onPress={() => router.push('/seller-orders?orderId=' + encodeURIComponent(item.id))}
             >
               <View className="w-10 h-10 rounded-full bg-surfaceContainerLow items-center justify-center mr-3">
                 <Text className="text-figma-12 font-inter-600 text-textPrimary">{item.orderNumber.replace('#SJ-', '').slice(0, 3)}</Text>
@@ -448,7 +465,7 @@ export default function SellerDashboardScreen() {
                   backgroundColor: item.status === 'delivered' ? colors.surfaceContainer : colors.surfaceContainerLow,
                 }}
               >
-                {item.status === 'placed' || item.status === 'confirmed' ? 'ACTION NEEDED' : item.status.replace('_', ' ').toUpperCase()}
+                {NEEDS_ACTION.includes(item.status) ? 'ACTION NEEDED' : item.status.replace('_', ' ').toUpperCase()}
               </Text>
             </TouchableOpacity>
           ))

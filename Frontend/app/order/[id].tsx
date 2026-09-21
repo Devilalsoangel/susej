@@ -4,10 +4,11 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BackIcon, MapPinIcon, StarIcon, SendIcon, ShopIcon, BagIcon, ChevronRightIcon } from '../../utils/icons';
 import { colors, formatPrice } from '../../utils/theme';
-import { useOrders, STATUS_LABELS, REFUND_STATUS_LABELS, ORDER_STATUS_FLOW } from '../../contexts/OrderContext';
-import type { Order, Refund, RefundStatus, RefundTimelineEntry } from '../../contexts/OrderContext';
+import { useOrders, STATUS_LABELS, REFUND_STATUS_LABELS, toOrderFromServer } from '../../contexts/OrderContext';
+import type { Order } from '../../contexts/OrderContext';
 import { resolveListingImage } from '../../utils/productImages';
 import { serverApi } from '../../utils/serverApi';
+import { goBack } from '../../utils/navigation';
 
 const REFUND_REASONS = ['Item not as described', 'Item not received', 'Damaged', 'Other'];
 const CANCEL_REASONS = ['Changed my mind', 'Found better price', 'Ordered by mistake', 'Other'];
@@ -63,87 +64,14 @@ export default function OrderDetailsScreen() {
         if (!alive) return;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const hit = (res.ok ? (res.data as { order?: any } | null)?.order : null) as any;
-        if (!hit) {
+        // Shared mapper (OrderContext.toOrderFromServer) — the inline version
+        // lived here while the sibling screens 404ed; all four now agree.
+        const mapped = toOrderFromServer(hit);
+        if (!mapped) {
           setServerMiss(true);
           return;
         }
-        const flowIdx = ORDER_STATUS_FLOW.indexOf((hit.status as Order['status']) ?? 'placed');
-        const labels = ['Order Placed', 'Confirmed', 'Preparing', 'Out for Delivery', 'Delivered'];
-        setServerOrder({
-          id: String(hit.id),
-          orderNumber: String(hit.orderNumber ?? hit.id),
-          kind: (hit.kind as Order['kind']) ?? 'order',
-          sellerName: String(hit.sellerName ?? ''),
-          sellerUsername: String(hit.sellerUsername ?? ''),
-          items: Array.isArray(hit.items)
-            ? hit.items.map((i: any) => ({
-                listingId: String(i.listingId ?? i.postId ?? ''),
-                name: String(i.name ?? 'Item'),
-                price: Number(i.price ?? 0),
-                quantity: Number(i.quantity ?? 1),
-                ...(i.imageUrl ? { imageUrl: String(i.imageUrl) } : {}),
-                // Settled legs ride through (variant/bundle identity + money
-                // truth) — a second-device receipt for a variant/bundle order
-                // must show what was bought and reconcile, not re-derive.
-                ...(typeof i.variantLabel === 'string' && i.variantLabel ? { variantLabel: i.variantLabel } : {}),
-                ...(typeof i.bundleId === 'string' && i.bundleId ? { bundleId: i.bundleId } : {}),
-                ...(typeof i.netPrice === 'number' && Number.isFinite(i.netPrice) ? { netPrice: i.netPrice } : {}),
-                ...(typeof i.commission === 'number' && Number.isFinite(i.commission) ? { commission: i.commission } : {}),
-                ...(typeof i.category === 'string' && i.category ? { category: i.category } : {}),
-              }))
-            : [],
-          total: Number(hit.total ?? 0),
-          chargedTotal: Number(hit.chargedTotal ?? hit.total ?? 0),
-          status: (hit.status as Order['status']) ?? 'placed',
-          placedAt: typeof hit.placedAt === 'string' ? Date.parse(hit.placedAt) : Number(hit.placedAt ?? Date.now()),
-          reviewed: Boolean(hit.reviewed),
-          rating: hit.rating ? Number(hit.rating) : undefined,
-          reviewComment: hit.reviewComment ? String(hit.reviewComment) : undefined,
-          address: hit.address ? String(hit.address) : undefined,
-          paymentMethod: hit.paymentMethod ? String(hit.paymentMethod) : undefined,
-          // Delivery stamp drives the return window + "Delivered on" date —
-          // without it a second-device receipt anchors both to purchase date.
-          ...(typeof hit.actualDelivery === 'string' && hit.actualDelivery ? { actualDelivery: hit.actualDelivery } : {}),
-          // POD log rides to tracking the same way.
-          ...(Array.isArray(hit.deliveryLog) && hit.deliveryLog.length ? { deliveryLog: hit.deliveryLog } : {}),
-          // Second-device receipt truth: without these a fresh install shows
-          // no refund card, no fee lines, and offers Cancel on rows the
-          // server would refuse (cancel/refuse flicker).
-          ...(hit.deliveryFee !== undefined ? { deliveryFee: Number(hit.deliveryFee) || 0 } : {}),
-          ...(typeof hit.promoCode === 'string' && hit.promoCode ? { promoCode: hit.promoCode } : {}),
-          ...(typeof hit.buyerUsername === 'string' && hit.buyerUsername ? { buyerUsername: hit.buyerUsername } : {}),
-          ...(typeof hit.paymentMethod === 'string' && hit.paymentMethod ? { paymentMethod: hit.paymentMethod } : {}),
-          ...(typeof hit.paymentStatus === 'string' && hit.paymentStatus ? { paymentStatus: hit.paymentStatus } : {}),
-          ...(hit.disputeFrozen !== undefined ? { disputeFrozen: Boolean(hit.disputeFrozen) } : {}),
-          ...(hit.refund && typeof hit.refund === 'object'
-            ? (() => {
-                const sr = hit.refund as Partial<Refund> & { timeline?: Array<Partial<RefundTimelineEntry>> };
-                const st: RefundStatus =
-                  sr.status === 'approved' || sr.status === 'rejected' || sr.status === 'refunded' ? sr.status : 'requested';
-                return {
-                  refund: {
-                    id: String(sr.id ?? ''),
-                    reason: String(sr.reason ?? ''),
-                    status: st,
-                    timeline: Array.isArray(sr.timeline)
-                      ? sr.timeline.map((t, i) => ({
-                          author: t.author === 'seller' || t.author === 'platform' ? t.author : ('you' as const),
-                          text: String(t.text ?? ''),
-                          time: Number(t.time ?? Date.now()),
-                        }))
-                      : [],
-                    requestedAt: Number(sr.requestedAt ?? Date.now()),
-                  } as Refund,
-                };
-              })()
-            : {}),
-          serverId: String(hit.id),
-          tracking: labels.map((label, i) => ({
-            label,
-            time: i === 0 ? new Date(typeof hit.placedAt === 'string' ? Date.parse(hit.placedAt) : Number(hit.placedAt ?? Date.now())).toLocaleString() : '—',
-            done: flowIdx < 0 ? i === 0 : i <= flowIdx,
-          })),
-        });
+        setServerOrder(mapped);
       })
       .catch(() => {});
     return () => {
@@ -196,7 +124,7 @@ export default function OrderDetailsScreen() {
     return (
       <View className="flex-1 bg-surface">
         <View className="flex-row items-center justify-between px-5" style={{ height: 52 + insets.top, paddingTop: insets.top }}>
-          <TouchableOpacity onPress={() => router.back()}>
+          <TouchableOpacity onPress={() => goBack('/orders')}>
             <BackIcon size={16} color={colors.primary} />
           </TouchableOpacity>
           <Text className="text-[20px] font-inter-700" style={{ lineHeight: 28, letterSpacing: -0.5, color: colors.primary }}>
@@ -212,7 +140,7 @@ export default function OrderDetailsScreen() {
           <Text className="text-[14px] font-inter-400 text-textSecondary text-center" style={{ lineHeight: 20 }}>
             We couldn't find this order. It may have been removed or is no longer available.
           </Text>
-          <TouchableOpacity className="px-6 py-3 rounded-full mt-6" style={{ backgroundColor: colors.primaryContainer }} onPress={() => router.back()}>
+          <TouchableOpacity className="px-6 py-3 rounded-full mt-6" style={{ backgroundColor: colors.primaryContainer }} onPress={() => goBack('/orders')}>
             <Text className="text-[14px] font-inter-600 text-white">Go back</Text>
           </TouchableOpacity>
         </View>
@@ -291,7 +219,7 @@ export default function OrderDetailsScreen() {
     <View className="flex-1 bg-surface">
       {/* Header */}
       <View className="flex-row items-center justify-between px-5" style={{ height: 52 + insets.top, paddingTop: insets.top }}>
-        <TouchableOpacity onPress={() => router.back()}>
+        <TouchableOpacity onPress={() => goBack('/orders')}>
           <BackIcon size={16} color={colors.primary} />
         </TouchableOpacity>
         <Text className="text-[20px] font-inter-700" style={{ lineHeight: 28, letterSpacing: -0.5, color: colors.primary }}>

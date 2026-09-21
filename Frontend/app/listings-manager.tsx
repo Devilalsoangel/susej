@@ -37,7 +37,7 @@ function RefreshIcon({ size = 18, color = '#464555' }: { size?: number; color?: 
   );
 }
 
-const TABS = ['All', 'Active', 'Sold'] as const;
+const TABS = ['All', 'Active', 'Hidden', 'Sold'] as const;
 
 const timeAgo = (ts: number) => {
   const diff = Date.now() - ts;
@@ -115,7 +115,9 @@ export default function ListingsManagerScreen() {
   }, [myPosts]);
 
   const filtered = myPosts.filter((l) => {
-    if (tab === 'Active' && l.isSold) return false;
+    const hidden = l.status === 'hidden';
+    if (tab === 'Active' && (l.isSold || hidden)) return false;
+    if (tab === 'Hidden' && !hidden) return false;
     if (tab === 'Sold' && !l.isSold) return false;
     if (category !== 'All Categories' && l.category !== category) return false;
     if (query) {
@@ -125,7 +127,8 @@ export default function ListingsManagerScreen() {
     return true;
   });
 
-  const activeCount = myPosts.filter((l) => !l.isSold).length;
+  const activeCount = myPosts.filter((l) => !l.isSold && l.status !== 'hidden').length;
+  const hiddenCount = myPosts.filter((l) => l.status === 'hidden').length;
   const soldCount = myPosts.filter((l) => l.isSold).length;
 
   const openBoost = () => {
@@ -136,10 +139,24 @@ export default function ListingsManagerScreen() {
   };
 
   const removeListing = (id: string, title: string) => {
-    Alert.alert('Delete listing', `"${title}" will be permanently removed.`, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: () => deletePost(id) },
-    ]);
+    // Live-auction guard (hub parity): a running lot's backing listing must
+    // survive until the hammer falls — deleting orphans the auction.
+    void (async () => {
+      try {
+        const { serverApi } = await import('../utils/serverApi');
+        const res = await serverApi.getAuctions().catch(() => null);
+        const rows = (res as { ok?: boolean; data?: { auctions?: { imageKey?: unknown; status?: unknown }[] } } | null)?.data?.auctions;
+        const live = Array.isArray(rows) && rows.some((a) => String(a?.imageKey ?? '') === String(id) && (String(a?.status ?? '') === 'live' || String(a?.status ?? '') === 'upcoming'));
+        if (live) {
+          Alert.alert('Live auction uses this listing', `"${title}" backs a running auction — end the auction first.`);
+          return;
+        }
+      } catch {}
+      Alert.alert('Delete listing', `"${title}" will be permanently removed.`, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: () => deletePost(id) },
+      ]);
+    })();
   };
 
   // Approved sellers only (SELLER-C1): buyers/pending deep-links get status,
@@ -185,7 +202,7 @@ export default function ListingsManagerScreen() {
           {TABS.map((t) => {
             const on = tab === t;
             const activeTab = t === 'Active';
-            const count = t === 'All' ? myPosts.length : t === 'Active' ? activeCount : soldCount;
+            const count = t === 'All' ? myPosts.length : t === 'Active' ? activeCount : t === 'Hidden' ? hiddenCount : soldCount;
             return (
               <TouchableOpacity
                 key={t}
@@ -310,8 +327,44 @@ export default function ListingsManagerScreen() {
                       </Text>
                     </View>
                     <Text className="font-inter-400 text-textSecondary mt-1.5" style={{ fontSize: 12, lineHeight: 16 }}>
-                      {l.category ? `${l.category} · ` : ''}{l.isSold ? 'Sold' : 'Active'} · {timeAgo(l.createdAt)}
+                      {l.category ? `${l.category} · ` : ''}{l.isSold ? 'Sold' : l.status === 'hidden' ? 'Hidden · buyers can\'t see' : 'Active'} · {timeAgo(l.createdAt)}
                     </Text>
+                    {(() => {
+                      // Sellable-qty visibility (Amazon/Meesho inventory norm):
+                      // a binary Active chip never warned before sellout.
+                      // Cache truth with honest staleness — buyer checkout
+                      // re-verifies live, this is the seller's at-a-glance.
+                      if (typeof l.stockLeft === 'number' && Number.isFinite(l.stockLeft)) {
+                        return (
+                          <Text className="font-inter-500 mt-0.5" style={{ fontSize: 11, lineHeight: 14, color: l.stockLeft <= 0 ? colors.error : colors.textSecondary }}>
+                            {l.stockLeft <= 0 ? 'Out of stock' : `${Math.floor(l.stockLeft)} left in stock`}
+                          </Text>
+                        );
+                      }
+                      if (Array.isArray((l as { variants?: Array<{ values?: Array<{ stock?: unknown }> }> }).variants)) {
+                        let remaining = 0;
+                        let tracked = false;
+                        let unlimited = false;
+                        for (const g of (l as { variants: Array<{ values?: Array<{ stock?: unknown }> }> }).variants) {
+                          for (const v of g.values ?? []) {
+                            if (typeof v?.stock === 'number') {
+                              tracked = true;
+                              remaining += Math.max(0, Math.floor(v.stock));
+                            } else {
+                              unlimited = true;
+                            }
+                          }
+                        }
+                        if (tracked && !unlimited) {
+                          return (
+                            <Text className="font-inter-500 mt-0.5" style={{ fontSize: 11, lineHeight: 14, color: remaining <= 0 ? colors.error : colors.textSecondary }}>
+                              {remaining <= 0 ? 'Out of stock' : `${remaining} left across options`}
+                            </Text>
+                          );
+                        }
+                      }
+                      return null;
+                    })()}
                     <View className="flex-row mt-2 flex-wrap" style={{ gap: 6 }}>
                       {noImage && (
                         <View className="px-2 py-0.5 rounded-full" style={{ backgroundColor: '#fef2f2', borderWidth: 1, borderColor: colors.error }}>
@@ -320,9 +373,9 @@ export default function ListingsManagerScreen() {
                           </Text>
                         </View>
                       )}
-                      <View className="px-2 py-0.5 rounded-full" style={{ backgroundColor: l.isSold ? colors.surfaceContainer : colors.surfaceContainerLow }}>
-                        <Text className="font-inter-500" style={{ fontSize: 10, lineHeight: 12, color: l.isSold ? colors.secondary : '#22c55e' }}>
-                          {l.isSold ? 'Sold Out' : 'Active'}
+                      <View className="px-2 py-0.5 rounded-full" style={{ backgroundColor: l.isSold ? colors.surfaceContainer : l.status === 'hidden' ? '#fef3c7' : colors.surfaceContainerLow }}>
+                        <Text className="font-inter-500" style={{ fontSize: 10, lineHeight: 12, color: l.isSold ? colors.secondary : l.status === 'hidden' ? '#b45309' : '#22c55e' }}>
+                          {l.isSold ? 'Sold Out' : l.status === 'hidden' ? 'Hidden' : 'Active'}
                         </Text>
                       </View>
                     </View>

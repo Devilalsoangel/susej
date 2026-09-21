@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { View, Text, TextInput, FlatList, TouchableOpacity, Image, Alert } from 'react-native';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { BackIcon, CloseIcon, ShopIcon, MinusIcon, PlusIcon, ArrowRightIcon, ChevronRightIcon } from '../utils/icons';
 import { colors, formatPrice } from '../utils/theme';
@@ -10,6 +10,7 @@ import { getRedeemedCoupons, setAppliedPromo, clearAppliedPromo, previewDiscount
 import { serverApi } from '../utils/serverApi';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../contexts/AuthContext';
+import { usePosts } from '../contexts/PostContext';
 
 const SAVED_KEY_BASE = '@susej_saved_for_later';
 
@@ -20,6 +21,50 @@ export default function CartScreen() {
   const { user } = useAuth();
   const savedKey = user?.username ? `${SAVED_KEY_BASE}:${user.username}` : SAVED_KEY_BASE;
   const { cart, updateQuantity, removeFromCart, restoreSavedItem, subtotal } = useCart();
+  const { posts } = usePosts();
+  // Single-push checkout: a double-tap stacked two /checkout screens (the
+  // second a dead empty-cart shell after the first placed + cleared).
+  // Re-armed on every focus so Back-from-checkout keeps working.
+  const checkoutPushed = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      checkoutPushed.current = false;
+    }, [])
+  );
+  // Stepper cap (Amazon parity): clamp +1 at live per-variant/base stock so
+  // rendered quantities stay buyable. Unknown (cold cache) stays uncapped —
+  // the server revalidates at checkout; untracked picks fall back to the
+  // tightest tracked SKU (safe direction: never oversells).
+  const stockCapFor = (item: CartItem): number | null => {
+    const post = posts.find((p) => p.id === item.listingId);
+    if (!post) return null;
+    if (item.variantLabel) {
+      const picks = item.variantLabel.split(',').map((s) => {
+        const i = s.indexOf(':');
+        return i >= 0 ? { group: s.slice(0, i).trim(), label: s.slice(i + 1).trim() } : null;
+      }).filter((x): x is { group: string; label: string } => !!x);
+      let cap: number | null = null;
+      for (const pk of picks) {
+        const g = (post.variants ?? []).find((v) => String(v.name ?? '').trim().toLowerCase() === pk.group.toLowerCase());
+        const m = g?.values.find((val) => String(val.label ?? '').trim().toLowerCase() === pk.label.toLowerCase());
+        if (m && typeof m.stock === 'number' && m.stock >= 0) {
+          cap = cap === null ? Math.floor(m.stock) : Math.min(cap, Math.floor(m.stock));
+        }
+      }
+      if (cap !== null) return cap;
+    }
+    // No usable pick (legacy line or untracked value): tightest tracked SKU.
+    let floor: number | null = null;
+    for (const v of post.variants ?? []) {
+      for (const val of v.values ?? []) {
+        if (typeof val.stock === 'number' && val.stock >= 0) {
+          floor = floor === null ? Math.floor(val.stock) : Math.min(floor, Math.floor(val.stock));
+        }
+      }
+    }
+    if (floor !== null) return floor;
+    return typeof post.stockLeft === 'number' && post.stockLeft >= 0 ? Math.floor(post.stockLeft) : null;
+  };
   const [promoCode, setPromoCode] = useState('');
 const [promo, setPromo] = useState<AppliedPromo | null>(null);
   const [saved, setSaved] = useState<SavedItem[]>([]);
@@ -283,8 +328,16 @@ const [promo, setPromo] = useState<AppliedPromo | null>(null);
                     className="text-[18px] font-inter-700 text-textPrimary"
                     style={{ lineHeight: 28 }}
                   >
-                    {formatPrice(item.price)}
+                    {formatPrice(item.price * item.quantity)}
                   </Text>
+                  {item.quantity > 1 && (
+                    <Text
+                      className="text-[12px] font-inter-400 text-textSecondary"
+                      style={{ lineHeight: 16 }}
+                    >
+                      {formatPrice(item.price)} each
+                    </Text>
+                  )}
                   <TouchableOpacity onPress={() => saveForLater(item)} className="mt-0.5 self-start" hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} accessibilityRole="button" accessibilityLabel={`Save ${item.name} for later`}>
                     <Text
                       className="text-[12px] font-inter-500"
@@ -318,7 +371,14 @@ const [promo, setPromo] = useState<AppliedPromo | null>(null);
                     hitSlop={{ top: 2, bottom: 2, left: 4, right: 4 }}
                     accessibilityRole="button"
                     accessibilityLabel={`Increase quantity of ${item.name}`}
-                    onPress={() => updateQuantity(item.listingId, item.quantity + 1, { variantLabel: item.variantLabel, bundleId: item.bundleId })}
+                    onPress={() => {
+                      const cap = stockCapFor(item);
+                      if (cap !== null && item.quantity + 1 > cap) {
+                        Alert.alert('Only ' + cap + ' available', 'The seller has ' + cap + ' in stock right now.');
+                        return;
+                      }
+                      updateQuantity(item.listingId, item.quantity + 1, { variantLabel: item.variantLabel, bundleId: item.bundleId });
+                    }}
                   >
                     <PlusIcon size={11} color={colors.primary} />
                   </TouchableOpacity>
@@ -465,7 +525,7 @@ const [promo, setPromo] = useState<AppliedPromo | null>(null);
           ) : null
         }
         ListEmptyComponent={
-          <View className="flex-1 items-center justify-center py-20">
+          <View className="flex-1 items-center justify-center py-20 px-5">
             <View style={{ opacity: 0.35 }}>
               <ShopIcon size={44} color={colors.textSecondary} />
             </View>
@@ -486,6 +546,42 @@ const [promo, setPromo] = useState<AppliedPromo | null>(null);
                 Start shopping
               </Text>
             </TouchableOpacity>
+            {/* Recovery rail (Amazon parity): saved-for-later items survive
+                here so an empty cart still offers a one-tap resume. */}
+            {savedLoaded && saved.length > 0 && (
+              <View className="w-full mt-8">
+                <Text className="text-[15px] font-inter-700 text-textPrimary mb-3" style={{ lineHeight: 22 }}>
+                  Saved for later ({saved.length})
+                </Text>
+                <View style={{ rowGap: 10 }}>
+                  {saved.slice(0, 3).map((item) => (
+                    <View
+                      key={cartLineKey(item)}
+                      className="flex-row items-center rounded-[16px] px-3 py-2.5"
+                      style={{ width: '100%', backgroundColor: colors.surfaceContainerLowest }}
+                    >
+                      <Image
+                        source={resolveListingImage({ image: item.imageUrl }, item.listingId)}
+                        style={{ width: 52, height: 52, borderRadius: 10 }}
+                      />
+                      <View className="flex-1 ml-3">
+                        <Text className="text-[13px] font-inter-600 text-textPrimary" numberOfLines={1} style={{ lineHeight: 18 }}>
+                          {item.name}
+                        </Text>
+                        <Text className="text-[13px] font-inter-700" style={{ lineHeight: 18, color: colors.primaryContainer }}>
+                          {formatPrice(item.price)}
+                        </Text>
+                      </View>
+                      <TouchableOpacity onPress={() => moveToCart(item)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} accessibilityRole="button" accessibilityLabel={`Move ${item.name} to cart`}>
+                        <Text className="text-[13px] font-inter-600" style={{ lineHeight: 18, color: colors.primaryContainer }}>
+                          Move to cart
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            )}
           </View>
         }
       />
@@ -538,7 +634,8 @@ const [promo, setPromo] = useState<AppliedPromo | null>(null);
           className="w-full items-center justify-center flex-row mt-6"
           style={{ height: 60, backgroundColor: colors.primaryContainer, borderRadius: 16, shadowColor: colors.primaryContainer, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 6, elevation: 4 }}
           onPress={() => {
-            if (cart.length === 0) return;
+            if (cart.length === 0 || checkoutPushed.current) return;
+            checkoutPushed.current = true;
             router.push('/checkout');
           }}
         >

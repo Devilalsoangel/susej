@@ -4,8 +4,10 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ChevronLeftIcon, SendIcon, CheckIcon, CloseIcon } from '../../utils/icons';
 import { colors, formatPrice } from '../../utils/theme';
-import { useOrders, REFUND_STATUS_LABELS } from '../../contexts/OrderContext';
-import type { RefundTimelineAuthor } from '../../contexts/OrderContext';
+import { useOrders, REFUND_STATUS_LABELS, toOrderFromServer } from '../../contexts/OrderContext';
+import type { RefundTimelineAuthor, Order } from '../../contexts/OrderContext';
+import { serverApi } from '../../utils/serverApi';
+import { goBack } from '../../utils/navigation';
 
 const AUTHOR_LABELS: Record<RefundTimelineAuthor, string> = {
   you: 'You',
@@ -47,7 +49,33 @@ export default function RefundDetailScreen() {
   const [loaded, setLoaded] = useState(false);
   const [response, setResponse] = useState('');
 
-  const order = loaded ? getOrder(String(refundId)) : undefined;
+  const localOrder = getOrder(String(refundId));
+  // Server fallback (same as receipt/track/review): a 2nd-device refund link
+  // resolves server-side instead of dead-ending.
+  const [serverOrder, setServerOrder] = useState<Order | null>(null);
+  const [serverMiss, setServerMiss] = useState(false);
+  useEffect(() => {
+    setServerOrder(null);
+    setServerMiss(false);
+  }, [refundId]);
+  useEffect(() => {
+    if (localOrder || !refundId || serverOrder || serverMiss) return;
+    let alive = true;
+    serverApi
+      .getOrder(String(refundId))
+      .then((res) => {
+        if (!alive) return;
+        const hit = res.ok ? (res.data as { order?: unknown } | null)?.order : null;
+        const mapped = toOrderFromServer(hit);
+        if (!mapped) setServerMiss(true);
+        else setServerOrder(mapped);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [localOrder, refundId, serverOrder, serverMiss]);
+  const order = localOrder ?? serverOrder ?? undefined;
   const refund = order?.refund;
 
   useEffect(() => {
@@ -72,7 +100,7 @@ export default function RefundDetailScreen() {
     <KeyboardAvoidingView className="flex-1" style={{ backgroundColor: colors.surface }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       {/* Header */}
       <View className="flex-row items-center px-5" style={{ height: 52 + insets.top, paddingTop: insets.top, backgroundColor: colors.surface }}>
-        <TouchableOpacity onPress={() => router.back()}>
+        <TouchableOpacity onPress={() => goBack('/refunds')}>
           <ChevronLeftIcon size={18} color={colors.primary} />
         </TouchableOpacity>
         <Text className="flex-1 text-center font-inter-700 text-primary" style={{ fontSize: 20, lineHeight: 28 }}>
@@ -81,7 +109,7 @@ export default function RefundDetailScreen() {
         <View style={{ width: 18 }} />
       </View>
 
-      {!loaded ? (
+      {!loaded && !order ? (
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator color={colors.primaryContainer} />
         </View>
@@ -96,7 +124,7 @@ export default function RefundDetailScreen() {
           <TouchableOpacity
             className="mt-6 items-center justify-center px-6"
             style={{ height: 48, borderRadius: 12, backgroundColor: colors.primaryContainer }}
-            onPress={() => router.back()}
+            onPress={() => goBack('/refunds')}
           >
             <Text className="font-inter-600 text-white" style={{ fontSize: 15, lineHeight: 20 }}>
               Go back

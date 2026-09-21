@@ -16,6 +16,7 @@ import { useNotifications } from '../../contexts/NotificationContext';
 import { hasRealImage, resolveAvatar, resolveListingImage } from '../../utils/productImages';
 import { serverApi } from '../../utils/serverApi';
 import { useBlockedSellers } from '../../utils/blockedSellers';
+import { goBack } from '../../utils/navigation';
 import { CommentsSheet } from '../../components/sheets/PostEngagementSheets';
 
 const BLOCKED_KEY_BASE = '@susej_blocked';
@@ -458,7 +459,7 @@ export default function ProductDetailsScreen() {
         return;
       case 'service':
         // Carry the listing context so booking knows WHAT is being booked.
-        router.push(`/book-service?listingId=${encodeURIComponent(post?.id ?? '')}&title=${encodeURIComponent(title)}`);
+        router.push(`/book-service?listingId=${encodeURIComponent(post?.id ?? '')}&title=${encodeURIComponent(title)}&seller=${encodeURIComponent(sellerName)}&sellerUsername=${encodeURIComponent(sellerUsername)}&description=${encodeURIComponent(String(description ?? '').split('\n')[0].slice(0, 120))}&category=${encodeURIComponent(category)}`);
         return;
       case 'job':
         setApplyName(user?.name ?? '');
@@ -566,7 +567,7 @@ export default function ProductDetailsScreen() {
         <TouchableOpacity
           className="absolute flex-row items-center"
           style={{ top: insets.top + 16, left: 20 }}
-          onPress={() => router.back()}
+          onPress={() => goBack('/feed')}
         >
           <ChevronLeftIcon size={18} color={colors.primary} />
         </TouchableOpacity>
@@ -597,7 +598,7 @@ export default function ProductDetailsScreen() {
   if (noImage) {
     return (
       <View className="flex-1 items-center justify-center px-8" style={{ backgroundColor: colors.surface }}>
-        <TouchableOpacity className="absolute flex-row items-center" style={{ top: insets.top + 16, left: 20 }} onPress={() => router.back()}>
+        <TouchableOpacity className="absolute flex-row items-center" style={{ top: insets.top + 16, left: 20 }} onPress={() => goBack('/feed')}>
           <ChevronLeftIcon size={18} color={colors.primary} />
         </TouchableOpacity>
         <View className="w-16 h-16 rounded-full items-center justify-center mb-4" style={{ backgroundColor: '#fef2f2', borderWidth: 1, borderColor: colors.error }}>
@@ -619,7 +620,7 @@ export default function ProductDetailsScreen() {
       {/* Header — collapses from brand logo to OLX-style detail header
           (back + truncated title + price + share) once scrolled past the gallery */}
       <View className="flex-row items-center justify-between px-5" style={{ backgroundColor: colors.surface, height: 64 + insets.top, paddingTop: insets.top }}>
-        <TouchableOpacity onPress={() => router.back()}>
+        <TouchableOpacity onPress={() => goBack('/feed')}>
           <ChevronLeftIcon size={18} color={colors.primary} />
         </TouchableOpacity>
         {showCompactHeader ? (

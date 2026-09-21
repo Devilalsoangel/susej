@@ -217,17 +217,97 @@ export function sellerNetForOrders(
 /** Seller goods basis for delivered orders (pre-commission merchandise,
  *  price×qty per line). Single definition with sellerNetForOrders: the wallet
  *  used to re-filter/re-sum inline, so the next status-vocab or freeze-rule
- *  change had to land in two places. Refunded rows excluded, same as net. */
+ *  change had to land in two places. Refunded rows excluded, same as net.
+ *  Frozen rows excluded too (same rule as net — counting frozen goods while
+ *  net excludes them booked the frozen principal as "commission"). */
 export function sellerGoodsForOrders(
   orders: {
     status: string;
     paymentStatus?: string;
+    disputeFrozen?: boolean;
     items: { price: number; quantity: number }[];
-  }[]
+  }[],
+  opts?: { includeFrozen?: boolean }
 ): number {
+  const allowFrozen = opts?.includeFrozen === true;
   return orders
-    .filter((o) => o.status === 'delivered' && o.paymentStatus !== 'refunded')
+    .filter((o) => o.status === 'delivered' && o.paymentStatus !== 'refunded' && (allowFrozen || !o.disputeFrozen))
     .reduce((s, o) => s + o.items.reduce((t, i) => t + i.price * i.quantity, 0), 0);
+}
+
+/** Seller-funded coupon share across delivered orders: SUM((price − netPrice)
+ *  × qty) over lines carrying settled netPrice legs. The wallet used to fold
+ *  this into "susej commission" — sellers never saw what coupons cost them
+ *  (Amazon splits Selling fees vs Promotion costs for exactly this reason). */
+export function sellerCouponForOrders(
+  orders: {
+    status: string;
+    paymentStatus?: string;
+    disputeFrozen?: boolean;
+    items: { price: number; quantity: number; netPrice?: number }[];
+  }[],
+  opts?: { includeFrozen?: boolean }
+): number {
+  const allowFrozen = opts?.includeFrozen === true;
+  return orders
+    .filter((o) => o.status === 'delivered' && o.paymentStatus !== 'refunded' && (allowFrozen || !o.disputeFrozen))
+    .reduce(
+      (s, o) =>
+        s +
+        o.items.reduce((t, i) => {
+          if (typeof i.netPrice !== 'number' || !Number.isFinite(i.netPrice)) return t;
+          const qty = Math.max(1, Math.round(Number(i.quantity ?? 1)));
+          return t + Math.max(0, Math.round((Number(i.price ?? 0) - i.netPrice) * qty));
+        }, 0),
+      0
+    );
+}
+
+/** Per-order seller net (same settled-leg math as sellerNetForOrders, one
+ *  row): seller-orders cards show it so each card ties to the earnings pill. */
+export function sellerNetForOrder(order: {
+  status: string;
+  paymentStatus?: string;
+  disputeFrozen?: boolean;
+  items: { price: number; quantity: number; netPrice?: number; commission?: number }[];
+}): number {
+  return sellerNetForOrders([order]);
+}
+
+/** Earnings buckets (withdrawable-matured / settling / frozen) with the
+ *  server's 7-day hold + dispute-freeze rules: hub + dashboard headline the
+ *  same buckets the wallet discloses instead of one undifferentiated number.
+ *  Display-only — the server payout guard is the money truth. */
+export function sellerBucketsForOrders(
+  orders: {
+    status: string;
+    paymentStatus?: string;
+    disputeFrozen?: boolean;
+    actualDelivery?: string;
+    items: { price: number; quantity: number; netPrice?: number; commission?: number }[];
+  }[]
+): { matured: number; settling: number; frozen: number } {
+  const HOLD_MS = 7 * 24 * 3600 * 1000;
+  const now = Date.now();
+  const isMatured = (actualDelivery?: string) => {
+    if (!actualDelivery) return true;
+    const s = Date.parse(actualDelivery);
+    return Number.isFinite(s) && now - s >= HOLD_MS;
+  };
+  let matured = 0;
+  let settling = 0;
+  let frozen = 0;
+  for (const o of orders) {
+    if (o.status !== 'delivered' || o.paymentStatus === 'refunded') continue;
+    const net = sellerNetForOrder(o);
+    if (o.disputeFrozen) {
+      frozen += net;
+      continue;
+    }
+    if (isMatured(o.actualDelivery)) matured += net;
+    else settling += net;
+  }
+  return { matured, settling, frozen };
 }
 
 export function getListingFee(): number {

@@ -19,6 +19,7 @@ export async function GET(request: NextRequest) {
         marketingBanners: [],
         featuredPosts: [],
         spotlight: null,
+        spotlights: [],
         degraded: true,
       },
       { status: 200 }
@@ -51,14 +52,14 @@ export async function GET(request: NextRequest) {
       orderBy: [{ isPinned: "desc" }, { position: "asc" }, { createdAt: "desc" }],
       take: 3,
     }),
-    // Spotlight: paid position-1 feed pin (promo engine writes it on
+    // Spotlight: paid position-1 feed pins (promo engine writes it on
     // purchase). Was write-only — money taken, rendered nowhere. Served here
-    // so the paid placement actually displays; at most one active row wins
-    // (newest first).
+    // so paid placements actually display; at most 3 concurrent (activation
+    // refuses the 4th instead of selling an invisible slot), newest first.
     prisma.spotlight.findMany({
       where: { status: ACTIVE },
       orderBy: { createdAt: "desc" },
-      take: 1,
+      take: 3,
     }),
     // Home-section visibility (admin "Show on home page" toggle): missing row
     // = ON (fresh prod renders), explicit isEnabled=false hides the rail.
@@ -128,12 +129,50 @@ export async function GET(request: NextRequest) {
     // Fail-OPEN by design (a read blip must not blank paid rails), but LOUD.
     console.error("[home] blocked-hashtag suppression failed — serving unfiltered:", e instanceof Error ? e.message : e);
   }
+  // Listing-liveness guard (paid impressions for dead items): a listing that
+  // sold or left published mid-campaign suppresses its rail rows same-read
+  // (the sweep only checks dates). Missing rows (deleted posts) suppress too
+  // — fail-CLOSED here is correct: an impression that can't convert is pure
+  // burn, and the seller's window keeps running. Fail-OPEN on read blips
+  // (same doctrine as the hashtag block above).
+  const deadPostIds = new Set<string>();
+  try {
+    const postIds = new Set<string>();
+    const collect = (v: unknown) => {
+      const s = String(v ?? "").trim();
+      if (s) postIds.add(s.replace(/^lst_/, ""));
+    };
+    liveFeatured.forEach((p) => collect((p as { postId?: unknown }).postId));
+    liveSpotlight.forEach((p) => {
+      collect((p as { postId?: unknown }).postId);
+      collect((p as { productId?: unknown }).productId);
+    });
+    liveHotDeals.forEach((d) => collect((d as { productId?: unknown }).productId));
+    if (postIds.size) {
+      const rows = await prisma.post.findMany({
+        where: { id: { in: [...postIds] } },
+        select: { id: true, status: true, isSold: true },
+      });
+      const seen = new Set((rows as Array<{ id: string }>).map((r) => String(r.id)));
+      for (const pid of postIds) {
+        if (!seen.has(pid)) {
+          deadPostIds.add(pid);
+          continue;
+        }
+        const row = (rows as Array<{ id: string; status?: unknown; isSold?: unknown }>).find((r) => String(r.id) === pid);
+        if (!row || String(row.status ?? "") !== "published" || row.isSold === true) deadPostIds.add(pid);
+      }
+    }
+  } catch (e) {
+    console.error("[home] liveness suppression failed — serving unfiltered:", e instanceof Error ? e.message : e);
+  }
+  const postDead = (v: unknown) => deadPostIds.has(String(v ?? "").trim().replace(/^lst_/, ""));
   const postBlocked = (v: unknown) => blockedPostIds.has(String(v ?? "").trim().replace(/^lst_/, ""));
-  const serveFeatured = liveFeatured.filter((p) => !postBlocked((p as { postId?: unknown }).postId));
+  const serveFeatured = liveFeatured.filter((p) => !postBlocked((p as { postId?: unknown }).postId) && !postDead((p as { postId?: unknown }).postId));
   const serveSpotlight = liveSpotlight.filter(
-    (p) => !postBlocked((p as { postId?: unknown }).postId) && !postBlocked((p as { productId?: unknown }).productId)
+    (p) => !postBlocked((p as { postId?: unknown }).postId) && !postBlocked((p as { productId?: unknown }).productId) && !postDead((p as { postId?: unknown }).postId) && !postDead((p as { productId?: unknown }).productId)
   );
-  const serveHotDeals = liveHotDeals.filter((d) => !postBlocked((d as { productId?: unknown }).productId));
+  const serveHotDeals = liveHotDeals.filter((d) => !postBlocked((d as { productId?: unknown }).productId) && !postDead((d as { productId?: unknown }).productId));
 
   // Seller identity for the app: TopSeller.sellerId is the Seller cuid on
   // legacy rows and the bare username on desk/engine-written rows — the app
@@ -345,6 +384,20 @@ export async function GET(request: NextRequest) {
           title: serveSpotlight[0].title,
           imageUrl: serveSpotlight[0].imageUrl,
         },
+    // All live spotlights (newest first): `spotlight` above stays the single
+    // legacy reader; surfaces that pin every placement read this array.
+    spotlights: sectionOff.has("spotlight")
+      ? []
+      : serveSpotlight.map((s) => ({
+          id: s.id,
+          postId: s.postId,
+          productId: s.productId,
+          sellerId: s.sellerId,
+          sellerName: s.sellerName,
+          sellerLogo: s.sellerLogo,
+          title: s.title,
+          imageUrl: s.imageUrl,
+        })),
   });
   response.headers.set("Cache-Control", "private, max-age=30, stale-while-revalidate=60");
   return response;

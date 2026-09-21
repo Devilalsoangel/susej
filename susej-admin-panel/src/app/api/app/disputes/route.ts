@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
 import { getAppUser } from "@/lib/app-auth";
+import { getClientIp } from "@/lib/auth";
+import { checkWriteRate } from "@/lib/rate-limit";
 import { notifyUser } from "@/lib/notifications";
 
 /** GET /api/app/disputes — my disputes (raised by or against me). */
@@ -38,6 +40,9 @@ export async function GET(req: NextRequest) {
 // platform and the admin desk never saw them. Now a real shared row.
 // Identity + amount come from the ORDER (server truth), never the client. */
 export async function POST(req: NextRequest) {
+  if (!checkWriteRate(`disputes:${getClientIp(req)}`, 20)) {
+    return NextResponse.json({ error: "Too many requests — slow down" }, { status: 429 });
+  }
   const auth = await getAppUser(req);
   if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   const prisma = await getPrisma();
@@ -132,8 +137,18 @@ export async function POST(req: NextRequest) {
   }
   const dispute = created.dispute;
   // Counterparty tell (fire-and-forget): disputes otherwise sit silent until
-  // someone polls the list.
+  // someone polls the list. Ops audit rides along (same discipline).
   if (created.status === 201) {
+    void import("@/lib/audit").then((m) =>
+      m.writeAudit({
+        action: "app.dispute.raised",
+        entity: "dispute",
+        entityId: String(dispute.id),
+        details: `raised on ${order.trackingNumber} · ${String(reason).slice(0, 120)}`,
+        adminName: `app:${String(username ?? "?").slice(0, 120)}`,
+        ip: getClientIp(req),
+      }).catch(() => {})
+    );
     // Lowercase compare (party check above is): exact === resolved the
     // counterparty to the CALLER on mixed-case usernames — the seller was
     // never told, on the exact path built to replace polling.

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, FlatList, Modal, KeyboardAvoidingView, Platform, Alert } from 'react-native';
 import { router } from 'expo-router';
 import Svg, { Circle, Path } from 'react-native-svg';
@@ -8,7 +8,7 @@ import { BackIcon, CloseIcon } from '../utils/icons';
 import { colors, formatPrice, shadows } from '../utils/theme';
 import { useAuth } from '../contexts/AuthContext';
 import { useOrders } from '../contexts/OrderContext';
-import { loadMarketplaceConfig, sellerNetForOrders, sellerGoodsForOrders, isApprovedSeller } from '../utils/marketplace';
+import { loadMarketplaceConfig, sellerNetForOrders, sellerGoodsForOrders, sellerCouponForOrders, isApprovedSeller } from '../utils/marketplace';
 import { getWallet, saveWallet, syncWalletFromServer, type WalletTx } from '../utils/walletStore';
 import { getWithdrawalStatuses } from '../utils/adminSync';
 
@@ -257,7 +257,12 @@ export default function WalletScreen() {
     AsyncStorage.setItem(key, JSON.stringify(withdrawals)).catch(() => {});
   }, [withdrawals, loaded, user?.username]);
 
+  // In-flight top-up guard: each tap mints a fresh idempotency ref, so a
+  // double-tap (or tap-on-slow-network) double-minted spendable balance.
+  // One intent at a time — same placingRef discipline as checkout.
+  const addInFlight = useRef(false);
   const confirmAdd = async () => {
+    if (addInFlight.current) return;
     const amount = Math.round(preset ?? Number(custom));
     // Client mirrors the server top-up caps (wallet/route: integer 1..50000
     // per tap, 10 taps / Rs100000 per 24h): uncapped custom input used to
@@ -267,6 +272,7 @@ export default function WalletScreen() {
       Alert.alert('Invalid amount', 'Top-up must be between Rs1 and Rs50,000 per transaction (max 10 top-ups or Rs1,00,000 per day).');
       return;
     }
+    addInFlight.current = true;
     setShowAdd(false);
     setCustom('');
     // Single guarded path (reconcile-on-ambiguous, server-truth balance):
@@ -289,6 +295,8 @@ export default function WalletScreen() {
       } else {
         Alert.alert('Top-up failed', msg || 'Could not add money. Check your connection and try again.');
       }
+    } finally {
+      addInFlight.current = false;
     }
   };
 
@@ -375,8 +383,11 @@ export default function WalletScreen() {
     .filter((w) => w.status === 'requested' || w.status === 'approved' || w.status === 'completed')
     .reduce((s, w) => s + Math.max(0, Math.round(Number(w.amount) || 0)) + payoutFee, 0);
   const withdrawableEarnings = Math.max(0, maturedNet - committedPayouts);
-  // Display commission = goods − settled net (matches the shared fn exactly).
-  const commissionTotal = Math.max(0, earningsTotal - netEarnings);
+  // Display commission = goods − settled net − seller-funded coupons (the
+  // coupon share used to hide inside "commission", overstating the platform
+  // cut — Amazon splits Selling fees vs Promotion costs for this reason).
+  const couponTotal = sellerCouponForOrders(sellerOrders);
+  const commissionTotal = Math.max(0, earningsTotal - netEarnings - couponTotal);
   const submitPayout = async () => {
     if (payoutBusy || payoutFlightRef.current) return;
     const amount = Math.round(Number(payoutAmount));
@@ -573,14 +584,14 @@ export default function WalletScreen() {
                       Seller Earnings
                     </Text>
                     <Text className="font-inter-500" style={{ fontSize: 11, lineHeight: 14, color: colors.inverseOnSurface, opacity: 0.7 }}>
-                      {formatPrice(earningsMonth)} this month
+                      {formatPrice(earningsMonth)} goods placed this month (pre-fee)
                     </Text>
                   </View>
                   <Text className="font-inter-700 mt-2" style={{ fontSize: 26, lineHeight: 34, letterSpacing: -0.4, color: colors.inverseOnSurface }}>
                     {formatPrice(netEarnings)}
                   </Text>
                   <Text className="font-inter-400 mt-0.5" style={{ fontSize: 12, lineHeight: 16, color: colors.inverseOnSurface, opacity: 0.7 }}>
-                    Goods {formatPrice(earningsTotal)} · −{formatPrice(commissionTotal)} susej commission (blended rate incl. category offers)
+                    Goods {formatPrice(earningsTotal)} · −{formatPrice(commissionTotal)} susej commission{couponTotal > 0 ? ` · −${formatPrice(couponTotal)} coupons you funded` : ''}
                   </Text>
                   <Text className="font-inter-400" style={{ fontSize: 11, lineHeight: 14, color: colors.inverseOnSurface, opacity: 0.55 }}>
                     From {sellerOrders.filter((o) => o.status === 'delivered' && (o as { paymentStatus?: string }).paymentStatus !== 'refunded').length} delivered order{sellerOrders.filter((o) => o.status === 'delivered' && (o as { paymentStatus?: string }).paymentStatus !== 'refunded').length === 1 ? '' : 's'}

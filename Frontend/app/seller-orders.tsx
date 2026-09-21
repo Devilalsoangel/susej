@@ -7,7 +7,7 @@ import { colors, formatPrice } from '../utils/theme';
 import { resolveListingImage } from '../utils/productImages';
 import { useAuth } from '../contexts/AuthContext';
 import { useOrders, Order, OrderStatus } from '../contexts/OrderContext';
-import { sellerNetForOrders, isApprovedSeller } from '../utils/marketplace';
+import { sellerNetForOrders, sellerNetForOrder, isApprovedSeller } from '../utils/marketplace';
 import SellerGate from '../components/SellerGate';
 import { usePosts } from '../contexts/PostContext';
 
@@ -352,7 +352,7 @@ export default function SellerOrdersScreen() {
                       {formatPrice(o.chargedTotal ?? o.total)}
                     </Text>
                     <Text className="font-inter-400 text-textSecondary" style={{ fontSize: 10, lineHeight: 12 }}>
-                      charged to buyer
+                      charged to buyer · you net {formatPrice(sellerNetForOrder(o))}
                     </Text>
                   </View>
                 </View>
@@ -425,11 +425,17 @@ export default function SellerOrdersScreen() {
                           onPress={() =>
                             Alert.alert(
                               'Decline order?',
-                              `${o.orderNumber} will be cancelled and the buyer refunded to their wallet. Only decline when you cannot fulfil — repeated declines hurt your seller standing.`,
+                              (() => {
+                                const m = String(o.paymentMethod ?? '').trim().toLowerCase();
+                                const isCod = m === 'cash on delivery' || m === 'cod' || m === 'cash';
+                                return `${o.orderNumber} will be cancelled${isCod ? ' (cash on delivery — no money was prepaid, nothing to refund)' : ' and the buyer refunded to their wallet'}. Only decline when you cannot fulfil — repeated declines hurt your seller standing.`;
+                              })(),
                               [
                                 { text: 'Keep order', style: 'cancel' },
                                 { text: 'Decline & refund buyer', style: 'destructive', onPress: () => {
-                                  void cancelOrder(o.id, 'Declined by seller — buyer refunded to wallet').then((ok) => {
+                                  const dm = String(o.paymentMethod ?? '').trim().toLowerCase();
+                                  const dCod = dm === 'cash on delivery' || dm === 'cod' || dm === 'cash';
+                                  void cancelOrder(o.id, dCod ? 'Declined by seller — cash on delivery, no prepaid refund' : 'Declined by seller — buyer refunded to wallet').then((ok) => {
                                     if (!ok) {
                                       Alert.alert('Decline did not go through', 'The server refused the cancel — nothing was refunded. Refresh and try again.');
                                     }

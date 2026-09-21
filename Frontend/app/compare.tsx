@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState, ReactNode } from 'react';
-import { View, Text, Image, ScrollView, TouchableOpacity } from 'react-native';
+import { View, Text, Image, ScrollView, TouchableOpacity, Alert } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BackIcon, VerifiedIcon, HeartIcon } from '../utils/icons';
 import { colors, formatPrice, getCategoryColor } from '../utils/theme';
 import { usePosts, Post } from '../contexts/PostContext';
+import { useCart } from '../contexts/CartContext';
 import { serverApi } from '../utils/serverApi';
+import { goBack } from '../utils/navigation';
 
 const MAX_COMPARE = 3;
 const LABEL_WIDTH = 96;
@@ -57,6 +59,7 @@ function CompareContent() {
   const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ ids?: string | string[] }>();
   const { posts } = usePosts();
+  const { addToCart } = useCart();
 
   const ids = useMemo(() => {
     const raw = Array.isArray(params.ids) ? params.ids.join(',') : params.ids ?? '';
@@ -65,6 +68,11 @@ function CompareContent() {
       .map((s) => s.trim())
       .filter(Boolean)
       .slice(0, MAX_COMPARE);
+  }, [params.ids]);
+  // Shared-link honesty: a 4-way link silently compared 3. Say the cap.
+  const truncatedCount = useMemo(() => {
+    const raw = Array.isArray(params.ids) ? params.ids.join(',') : params.ids ?? '';
+    return Math.max(0, raw.split(',').map((s) => s.trim()).filter(Boolean).length - MAX_COMPARE);
   }, [params.ids]);
 
   // Server fallback (PDP parity): shared /compare?ids= links opened on a
@@ -99,6 +107,12 @@ function CompareContent() {
               image: typeof p.image === 'string' ? p.image : '',
               images: Array.isArray(p.images) ? p.images.filter((u: unknown): u is string => typeof u === 'string') : [],
               status: typeof p.status === 'string' ? p.status : undefined,
+              // Guard parity: the Add-to-cart gates read isSold + variants —
+              // dropping them here left cold-cache columns unguarded.
+              isSold: Boolean((p as { isSold?: unknown }).isSold),
+              variants: Array.isArray((p as { variants?: unknown }).variants)
+                ? (p as { variants: Post['variants'] }).variants
+                : undefined,
               sellerUsername: String(p.sellerUsername ?? ''),
               sellerName: String(p.sellerName ?? ''),
               sellerLocation: String(p.sellerLocation ?? ''),
@@ -186,7 +200,7 @@ function CompareContent() {
         className="flex-row items-center justify-between px-4 bg-surface"
         style={{ height: 52 + insets.top, paddingTop: insets.top }}
       >
-        <TouchableOpacity onPress={() => router.back()} className="w-9 h-9 items-center justify-center">
+        <TouchableOpacity onPress={() => goBack('/feed')} className="w-9 h-9 items-center justify-center">
           <BackIcon size={16} color={colors.textSecondary} />
         </TouchableOpacity>
         <Text className="text-figma-16 font-inter-600 text-textPrimary" style={{ letterSpacing: -0.3 }}>Compare</Text>
@@ -195,8 +209,7 @@ function CompareContent() {
         </View>
       </View>
 
-      {products.length === 0 ? (
-        <View className="flex-1 items-center justify-center px-10" style={{ paddingBottom: insets.bottom }}>
+      {products.length === 0 ? (        <View className="flex-1 items-center justify-center px-10" style={{ paddingBottom: insets.bottom }}>
           <View className="w-16 h-16 rounded-full bg-surfaceContainer items-center justify-center mb-4">
             <CompareIcon size={24} color={colors.textSecondary} />
           </View>
@@ -211,6 +224,13 @@ function CompareContent() {
             <View className="mx-4 mt-2 mb-1 px-4 py-2.5 rounded-figma-12" style={{ backgroundColor: colors.surfaceContainer }}>
               <Text style={{ fontSize: 12, lineHeight: 16, color: colors.textSecondary }}>
                 Only one product — open another listing and tap Compare to add it here.
+              </Text>
+            </View>
+          )}
+          {truncatedCount > 0 && (
+            <View className="mx-4 mt-2 mb-1 px-4 py-2.5 rounded-figma-12" style={{ backgroundColor: colors.surfaceContainer }}>
+              <Text style={{ fontSize: 12, lineHeight: 16, color: colors.textSecondary }}>
+                Showing {MAX_COMPARE} of {MAX_COMPARE + truncatedCount} — compare holds at most {MAX_COMPARE} items.
               </Text>
             </View>
           )}
@@ -257,6 +277,52 @@ function CompareContent() {
                       {row.render(post)}
                     </View>
                   ))}
+                  {/* Per-column commerce CTA (Amazon/Flipkart parity): the
+                      winner must be actionable without leaving comparison.
+                      Same gates as the PDP: sold-out refuses, tracked
+                      variants route to the PDP for option picks (the server
+                      400s unlabeled tracked lines), and a false return
+                      explains the single-seller cart instead of dead-tapping. */}
+                  <TouchableOpacity
+                    onPress={() => {
+                      if (post.isSold) {
+                        Alert.alert('Sold out', 'This listing is no longer available.');
+                        return;
+                      }
+                      const tracked = (post.variants ?? []).some((v) =>
+                        Array.isArray(v?.values) && v.values.some((x) => typeof x?.stock === 'number')
+                      );
+                      if (tracked) {
+                        router.push(`/product/${post.id}`);
+                        return;
+                      }
+                      const ok = addToCart(
+                        {
+                          listingId: post.id,
+                          type: (post.type as 'product' | 'service' | 'food_item') ?? 'product',
+                          name: post.title || post.description?.split('\n')[0] || 'Listing',
+                          price: Number(post.price) || 0,
+                          seller: post.sellerName,
+                          sellerUsername: post.sellerUsername,
+                        },
+                        1
+                      );
+                      if (!ok) {
+                        Alert.alert(
+                          'Cart belongs to another seller',
+                          'Your cart already has items from a different store. Checkout or clear it before adding this item.'
+                        );
+                        return;
+                      }
+                      router.push('/cart');
+                    }}
+                    className="mt-3 items-center py-3 rounded-full"
+                    style={{ backgroundColor: colors.primaryContainer }}
+                  >
+                    <Text className="font-inter-600" style={{ fontSize: 13, lineHeight: 18, color: '#FFFFFF' }}>
+                      Add to cart
+                    </Text>
+                  </TouchableOpacity>
                 </View>
               );
             })}

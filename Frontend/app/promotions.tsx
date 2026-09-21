@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, TouchableOpacity, ScrollView, Alert } from 'react-native';
+import { View, Text, TouchableOpacity, ScrollView, Alert, TextInput } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import Svg, { Path } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -76,6 +76,9 @@ export default function PromotionsScreen() {
   // an accidental-purchase trap. The buyer picks explicitly (Meesho pattern).
   const [selectedPkg, setSelectedPkg] = useState<string | null>(null);
   const [selectedPost, setSelectedPost] = useState<Post | null>(null);
+  // Hot-Deal struck price: a deal without one renders a badge at live price.
+  // Required for hotDeal packages (server enforces 0 < deal < list price).
+  const [dealPrice, setDealPrice] = useState('');
   const payingRef = useRef(false);
   // Bumps when the admin-managed catalog arrives so prices re-render live.
   const [configTick, setConfigTick] = useState(0);
@@ -175,7 +178,10 @@ export default function PromotionsScreen() {
 
   const pay = async () => {
     if (payingRef.current) return;
-    if (!pkg || !selectedPost) {
+    // Top Seller Spotlight pins the seller card, not a listing — purchasable
+    // with zero listings (the exact user who needs discovery).
+    const needsPost = pkg?.kind !== 'topSeller';
+    if (!pkg || (needsPost && !selectedPost)) {
       Alert.alert('Select a listing', 'Pick one of your listings and a package to promote.');
       return;
     }
@@ -190,6 +196,17 @@ export default function PromotionsScreen() {
       Alert.alert('Insufficient balance', `This campaign costs ${formatPrice(pkg.price)}. Add money to your wallet first.`);
       return;
     }
+    // Hot-Deal struck price (client pre-check; server re-validates): without
+    // it the "deal" is a badge at live price.
+    let deal: number | undefined;
+    if (pkg.kind === 'hotDeal') {
+      const listPrice = Math.round(Number(selectedPost?.price ?? NaN));
+      deal = Math.round(Number(dealPrice));
+      if (!Number.isFinite(deal) || deal <= 0 || !Number.isFinite(listPrice) || listPrice <= 0 || deal >= listPrice) {
+        Alert.alert('Set a deal price', `Enter a deal price below the listing price (${formatPrice(listPrice)}).`);
+        return;
+      }
+    }
     payingRef.current = true;
     // Server owns the money: ONE call debits the wallet and creates the
     // ACTIVE placement atomically (server price, ownership-checked). The old
@@ -202,7 +219,7 @@ export default function PromotionsScreen() {
     // second charge for the same intent). Now retries reuse the stored ref.
     // TTL 24h: a ref orphaned by an app-kill between commit and cleanup must
     // not resurrect the OLD purchase as a "new" buy forever.
-    const refKey = `@susej_promo_ref:${pkg.id}:${selectedPost.id}`;
+    const refKey = `@susej_promo_ref:${pkg.id}:${selectedPost?.id ?? 'seller'}`;
     const REF_TTL_MS = 24 * 3600 * 1000;
     let checkoutRef: string | null = null;
     try {
@@ -236,12 +253,15 @@ export default function PromotionsScreen() {
         await AsyncStorage.setItem(refKey, JSON.stringify({ ref: checkoutRef, at: Date.now() }));
       } catch {}
     }
-    try {
-      const res = await serverApi.purchasePromotion({
-        packageId: pkg.id,
-        postId: selectedPost.id,
-        checkoutRef,
-      });
+      // Server purchase id for the local mirror (end-early matching).
+      let purchaseId: string | null = null;
+      try {
+        const res = await serverApi.purchasePromotion({
+          packageId: pkg.id,
+          postId: selectedPost?.id,
+          checkoutRef,
+          ...(deal !== undefined ? { discountedPrice: deal } : {}),
+        });
       if (!res.ok) {
         Alert.alert('Payment failed', res.error === 'offline' ? 'Could not reach the server — no money was charged. Try again when online.' : String(res.error || 'Could not start campaign. No money was charged.'));
         getWallet().then((s) => setBalance(s.balance)).catch(() => {});
@@ -251,10 +271,12 @@ export default function PromotionsScreen() {
       try {
         await AsyncStorage.removeItem(refKey);
       } catch {}
-      // Idempotent replay: the server returned an EXISTING purchase for this
-      // ref (app-kill between commit and cleanup) — say so honestly instead
-      // of announcing a brand-new campaign.
-      const dup = (res.data as { purchase?: { duplicate?: boolean } } | null)?.purchase?.duplicate === true;
+        // Idempotent replay: the server returned an EXISTING purchase for this
+        // ref (app-kill between commit and cleanup) — say so honestly instead
+        // of announcing a brand-new campaign.
+        const dup = (res.data as { purchase?: { duplicate?: boolean } } | null)?.purchase?.duplicate === true;
+        const pid = (res.data as { purchase?: { id?: unknown } } | null)?.purchase?.id;
+        if (typeof pid === 'string' && pid) purchaseId = pid;
       if (dup) {
         Alert.alert('Already active', 'This exact campaign was already paid for — no new charge was made. See My campaigns above.');
         try {
@@ -273,21 +295,25 @@ export default function PromotionsScreen() {
     // server-side; the local cache doesn't know yet).
     await syncWalletFromServer().catch(() => {});
     getWallet().then((s) => setBalance(s.balance)).catch(() => {});
-    // Local mirror for instant "My campaigns" reflection (server row is the
-    // truth other devices read; this never moves money).
-    createPromotion({
-      packageId: pkg.id,
-      postId: selectedPost.id,
-      productTitle: selectedPost.description.slice(0, 44),
-      sellerUsername: user?.username ?? '',
-    });
-    Alert.alert(
-      'Campaign is live',
-      `${PROMOTION_KIND_LABEL[pkg.kind]} started for "${selectedPost.description.slice(0, 24)}" — ${
-        pkg.days
-      } days, ${formatPrice(pkg.price)} paid from wallet. Buyers will see it right away.`,
-      [{ text: 'Done' }]
-    );
+      // Local mirror for instant "My campaigns" reflection (server row is the
+      // truth other devices read; this never moves money). Adopt the server
+      // purchase id so end-early matches even listing-free rows.
+      createPromotion({
+        packageId: pkg.id,
+        postId: selectedPost?.id,
+        productTitle: selectedPost?.description.slice(0, 44) ?? 'Spotlight — seller card',
+        sellerUsername: user?.username ?? '',
+        ...(typeof purchaseId === 'string' && purchaseId ? { serverId: purchaseId } : {}),
+      });
+      Alert.alert(
+        'Campaign is live',
+        selectedPost
+          ? `${PROMOTION_KIND_LABEL[pkg.kind]} started for "${selectedPost.description.slice(0, 24)}" — ${
+              pkg.days
+            } days, ${formatPrice(pkg.price)} paid from wallet. Buyers will see it right away.`
+          : `${PROMOTION_KIND_LABEL[pkg.kind]} started for your seller card — ${pkg.days} days, ${formatPrice(pkg.price)} paid from wallet. Buyers will see it right away.`,
+        [{ text: 'Done' }]
+      );
   };
 
   // Approved sellers only (SELLER-C1): buyers/pending deep-links get status,
@@ -353,6 +379,9 @@ export default function PromotionsScreen() {
                   ) : null}
                   {/* No impression tracking exists yet: show real slot time, never 0-view metrics. */}
                   <View className="flex-row items-center mt-2.5" style={{ gap: 14 }}>
+                    <Text className="font-inter-600" style={{ fontSize: 11, lineHeight: 14, color: colors.textSecondary }}>
+                      {formatPrice(Number((p as any).amountPaid ?? 0))} paid
+                    </Text>
                     {p.status === 'active' ? (
                       <Text className="font-inter-600" style={{ fontSize: 11, lineHeight: 14, color: colors.primary }}>
                         {daysLeft}d left{endsLabel ? ` · ends ${endsLabel}` : ''}
@@ -383,7 +412,7 @@ export default function PromotionsScreen() {
         {myPosts.length === 0 ? (
           <View className="mt-2 items-center py-6 rounded-figma-16" style={{ backgroundColor: colors.surfaceContainerLow }}>
             <Text className="font-inter-400 text-textSecondary text-center" style={{ fontSize: 13, lineHeight: 18 }}>
-              You don't have listings yet.{'\n'}Create one from the + tab, then come back to promote it.
+              You don't have listings yet.{'\n'}Top Seller Spotlight works without one — pick it below.{'\n'}Other boosts need a listing (create one from the + tab).
             </Text>
           </View>
         ) : (
@@ -462,14 +491,36 @@ export default function PromotionsScreen() {
         </View>
 
         {/* Pay */}
+        {pkg?.kind === 'hotDeal' && selectedPost ? (
+          <View className="mt-4 p-4 rounded-figma-16" style={{ backgroundColor: colors.surfaceContainerLow }}>
+            <Text className="font-inter-600 text-textPrimary" style={{ fontSize: 13, lineHeight: 18 }}>
+              Deal price (listing at {formatPrice(Number(selectedPost.price ?? 0))})
+            </Text>
+            <View className="mt-2 flex-row items-center px-4" style={{ backgroundColor: colors.surface, borderRadius: 12, height: 48 }}>
+              <Text className="font-inter-700 text-textPrimary" style={{ fontSize: 16 }}>₹</Text>
+              <TextInput
+                className="flex-1 ml-1 font-inter-600 text-textPrimary"
+                style={{ fontSize: 16 }}
+                placeholder="e.g. 799"
+                placeholderTextColor={colors.textTertiary}
+                keyboardType="numeric"
+                value={dealPrice}
+                onChangeText={(t) => setDealPrice(t.replace(/[^0-9]/g, '').slice(0, 8))}
+              />
+            </View>
+            <Text className="font-inter-400 mt-1.5 text-textSecondary" style={{ fontSize: 11, lineHeight: 15 }}>
+              Buyers see this struck price with % off — it must stay below the listing price.
+            </Text>
+          </View>
+        ) : null}
         <TouchableOpacity
           className="mt-6 items-center justify-center"
-          style={{ borderRadius: 16, backgroundColor: total > 0 && selectedPost ? colors.primaryContainer : colors.surfaceContainerHigh, height: 52 }}
-          disabled={!total || !selectedPost}
+          style={{ borderRadius: 16, backgroundColor: total > 0 && (pkg?.kind === 'topSeller' || selectedPost) ? colors.primaryContainer : colors.surfaceContainerHigh, height: 52 }}
+          disabled={!total || (pkg?.kind !== 'topSeller' && !selectedPost)}
           onPress={pay}
         >
-          <Text className="font-inter-700" style={{ fontSize: 15, lineHeight: 20, color: total > 0 && selectedPost ? colors.onPrimary : colors.textTertiary }}>
-            {selectedPost ? `Pay ${formatPrice(total)} from wallet` : 'Select a listing to continue'}
+          <Text className="font-inter-700" style={{ fontSize: 15, lineHeight: 20, color: total > 0 && (pkg?.kind === 'topSeller' || selectedPost) ? colors.onPrimary : colors.textTertiary }}>
+            {pkg?.kind === 'topSeller' && !selectedPost ? (total > 0 ? `Pay ${formatPrice(total)} from wallet` : 'Select a package to continue') : selectedPost ? (total > 0 ? `Pay ${formatPrice(total)} from wallet` : 'Select a package to continue') : 'Select a listing to continue'}
           </Text>
         </TouchableOpacity>
         <Text className="font-inter-400 mt-2 text-textSecondary text-center" style={{ fontSize: 11, lineHeight: 15 }}>

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
 import { getAppUser } from "@/lib/app-auth";
+import { getClientIp } from "@/lib/auth";
+import { checkWriteRate } from "@/lib/rate-limit";
 import { applyPriceOverrides, getPackage } from "@/lib/promotions/catalog";
 import { notifyUser } from "@/lib/notifications";
 
@@ -43,12 +45,20 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  // Viewer-scoped spend: the public lane serves placements to everyone, but
+  // amountPaid leaves the server only for the owning seller's own rows.
+  const me = await getAppUser(req).catch(() => null);
+  const myName = typeof (me as { user?: { username?: unknown } } | null)?.user?.username === "string"
+    ? String((me as { user: { username: string } }).user.username ?? "").toLowerCase()
+    : "";
   return NextResponse.json({
     promotions: rows.filter((p) => !p.postId || liveIds.has(p.postId)).map((p) => ({
       id: p.id,
       kind: p.kind,
       packageName: p.packageName,
-      amountPaid: p.amountPaid,
+      ...(myName && typeof p.sellerId === "string" && p.sellerId.toLowerCase() === myName
+        ? { amountPaid: p.amountPaid }
+        : {}),
       durationDays: p.durationDays,
       sellerId: p.sellerId,
       sellerName: p.sellerName,
@@ -76,12 +86,15 @@ export async function GET(req: NextRequest) {
  *  (Replaces the old client-debit + fire-and-forget mirror, which burned
  *  money whenever the mirror failed, and the chat-pin double-charge class.) */
 export async function POST(req: NextRequest) {
+  if (!checkWriteRate(`promos-post:${getClientIp(req)}`, 20)) {
+    return NextResponse.json({ error: "Too many requests — slow down" }, { status: 429 });
+  }
   const auth = await getAppUser(req);
   if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   const prisma = await getPrisma();
   if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
 
-  let body: { packageId?: string; postId?: string; checkoutRef?: string };
+  let body: { packageId?: string; postId?: string; checkoutRef?: string; discountedPrice?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -89,14 +102,21 @@ export async function POST(req: NextRequest) {
   }
   const packageId = String(body.packageId ?? "").trim();
   const postId = String(body.postId ?? "").trim();
-  if (!packageId || !postId) {
-    return NextResponse.json({ error: "packageId and postId are required" }, { status: 400 });
+  if (!packageId) {
+    return NextResponse.json({ error: "packageId is required" }, { status: 400 });
   }
 
   // Server-authoritative price (admin overrides honored, client price ignored).
   let price = getPackage(packageId)?.price;
   let pkg = getPackage(packageId);
   if (!pkg) return NextResponse.json({ error: "Unknown package" }, { status: 400 });
+  // Top Seller Spotlight pins the SELLER card (logo), not a listing — newly
+  // approved sellers with zero listings are the exact users who need
+  // discovery, so postId is optional for this kind only.
+  const listingFree = pkg.kind === "topSeller" && !postId;
+  if (!postId && !listingFree) {
+    return NextResponse.json({ error: "postId is required for this package" }, { status: 400 });
+  }
   try {
     const row: any = await prisma.appSetting.findUnique({ where: { key: "promoPrices" } });
     const priced = applyPriceOverrides(row?.value as Record<string, unknown> | null).find(
@@ -113,24 +133,40 @@ export async function POST(req: NextRequest) {
   }
 
   const username = auth.user.username!;
-  const post = await (prisma as any).post.findUnique({ where: { id: postId } });
-  if (!post) return NextResponse.json({ error: "Listing not found" }, { status: 404 });
-  if (String((post as any).authorUsername ?? "") !== username) {
+  const post = postId ? await (prisma as any).post.findUnique({ where: { id: postId } }) : null;
+  if (postId && !post) return NextResponse.json({ error: "Listing not found" }, { status: 404 });
+  if (post && String((post as any).authorUsername ?? "") !== username) {
     return NextResponse.json({ error: "You can only promote your own listing" }, { status: 403 });
   }
   // No paid placement on a sold/hidden listing — the slot could never render,
   // so selling it burns the seller's money for nothing.
-  if ((post as any).isSold === true) {
+  if (post && (post as any).isSold === true) {
     return NextResponse.json({ error: "This listing is already sold" }, { status: 400 });
   }
-  if (String((post as any).status ?? "published") !== "published") {
+  if (post && String((post as any).status ?? "published") !== "published") {
     return NextResponse.json({ error: "Only live listings can be promoted" }, { status: 400 });
+  }
+  // Deal price (hotDeal only): a deal without a struck price renders a badge
+  // at live price — a badge, not a deal. Must be a REAL discount (0 < deal <
+  // listing price); other kinds reject it (no silent ignore).
+  let dealPrice: number | null = null;
+  if (body.discountedPrice !== undefined && body.discountedPrice !== null && String(body.discountedPrice).trim() !== "") {
+    if (pkg.kind !== "hotDeal") {
+      return NextResponse.json({ error: "Deal prices apply to Hot Deals only" }, { status: 400 });
+    }
+    if (!post) return NextResponse.json({ error: "Deal price needs its listing" }, { status: 400 });
+    const listPrice = Number((post as any).price ?? NaN);
+    const deal = Math.round(Number(body.discountedPrice));
+    if (!Number.isFinite(deal) || deal <= 0 || !Number.isFinite(listPrice) || listPrice <= 0 || deal >= listPrice) {
+      return NextResponse.json({ error: "Deal price must be below the listing price" }, { status: 400 });
+    }
+    dealPrice = deal;
   }
   // No paid placement on an imageless listing for listing-rendered rails
   // (hotDeal/featuredPost/spotlight): feed + PDP gates hide imageless rows
   // unconditionally, so the placement could never render. topSeller pins the
   // seller card (logo), not the listing — exempt.
-  {
+  if (post) {
     const kind = String(getPackage(packageId)?.kind ?? "");
     const images = Array.isArray((post as any).images) ? (post as any).images.filter((u: unknown) => typeof u === "string" && (u as string).trim()) : [];
     const cover = typeof (post as any).image === "string" ? (post as any).image.trim() : "";
@@ -148,6 +184,28 @@ export async function POST(req: NextRequest) {
   }
   const existing = await prisma.promotionPurchase.findUnique({ where: { checkoutRef } });
   if (existing) {
+    // Crash recovery: a prior attempt may have debited + created the row but
+    // died before activation (pending, no rails). Re-drive activation instead
+    // of returning a rail-less "live" purchase.
+    if (existing.status === "pending_payment") {
+      const { activatePromotion } = await import("@/lib/promotions/activate");
+      const rescued = await activatePromotion(checkoutRef).catch(() => null);
+      if (rescued && (rescued as { ok?: unknown }).ok) {
+        const row = await prisma.promotionPurchase.findUnique({ where: { checkoutRef } });
+        return NextResponse.json(
+          {
+            purchase: {
+              id: existing.id,
+              kind: existing.kind,
+              amountPaid: existing.amountPaid,
+              endsAt: row?.endsAt ? row.endsAt.getTime() : null,
+              duplicate: true,
+            },
+          },
+          { status: 200 }
+        );
+      }
+    }
     return NextResponse.json(
       {
         purchase: {
@@ -180,7 +238,7 @@ export async function POST(req: NextRequest) {
             // the bare `Promotion · name` title 500d every second buy while
             // charging nothing. Ref stays readable for the wallet statement.
             title: `Promotion · ${pkg.name} · ${checkoutRef}`,
-            detail: `${pkg.durationDays}d · ${String((post as any).description ?? (post as any).title ?? "").slice(0, 40)}`,
+            detail: post ? `${pkg.durationDays}d · ${String((post as any).description ?? (post as any).title ?? "").slice(0, 40)}` : `${pkg.durationDays}d · seller spotlight (no listing)`,
             amount: -amount,
           },
         });
@@ -194,24 +252,54 @@ export async function POST(req: NextRequest) {
           durationDays: pkg.durationDays,
           sellerId: username,
           sellerName: auth.user.name || username,
-          postId,
-          postTitle: String((post as any).description ?? (post as any).title ?? "").slice(0, 80),
+          postId: postId || null,
+          postTitle: post ? String((post as any).description ?? (post as any).title ?? "").slice(0, 80) : "",
           provider: "app",
           checkoutRef,
-          status: "active",
+          ...(dealPrice !== null ? { discountedPrice: dealPrice } : {}),
+          // Pending FIRST: the rail rows are written by activatePromotion
+          // (same engine as the gateway flow). Creating "active" directly
+          // took the money with zero servable placement (money-for-nothing).
+          status: "pending_payment",
           isPinned: pkg.pinned,
           startsAt: now,
           endsAt,
         },
       });
     });
+    // Activation (charge → placement in one user action, IG-boost norm):
+    // writes the rail rows home reads. Failure compensates (full refund via
+    // the refund engine) — a paid purchase without placement never stands.
+    const { activatePromotion, deactivateOnRefund } = await import("@/lib/promotions/activate");
+    const activated = await activatePromotion(checkoutRef).catch(() => ({ ok: false as const, error: "activation_failed" }));
+    if (!activated.ok) {
+      if ((activated as { error?: unknown }).error === "spotlight_full") {
+        await deactivateOnRefund(checkoutRef).catch(() => null);
+        return NextResponse.json({ error: "Spotlight slots are full right now — try again later. The charge was refunded to your wallet." }, { status: 409 });
+      }
+      await deactivateOnRefund(checkoutRef).catch(() => null);
+      return NextResponse.json({ error: "Promotion could not be activated — payment refunded to your wallet." }, { status: 500 });
+    }
     // Campaign-live tell (fire-and-forget, post-commit): paid placement with
-    // no receipt row leaves sellers wondering if money burned.
+    // no receipt row leaves sellers wondering if money burned. targetId
+    // carries the LISTING (or nothing for listing-free Spotlight) — the app
+    // routes purchase-id tells to dead PDPs, so never stamp the purchase row.
+    // Ops audit rides along (same discipline).
+    void import("@/lib/audit").then((m) =>
+      m.writeAudit({
+        action: "app.promotion.purchased",
+        entity: "promotion",
+        entityId: String(created.id),
+        details: `${pkg.kind} ${pkg.name} · paid ${amount} · ref ${checkoutRef}`,
+        adminName: `app:${String(username ?? "?").slice(0, 120)}`,
+        ip: getClientIp(req),
+      }).catch(() => {})
+    );
     notifyUser(prisma, {
       username, type: "promotion",
       userName: auth.user.name, userHandle: username,
       action: `started “${pkg.name}” (${pkg.durationDays}d, ₹${amount.toLocaleString("en-IN")} paid)`,
-      targetId: created.id,
+      targetId: postId || "",
     });
     return NextResponse.json(
       {
@@ -219,7 +307,9 @@ export async function POST(req: NextRequest) {
           id: created.id,
           kind: created.kind,
           amountPaid: created.amountPaid,
-          endsAt: created.endsAt ? created.endsAt.getTime() : null,
+          endsAt: (activated as { purchase?: { endsAt?: unknown } }).purchase?.endsAt
+            ? new Date((activated as { purchase: { endsAt: string } }).purchase.endsAt).getTime()
+            : created.endsAt ? created.endsAt.getTime() : null,
         },
       },
       { status: 201 }
@@ -255,6 +345,9 @@ export async function POST(req: NextRequest) {
  * was local-only while billing time kept burning server-side.
  */
 export async function PATCH(req: NextRequest) {
+  if (!checkWriteRate(`promos-patch:${getClientIp(req)}`, 20)) {
+    return NextResponse.json({ error: "Too many requests — slow down" }, { status: 429 });
+  }
   const auth = await getAppUser(req);
   if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   const prisma = await getPrisma();
@@ -294,5 +387,12 @@ export async function PATCH(req: NextRequest) {
     where: { id: { in: rows.map((r) => r.id) } },
     data: { status: "ended", endsAt: new Date() },
   });
+  // End-early must unpin the placement too (scoped to this purchase's rail
+  // row): ending billing while home keeps serving the creative is half an
+  // off-switch. Best-effort — the purchase is ended regardless.
+  try {
+    const { hideSlotScoped } = await import("@/lib/promotions/activate");
+    for (const r of rows) await hideSlotScoped(r).catch(() => null);
+  } catch {}
   return NextResponse.json({ ok: true, status: "ended", ended: rows.length });
 }

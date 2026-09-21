@@ -74,15 +74,39 @@ export interface SettledLine {
 }
 
 /**
- * Settlement goods basis: SUM((netPrice ?? price) x qty). netPrice carries
- * the coupon-discounted line value persisted at placement, so clawbacks, COD
- * credits and dispute rulings settle on what the buyer actually paid — never
- * the pre-discount receipt figure. Rows predating netPrice fall back to
- * price, exactly as before. Returns NaN when unusable; callers fall back to
- * the order amount.
+ * Coupon release on cancel/refund (single-use codes must not burn on failed
+ * orders — Amazon/Flipkart release on cancel/return). The consumed code rides
+ * the first settled line (`promoCode`, stamped at placement; migration-free).
+ * Decrement is floor-guarded and idempotent-safe per caller: call once per
+ * terminal transition (cancel/approve/dispute-settle each fire once thanks to
+ * their status gates + title guards — a second call would over-release, so
+ * never call from retry/dedupe paths).
  */
-export function settlementGoodsBasis(itemsList: unknown): number {
+export function couponCodeFromLegs(itemsList: unknown): string | null {
   try {
+    const list = itemsList as Array<Record<string, unknown>> | null;
+    if (!Array.isArray(list)) return null;
+    for (const l of list) {
+      const code = String((l as Record<string, unknown>)?.promoCode ?? "").trim().toUpperCase();
+      if (code) return code;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export async function releaseCoupon(
+  tx: { coupon: { updateMany(a: unknown): Promise<{ count: number }> } },
+  itemsList: unknown
+): Promise<void> {
+  const code = couponCodeFromLegs(itemsList);
+  if (!code) return;
+  await tx.coupon
+    .updateMany({ where: { code, usedCount: { gt: 0 } }, data: { usedCount: { decrement: 1 } } })
+    .catch(() => null);
+}
+export function settlementGoodsBasis(itemsList: unknown): number {  try {
     const list = itemsList as SettledLine[];
     if (!Array.isArray(list) || !list.length) return NaN;
     return list.reduce((s, i) => {

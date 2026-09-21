@@ -37,9 +37,11 @@ interface SellerHit {
 }
 
 export default function SearchScreen() {
-  const { q } = useLocalSearchParams<{ q?: string }>();
+  const { q, tab: tabParam } = useLocalSearchParams<{ q?: string; tab?: string }>();
   const [query, setQuery] = useState(q || '');
-  const [tab, setTab] = useState<SearchTab>('products');
+  const initialTab: SearchTab =
+    tabParam === 'sellers' || tabParam === 'communities' || tabParam === 'hashtags' ? tabParam : 'products';
+  const [tab, setTab] = useState<SearchTab>(initialTab);
   const { posts, hiddenPostIds = [], mutedSellers = [], searchServer } = usePosts() as { posts: import('../contexts/PostContext').Post[]; hiddenPostIds?: string[]; mutedSellers?: string[]; searchServer: (q: string) => Promise<{ rows: unknown[]; ok: boolean }> };
   const { communities } = useCommunities();
   const { user } = useAuth();
@@ -54,8 +56,11 @@ export default function SearchScreen() {
       setQuery(q);
       addRecentSearch(q);
     }
+    if (tabParam === 'sellers' || tabParam === 'communities' || tabParam === 'hashtags' || tabParam === 'products') {
+      setTab(tabParam);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q]);
+  }, [q, tabParam]);
 
   const term = query.trim().toLowerCase();
   // Unicode NFC: composed vs decomposed forms of the same Indic/accented text

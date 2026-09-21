@@ -74,6 +74,9 @@ export default function AddressBookScreen() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({ name: '', phone: '', street: '', city: '', type: 'Home' });
   const [formError, setFormError] = useState<string | null>(null);
+  // Retry sequence: same-route replace never remounts, so Retry re-runs the
+  // load effect via this counter (payment-methods pattern).
+  const [retrySeq, setRetrySeq] = useState(0);
 
   useEffect(() => {
     let active = true;
@@ -130,7 +133,7 @@ export default function AddressBookScreen() {
     return () => {
       active = false;
     };
-  }, [username, tokenSeq]);
+  }, [username, tokenSeq, retrySeq]);
 
   const persist = useCallback((next: SavedAddress[]) => {
     AsyncStorage.setItem(addressesKey(username), JSON.stringify(next)).catch(() => {});
@@ -327,7 +330,7 @@ export default function AddressBookScreen() {
               setLoadFailed(false);
               setAddresses(null);
               setSelectedId(null);
-              router.replace('/address-book');
+              setRetrySeq((n) => n + 1);
             }}
           >
             <Text className="text-[14px] font-inter-600 text-white">Retry</Text>

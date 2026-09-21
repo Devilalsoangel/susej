@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
 import { getAppUser } from "@/lib/app-auth";
+import { getClientIp } from "@/lib/auth";
+import { checkWriteRate } from "@/lib/rate-limit";
 
 const MAX_CONCURRENT_PINS = 3;
 
@@ -11,6 +13,9 @@ const MAX_CONCURRENT_PINS = 3;
  *  requester must be a real thread participant, days clamp 1..30, and each
  *  seller can hold at most MAX_CONCURRENT_PINS active pins. */
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  if (!checkWriteRate(`pin:${getClientIp(req)}`, 20)) {
+    return NextResponse.json({ error: "Too many requests — slow down" }, { status: 429 });
+  }
   const auth = await getAppUser(req);
   if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   const prisma = await getPrisma();
@@ -108,7 +113,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (msg.startsWith("LIMIT:")) return NextResponse.json({ error: `Pinned-chat limit reached (${MAX_CONCURRENT_PINS}). Wait for one to expire or unpurchase.` }, { status: 403 });
+      if (msg.startsWith("LIMIT:")) return NextResponse.json({ error: `Pinned-chat limit reached (${MAX_CONCURRENT_PINS}). Wait for one to expire or unpin one (unpin forfeits remaining time).` }, { status: 403 });
       if (msg === "BALANCE") return NextResponse.json({ error: "Insufficient wallet balance" }, { status: 400 });
       // Concurrent retry already committed (UNIQUE username+title): report the
       // winner — but VERIFIED like the pre-check above. The old code returned
@@ -154,7 +159,32 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     return NextResponse.json({ pinnedUntil: pinnedUntil.getTime(), days }, { status: 200 });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
-    if (msg.startsWith("LIMIT:")) return NextResponse.json({ error: `Pinned-chat limit reached (${MAX_CONCURRENT_PINS}). Wait for one to expire or unpurchase.` }, { status: 403 });
+    if (msg.startsWith("LIMIT:")) return NextResponse.json({ error: `Pinned-chat limit reached (${MAX_CONCURRENT_PINS}). Wait for one to expire or unpin one (unpin forfeits remaining time).` }, { status: 403 });
     throw e;
   }
+}
+
+/** DELETE /api/app/chat/threads/[id]/pin — unpin early (owner only).
+ *  Forfeit, no pro-rata refund (same rule as campaign end-early): the slot
+ *  was served while pinned. Without this, a wrong-thread pin was
+ *  unrecoverable and the limit error promised an "unpurchase" that never
+ *  existed. */
+export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  if (!checkWriteRate(`pin-del:${getClientIp(req)}`, 20)) {
+    return NextResponse.json({ error: "Too many requests — slow down" }, { status: 429 });
+  }
+  const auth = await getAppUser(req);
+  if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  const prisma = await getPrisma();
+  if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
+  const username = auth.user.username!;
+  const { id } = await ctx.params;
+  const cleared = await prisma.chatThread.updateMany({
+    where: { id, pinnedBy: username, pinnedUntil: { gt: new Date() } },
+    data: { pinnedUntil: new Date(0), pinnedBy: null },
+  }).catch(() => null);
+  if (!cleared || cleared.count !== 1) {
+    return NextResponse.json({ error: "No live pin of yours on this thread." }, { status: 404 });
+  }
+  return NextResponse.json({ ok: true, unpinned: true });
 }

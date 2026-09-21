@@ -15,7 +15,7 @@ import { usePromotions } from '../contexts/PromotionContext';
 import { useFollow } from '../contexts/FollowContext';
 import { findMainCategory } from '../utils/categories';
 import { STORE_THEMES, saveStoreTheme } from '../utils/sellerUnlocks';
-import { sellerNetForOrders, getPackages, getChatPinPrice, getChatPinDays, loadMarketplaceConfig, isApprovedSeller } from '../utils/marketplace';
+import { sellerNetForOrders, sellerBucketsForOrders, getPackages, getChatPinPrice, getChatPinDays, loadMarketplaceConfig, isApprovedSeller } from '../utils/marketplace';
 import SellerGate from '../components/SellerGate';
 
 // Seller Dashboard Hub — store hero, KPI stats, needs-action, quick actions,
@@ -150,6 +150,17 @@ export default function SellerDashboardHubScreen() {
   // seller surface (marketplace.sellerNetForOrders): goods-only net exactly
   // like the server credits. Delivery float is never commissioned.
   const revenue = useMemo(() => sellerNetForOrders(myOrders), [myOrders]);
+  // Orders KPI counts live orders only (cancelled excluded — a cancelled row
+  // is not a sale and poisoned naive AOV math). Buckets disclose frozen +
+  // settling like the wallet (headline-only hid withdrawable truth).
+  const orderCount = useMemo(() => myOrders.filter((o) => o.status !== 'cancelled').length, [myOrders]);
+  const bucketCaption = useMemo(() => {
+    const b = sellerBucketsForOrders(myOrders);
+    const parts: string[] = [];
+    if (b.settling > 0) parts.push(`${formatRevenue(b.settling)} settling`);
+    if (b.frozen > 0) parts.push(`${formatRevenue(b.frozen)} frozen`);
+    return parts.length ? parts.join(' · ') : null;
+  }, [myOrders]);
 
 
   // Orders waiting on the seller — the actionable number. Includes
@@ -233,14 +244,29 @@ export default function SellerDashboardHubScreen() {
   }, [myOrders, myPosts]);
 
   const removeListing = (id: string) => {
-    Alert.alert('Delete listing', 'Remove this listing permanently?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: () => deletePost(id),
-      },
-    ]);
+    // Live-auction guard: deleting the backing listing orphans a running lot
+    // (cover falls back, auction live with no item). End the auction first.
+    const doDelete = () => deletePost(id);
+    void (async () => {
+      try {
+        const { serverApi } = await import('../utils/serverApi');
+        const res = await serverApi.getAuctions().catch(() => null);
+        const rows = (res as { ok?: boolean; data?: { auctions?: { imageKey?: unknown; status?: unknown }[] } } | null)?.data?.auctions;
+        const live = Array.isArray(rows) && rows.some((a) => String(a?.imageKey ?? '') === String(id) && (String(a?.status ?? '') === 'live' || String(a?.status ?? '') === 'upcoming'));
+        if (live) {
+          Alert.alert('Live auction uses this listing', 'End the auction first — deleting now would orphan a running lot with no item.');
+          return;
+        }
+      } catch {}
+      Alert.alert('Delete listing', 'Remove this listing permanently?', [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: doDelete,
+        },
+      ]);
+    })();
   };
 
   const formatRevenue = (n: number) => (n >= 100000 ? `₹${(n / 100000).toFixed(1)}L` : n >= 1000 ? `₹${(n / 1000).toFixed(1)}k` : `₹${n}`);
@@ -338,8 +364,8 @@ export default function SellerDashboardHubScreen() {
         {/* KPI Stats — 2x2 grid (real data) */}
         <View className="mx-5 mt-5 flex-row flex-wrap" style={{ gap: 12 }}>
           {[
-            { label: 'Revenue', value: formatRevenue(revenue), icon: <WalletIcon size={20} color={colors.primary} />, route: '/wallet' },
-            { label: 'Orders', value: String(myOrders.length), icon: <ShopIcon size={20} color={colors.primary} />, route: '/seller-orders' },
+            { label: 'Revenue', value: formatRevenue(revenue), sub: bucketCaption, icon: <WalletIcon size={20} color={colors.primary} />, route: '/wallet' },
+            { label: 'Orders', value: String(orderCount), icon: <ShopIcon size={20} color={colors.primary} />, route: '/seller-orders' },
             { label: 'To Fulfill', value: String(toFulfill), icon: <BellIcon size={20} color={colors.primary} />, route: '/seller-orders' },
             { label: 'Followers', value: String(followerCounts[username] ?? 0), icon: <UsersIcon size={20} color={colors.primary} />, route: null },
           ].map((s) => (
@@ -360,6 +386,11 @@ export default function SellerDashboardHubScreen() {
               <Text className="font-inter-500 text-textSecondary mt-0.5" style={{ fontSize: 12, lineHeight: 16 }}>
                 {s.label}
               </Text>
+              {'sub' in s && s.sub ? (
+                <Text className="font-inter-500 mt-0.5" style={{ fontSize: 10, lineHeight: 13, color: colors.textSecondary }}>
+                  {s.sub}
+                </Text>
+              ) : null}
               {s.route && (
                 <Text className="font-inter-500 mt-1" style={{ fontSize: 10, lineHeight: 12, color: colors.primary }}>
                   Manage {s.label.toLowerCase()} →
@@ -449,6 +480,7 @@ export default function SellerDashboardHubScreen() {
             <View style={{ gap: 10 }}>
               {recentOrders.map((o) => {
                 const amount = o.chargedTotal ?? o.total;
+                const net = sellerNetForOrders([o]);
                 const chipBg =
                   o.status === 'delivered' ? '#22c55e22'
                   : o.status === 'cancelled' ? `${colors.error}22`
@@ -462,7 +494,7 @@ export default function SellerDashboardHubScreen() {
                     key={o.id}
                     className="flex-row items-center p-3 rounded-figma-16"
                     style={{ backgroundColor: colors.surfaceContainerLowest, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 1 }}
-                    onPress={() => router.push('/seller-orders')}
+                    onPress={() => router.push(`/seller-orders?orderId=${encodeURIComponent(o.id)}`)}
                   >
                     <View className="flex-1">
                       <Text className="font-inter-600 text-textPrimary" style={{ fontSize: 14, lineHeight: 19 }} numberOfLines={1}>
@@ -475,6 +507,9 @@ export default function SellerDashboardHubScreen() {
                     <View className="items-end">
                       <Text className="font-inter-700 text-textPrimary" style={{ fontSize: 15, lineHeight: 20 }}>
                         {formatPrice(amount)}
+                      </Text>
+                      <Text className="font-inter-400 text-textSecondary" style={{ fontSize: 10, lineHeight: 12 }}>
+                        charged · you net {formatPrice(net)}
                       </Text>
                       <View className="mt-1 px-2 py-0.5 rounded-full" style={{ backgroundColor: chipBg }}>
                         <Text className="font-inter-600" style={{ fontSize: 10, lineHeight: 12, color: chipFg }}>
@@ -631,7 +666,7 @@ export default function SellerDashboardHubScreen() {
                   </View>
                 </View>
                 <Text className="font-inter-400 text-textSecondary mt-0.5" style={{ fontSize: 11.5, lineHeight: 15 }}>
-                  Accent color preview on this device — buyer-side themes arrive with the next storefront sync
+                  Preview on this device only — buyers see the default violet until themes sync server-side
                 </Text>
               </View>
             </View>
@@ -729,13 +764,13 @@ export default function SellerDashboardHubScreen() {
                   <Text className="font-inter-700 text-primary mt-1" style={{ fontSize: 15, lineHeight: 20 }}>
                     {formatPrice(p.price)}
                   </Text>
-                  <TouchableOpacity onPress={() => { void toggleSold(p.id).then((ok) => { if (!ok) Alert.alert('Not saved', 'Check your connection — the listing was restored.'); }); }}>
-                    <View className="self-start px-2 py-0.5 rounded-full" style={{ backgroundColor: p.isSold ? colors.surfaceContainer : '#22c55e22' }}>
-                      <Text className="font-inter-500" style={{ fontSize: 10, lineHeight: 12, color: p.isSold ? colors.secondary : '#16a34a' }}>
-                        {p.isSold ? 'Sold Out · tap to restock' : 'Active · tap to mark sold'}
-                      </Text>
-                    </View>
-                  </TouchableOpacity>
+                    <TouchableOpacity onPress={() => { void toggleSold(p.id).then((ok) => { if (!ok) Alert.alert('Not saved', 'Check your connection — the listing was restored.'); }); }}>
+                      <View className="self-start px-2 py-0.5 rounded-full" style={{ backgroundColor: p.isSold ? colors.surfaceContainer : p.status === 'hidden' ? '#fef3c7' : '#22c55e22' }}>
+                        <Text className="font-inter-500" style={{ fontSize: 10, lineHeight: 12, color: p.isSold ? colors.secondary : p.status === 'hidden' ? '#b45309' : '#16a34a' }}>
+                          {p.isSold ? 'Sold Out · tap to restock' : p.status === 'hidden' ? 'Hidden · buyers can\'t see' : 'Active · tap to mark sold'}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
                 </View>
                 <View className="items-center justify-center self-stretch py-1" style={{ gap: 14 }}>
                   <TouchableOpacity onPress={() => router.push(`/edit-listing/${p.id}`)} accessibilityRole="button" accessibilityLabel={`Edit ${listingTitle(p, 'listing').slice(0, 40)}`}>

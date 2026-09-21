@@ -17,6 +17,15 @@ export interface PaymentMethod {
 export const PAYMENT_KEY = '@susej_payment';
 export const PAYMENT_KEY_BASE = PAYMENT_KEY;
 
+// Session-keyed payment storage (never the app_user blob): a fast account
+// switch used to read/write the prior account's payment key, leaking the
+// selection across accounts. Callers pass the session username; the
+// parameterless path keeps the legacy blob lookup for old call sites.
+export function paymentKeyFor(username?: string | null): string {
+  const name = String(username ?? '').trim();
+  return name ? `${PAYMENT_KEY_BASE}:${name}` : PAYMENT_KEY_BASE;
+}
+
 async function getPaymentKey(): Promise<string> {
   try {
     const raw = await AsyncStorage.getItem('app_user');
@@ -37,9 +46,9 @@ export const PAYMENT_METHODS: PaymentMethod[] = [
   { id: 'cod', label: 'Cash on Delivery', detail: 'Pay at your doorstep' },
 ];
 
-export async function getSelectedPayment(): Promise<PaymentMethod | null> {
+export async function getSelectedPayment(username?: string | null): Promise<PaymentMethod | null> {
   try {
-    const key = await getPaymentKey();
+    const key = username !== undefined ? paymentKeyFor(username) : await getPaymentKey();
     let raw = await AsyncStorage.getItem(key);
     if (raw === null && key !== PAYMENT_KEY_BASE) {
       const legacy = await AsyncStorage.getItem(PAYMENT_KEY_BASE);
@@ -56,7 +65,8 @@ export async function getSelectedPayment(): Promise<PaymentMethod | null> {
 
 export default function PaymentMethodsScreen() {
   const insets = useSafeAreaInsets();
-  const { tokenSeq } = useAuth();
+  const { tokenSeq, user } = useAuth();
+  const sessionUsername = user?.username ?? null;
   const [methods, setMethods] = useState<PaymentMethod[] | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -75,14 +85,16 @@ export default function PaymentMethodsScreen() {
         // Server-synced first: the gate below must judge real money, and the
         // row must display it — never a stale cache snapshot.
         const synced = await syncWalletFromServer().catch(() => false);
-        const [selected, wallet] = await Promise.all([getSelectedPayment(), getWallet()]);
+        const [selected, wallet] = await Promise.all([getSelectedPayment(sessionUsername), getWallet()]);
         if (!active) return;
         if (!synced) setBalanceStale(true);
         // Wallet sits at the top with the live balance; the rest follow.
         const walletMethod: PaymentMethod = { id: 'wallet', label: 'Wallet', detail: `Balance ${formatPrice(wallet.balance)}${!synced ? ' (offline)' : ''}` };
         setWalletBalance(wallet.balance);
         setMethods([walletMethod, ...PAYMENT_METHODS]);
-        setSelectedId(selected?.id ?? 'wallet');
+        // Default to the method that can actually pay: an empty wallet as the
+        // inherited default guarantees a checkout failure. COD when broke.
+        setSelectedId(selected?.id ?? (wallet.balance > 0 ? 'wallet' : 'cod'));
       } catch {
         if (active) setLoadFailed(true);
       }
@@ -90,7 +102,7 @@ export default function PaymentMethodsScreen() {
     return () => {
       active = false;
     };
-  }, [tokenSeq, retrySeq]);
+  }, [tokenSeq, retrySeq, sessionUsername]);
 
   const selectMethod = useCallback((method: PaymentMethod) => {
     // Numeric gate on the synced balance — never a formatted-string match.
@@ -100,9 +112,9 @@ export default function PaymentMethodsScreen() {
       Alert.alert('Empty wallet', 'Add money in the Wallet tab before paying with wallet.');
       return;
     }
-    void getPaymentKey().then((k) => AsyncStorage.setItem(k, JSON.stringify(method)).catch(() => {}));
+    void Promise.resolve(paymentKeyFor(sessionUsername)).then((k) => AsyncStorage.setItem(k, JSON.stringify(method)).catch(() => {}));
     router.back();
-  }, [walletBalance, balanceStale]);
+  }, [walletBalance, balanceStale, sessionUsername]);
 
   return (
     <View className="flex-1 bg-surface">

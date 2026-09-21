@@ -24,7 +24,9 @@ const moderatorAllowedPrefixes = [
   "/dashboard/posts",
   "/dashboard/hashtags",
   "/dashboard/support",
-  "/dashboard/notifications",
+  // Notifications REMOVED (broadcast is manager+ on the API too): leaving the
+  // page reachable while every send 403s is the exact page/API theater this
+  // matrix forbids. Triage safety notices go through the moderation warn path.
   // Disputes triage desk: the API allows moderator under_review triage, so
   // the page must be reachable too (page-denied + API-allowed is theater
   // that locked triage out of its own queue).
@@ -37,6 +39,11 @@ const financeAllowedPrefixes = [
   "/dashboard/commission",
   "/dashboard/orders",
   "/dashboard/sellers",
+  // Payout clerk context: the payout machine freezes on open disputes and
+  // reconciles via the full-book export — deciding payouts blind to either
+  // queue is how freezes get paid through. Read-only pages; API scoped below.
+  "/dashboard/disputes",
+  "/dashboard/export-center",
 ];
 const roleRoutes: Record<string, string[]> = {
   super_admin: ["/dashboard"],

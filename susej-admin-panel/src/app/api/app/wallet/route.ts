@@ -3,6 +3,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
 
 import { getAppUser } from "@/lib/app-auth";
+import { getClientIp } from "@/lib/auth";
+import { checkWriteRate } from "@/lib/rate-limit";
+import { writeAudit } from "@/lib/audit";
 
 import { resolveCommissionRate, settlementGoodsBasis, settledFeeFromLegs } from "@/lib/commission";
 
@@ -69,6 +72,12 @@ export async function GET(req: NextRequest) {
 // refunds/settlements credit wallets server-side, never from client bodies.
 
 export async function POST(req: NextRequest) {
+
+  // Money-lane throttle (20/min/IP): top-up attempt loops + debit floods
+  // previously never 429ed (only the desk lane throttled).
+  if (!checkWriteRate(`wallet-post:${getClientIp(req)}`, 20)) {
+    return NextResponse.json({ error: "Too many requests — slow down" }, { status: 429 });
+  }
 
   const auth = await getAppUser(req);
 
@@ -337,8 +346,30 @@ export async function POST(req: NextRequest) {
 
   }
 
+  auditAppMoney(req, auth.user.username, amount < 0 ? "wallet.debit" : "wallet.topup", "wallet", String(auth.user.username ?? ""), `${amount < 0 ? "debit" : "top-up"} ${amount} · ${String(title).slice(0, 120)}${"deduped" in result && result.deduped ? " · deduped" : ""}`);
   return NextResponse.json({ balance: result.newBalance, transaction: { title, detail, amount }, ...("deduped" in result && result.deduped ? { deduped: true } : {}) });
 
+}
+
+// App money moves enter the ops audit trail (actor + channel + amount):
+// desk-only audit left 100% of buyer/seller-initiated money forensically
+// dark. Fire-and-forget — never blocks the money movement.
+function auditAppMoney(
+  req: NextRequest,
+  username: string | null | undefined,
+  action: string,
+  entity: string,
+  entityId: string,
+  details: string
+): void {
+  void writeAudit({
+    action: `app.${action}`,
+    entity,
+    entityId,
+    details,
+    adminName: `app:${String(username ?? "?").slice(0, 120)}`,
+    ip: getClientIp(req),
+  }).catch(() => {});
 }
 
 class PayoutError extends Error {
@@ -357,6 +388,9 @@ class PayoutError extends Error {
 // (see /api/data/withdrawals PATCH guard); the app reads verdicts through
 // GET /api/app/withdrawals.
 export async function PUT(req: NextRequest) {
+  if (!checkWriteRate(`wallet-put:${getClientIp(req)}`, 20)) {
+    return NextResponse.json({ error: "Too many requests — slow down" }, { status: 429 });
+  }
   const auth = await getAppUser(req);
   if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   const prisma = await getPrisma();
@@ -371,6 +405,11 @@ export async function PUT(req: NextRequest) {
   const amount = Math.floor(Number(body.amount ?? 0));
   if (!Number.isFinite(amount) || amount <= 0 || amount > 500000) {
     return NextResponse.json({ error: "Amount must be between 1 and 500000" }, { status: 400 });
+  }
+  // Server-side minimum (the client ₹100 floor was cosmetic — dust payouts
+  // were API-processable at a fee loss). Matches the app's stated minimum.
+  if (amount < 100) {
+    return NextResponse.json({ error: "Minimum withdrawal is ₹100" }, { status: 400 });
   }
   // Rail choice is real: bank vs UPI persists on the Withdrawal row and the
   // ledger title, so the desk pays to the right destination. Default bank for
@@ -733,6 +772,7 @@ export async function PUT(req: NextRequest) {
       });
       return { id: wd.id, destination };
     });
+    auditAppMoney(req, auth.user.username, "wallet.payout_request", "withdrawal", wdId.id, `payout request ${amount} via ${method}`);
     return NextResponse.json({ ok: true, withdrawalId: wdId.id, destination: wdId.destination });
   } catch (e: unknown) {
     if (e instanceof PayoutError) {

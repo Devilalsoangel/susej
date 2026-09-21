@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import type { NotificationChannel, NotificationStatus, AudienceSegment, NotificationTemplate, NotificationHistoryItem } from "@/types";
 import { useDbResource } from "@/hooks/use-db-resource";
+import { useAuthStore } from "@/store/auth-store";
 
 const audienceOptions = [
   { label: "All Users", value: "all" },
@@ -51,6 +52,10 @@ function previewBody(body: string): string {
 }
 
 export default function NotificationsPage() {
+  // Broadcast is manager+ (triage roles lost API access with the moderator
+  // scope cut — the page says so instead of failing sends silently).
+  const roleNorm = String(useAuthStore((s) => s.user?.role) ?? "").trim().toLowerCase().replace(/[\s_-]+/g, "_");
+  const canBroadcast = roleNorm === "super_admin" || roleNorm === "superadmin" || roleNorm === "owner" || roleNorm === "manager" || roleNorm === "admin";
   const { data: dbTemplates } = useDbResource<NotificationTemplate>("notification-templates");
   const { data: dbHistory } = useDbResource<NotificationHistoryItem>("notification-history");
   const templates = dbTemplates ?? [];
@@ -131,7 +136,9 @@ export default function NotificationsPage() {
   // marker, and the POST carries the session — a 401 rolls the optimistic
   // row back instead of faking a send.
   function sendNow(channel: NotificationChannel) {
-    const selectedList =
+    // Broadcast gate (matches the API moderator cut): triage roles get a
+    // 403 underneath — refuse up front with the reason instead.
+    if (!canBroadcast) return;    const selectedList =
       audience === "selected_users"
         ? selectedUsers.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean).slice(0, 200)
         : [];
@@ -172,7 +179,7 @@ export default function NotificationsPage() {
   }
 
   function saveDraft(channel: NotificationChannel) {
-    const entry: NotificationHistoryItem = {
+    if (!canBroadcast) return;    const entry: NotificationHistoryItem = {
       id: `n${Date.now()}`,
       channel,
       title: channel === "email" ? subject : channel === "push" ? title : bannerText,
@@ -194,6 +201,7 @@ export default function NotificationsPage() {
   }
 
   function scheduleSend(channel: NotificationChannel) {
+    if (!canBroadcast) return;
     if (!scheduleDate) return;
     // Safe ISO: datetime-local has no zone — interpret as local, persist UTC.
     // The old `${scheduleDate}:00.000Z` concat shifted hours for +05:30 desks.
@@ -244,6 +252,11 @@ export default function NotificationsPage() {
           <p className="mt-1 text-sm text-gray-500">Sends are logged to history only — no push/email provider is wired yet, so nothing reaches a device.</p>
         </div>
       </div>
+      {!canBroadcast && (
+        <p className="rounded-xl border border-[#FDE68A] bg-[#FFFBEB] px-4 py-2.5 text-xs text-[#92400E]">
+          Broadcast needs a manager role — your triage queues (communities, reviews, reports, messages, support) are in the sidebar. Single-user safety notices go through the moderation warn path.
+        </p>
+      )}
 
       <Card>
         <CardContent className="p-0">
@@ -309,7 +322,7 @@ export default function NotificationsPage() {
                       )}
                       <div className="flex gap-3">
                         <Button className="flex-1" onClick={schedule ? () => scheduleSend("push") : () => sendNow("push")}>
-                          <Send className="h-4 w-4" /> {schedule ? "Schedule" : "Send Now"}
+                          <Send className="h-4 w-4" /> {schedule ? "Schedule (log-only)" : "Log send (no provider)"}
                         </Button>
                         <Button variant="secondary" onClick={() => saveDraft("push")}>
                           <Save className="h-4 w-4" /> Draft
@@ -412,7 +425,7 @@ export default function NotificationsPage() {
                       )}
                       <div className="flex gap-3">
                         <Button className="flex-1" onClick={schedule ? () => scheduleSend("email") : () => sendNow("email")}>
-                          <Send className="h-4 w-4" /> {schedule ? "Schedule" : "Send Now"}
+                          <Send className="h-4 w-4" /> {schedule ? "Schedule (log-only)" : "Log send (no provider)"}
                         </Button>
                         <Button variant="secondary" onClick={() => saveDraft("email")}>
                           <Save className="h-4 w-4" /> Draft

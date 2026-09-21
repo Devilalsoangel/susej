@@ -1,18 +1,47 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { View, Text, ScrollView, TextInput, TouchableOpacity, Switch, Image, ActivityIndicator, Alert } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BackIcon, StarIcon, CheckIcon } from '../utils/icons';
 import { colors } from '../utils/theme';
-import { useOrders } from '../contexts/OrderContext';
+import { useOrders, toOrderFromServer, type Order } from '../contexts/OrderContext';
 import { useAuth } from '../contexts/AuthContext';
 import { resolveListingImage } from '../utils/productImages';
+import { serverApi } from '../utils/serverApi';
+import { goBack } from '../utils/navigation';
 
 export default function RateReviewScreen() {
   const params = useLocalSearchParams<{ id?: string }>();
   const { getOrder, markReviewed } = useOrders();
   const { user } = useAuth();
-  const order = params.id ? getOrder(String(params.id)) : undefined;
+  const rawId = params.id ? String(params.id) : undefined;
+  const localOrder = rawId ? getOrder(rawId) : undefined;
+  // Server fallback (same as receipt/track): a 2nd-device review link
+  // resolves server-side instead of dead-ending.
+  const [serverOrder, setServerOrder] = useState<Order | null>(null);
+  const [serverMiss, setServerMiss] = useState(false);
+  useEffect(() => {
+    setServerOrder(null);
+    setServerMiss(false);
+  }, [rawId]);
+  useEffect(() => {
+    if (localOrder || !rawId || serverOrder || serverMiss) return;
+    let alive = true;
+    serverApi
+      .getOrder(rawId)
+      .then((res) => {
+        if (!alive) return;
+        const hit = res.ok ? (res.data as { order?: unknown } | null)?.order : null;
+        const mapped = toOrderFromServer(hit);
+        if (!mapped) setServerMiss(true);
+        else setServerOrder(mapped);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [localOrder, rawId, serverOrder, serverMiss]);
+  const order = localOrder ?? serverOrder ?? undefined;
   const [rating, setRating] = useState(0);
   const [review, setReview] = useState('');
   const [anonymous, setAnonymous] = useState(false);
@@ -21,13 +50,20 @@ export default function RateReviewScreen() {
   const insets = useSafeAreaInsets();
 
   const firstItem = order?.items?.[0];
-  const productName = firstItem ? firstItem.name : 'Your order';
+  const multiItems = (order?.items?.length ?? 0) > 1;
+  const [reviewItemIdx, setReviewItemIdx] = useState(0);
+  const activeItem = multiItems
+    ? order!.items[Math.min(reviewItemIdx, order!.items.length - 1)]
+    : firstItem;
+  const productName = activeItem ? activeItem.name : 'Your order';
+  // Multi-item honesty: the server stores one review per order, so the buyer
+  // picks WHICH item it is about instead of silently rating item 1.
   const sellerName = order ? `Seller: ${order.sellerName}` : '';
   // Real ordered-item photo — never a static stock tile.
-  const productImage = firstItem
-    ? firstItem?.imageUrl
-      ? { uri: firstItem.imageUrl }
-      : resolveListingImage(null, firstItem?.listingId ?? order.id)
+  const productImage = activeItem
+    ? activeItem?.imageUrl
+      ? { uri: activeItem.imageUrl }
+      : resolveListingImage(null, activeItem?.listingId ?? order?.id ?? '')
     : null;
   // Reviews are delivery-gated AND buyer-gated: only delivered, unreviewed
   // orders qualify, and only the buyer can review (a seller deep-linking
@@ -41,7 +77,7 @@ export default function RateReviewScreen() {
     return (
       <View className="flex-1 bg-surface">
         <View className="flex-row items-center justify-between px-4" style={{ height: 52 + insets.top, paddingTop: insets.top }}>
-          <TouchableOpacity onPress={() => router.back()}>
+          <TouchableOpacity onPress={() => goBack('/orders')}>
             <BackIcon size={20} color={colors.primary} />
           </TouchableOpacity>
           <Text className="text-figma-18 font-inter-700 text-textPrimary">Write Review</Text>
@@ -52,7 +88,7 @@ export default function RateReviewScreen() {
           <Text className="text-figma-14 font-inter-400 text-textSecondary mt-2 text-center">
             We couldn't find an order to review. Open one from your order history to rate it.
           </Text>
-          <TouchableOpacity className="mt-6 px-6 py-3 bg-primaryContainer rounded-figma-full" onPress={() => router.back()}>
+          <TouchableOpacity className="mt-6 px-6 py-3 bg-primaryContainer rounded-figma-full" onPress={() => goBack('/orders')}>
             <Text className="text-figma-14 font-inter-600 text-white">Go back</Text>
           </TouchableOpacity>
         </View>
@@ -64,7 +100,7 @@ export default function RateReviewScreen() {
     return (
       <View className="flex-1 bg-surface">
         <View className="flex-row items-center justify-between px-4" style={{ height: 52 + insets.top, paddingTop: insets.top }}>
-          <TouchableOpacity onPress={() => router.back()}>
+          <TouchableOpacity onPress={() => goBack('/orders')}>
             <BackIcon size={20} color={colors.primary} />
           </TouchableOpacity>
           <Text className="text-figma-18 font-inter-700 text-textPrimary">Write Review</Text>
@@ -81,7 +117,7 @@ export default function RateReviewScreen() {
                 ? 'Only the buyer who received this order can rate it.'
                 : 'You can rate this order once it is delivered.'}
           </Text>
-          <TouchableOpacity className="mt-6 px-6 py-3 bg-primaryContainer rounded-figma-full" onPress={() => router.back()}>
+          <TouchableOpacity className="mt-6 px-6 py-3 bg-primaryContainer rounded-figma-full" onPress={() => goBack('/orders')}>
             <Text className="text-figma-14 font-inter-600 text-white">Go back</Text>
           </TouchableOpacity>
         </View>
@@ -96,7 +132,17 @@ export default function RateReviewScreen() {
       // Success renders ONLY after the server acks — a refusal (offline /
       // already-reviewed / not-delivered) rolls back underneath, so an early
       // success screen would lie and then lose the review on reopen.
-      const ok = await markReviewed(order.id, rating, review, anonymous);
+      // Item attribution: reviews store per-order server-side, so stamp WHICH
+      // item this is about into the text — otherwise multi-item orders all
+      // read as feedback on item 1. Bare-tag guard: an empty box on a
+      // multi-item order stores only the tag, so require words with it.
+      const itemTag = multiItems && activeItem ? `About "${activeItem.name}": ` : '';
+      if (multiItems && review.trim().length === 0) {
+        Alert.alert('Add a few words', 'Tell us what was good or bad about this item — a rating alone cannot carry the item tag.');
+        setSubmitting(false);
+        return;
+      }
+      const ok = await markReviewed(order.id, rating, `${itemTag}${review}`, anonymous);
       if (ok) setSubmitted(true);
       else Alert.alert('Review not saved', 'Could not save your review. Check your connection and try again.');
     } finally {
@@ -150,7 +196,7 @@ export default function RateReviewScreen() {
           <TouchableOpacity
             className="w-full h-14 rounded-figma-16 bg-primaryContainer items-center justify-center"
             activeOpacity={0.85}
-            onPress={() => router.back()}
+            onPress={() => goBack('/orders')}
           >
             <Text className="text-figma-16 font-inter-600 text-white">Done</Text>
           </TouchableOpacity>
@@ -162,7 +208,7 @@ export default function RateReviewScreen() {
   return (
     <View className="flex-1 bg-surface">
       <View className="flex-row items-center justify-between px-4" style={{ height: 52 + insets.top, paddingTop: insets.top }}>
-        <TouchableOpacity onPress={() => router.back()}>
+        <TouchableOpacity onPress={() => goBack('/orders')}>
           <BackIcon size={20} color={colors.primary} />
         </TouchableOpacity>
         <Text className="text-figma-18 font-inter-700 text-textPrimary">Write Review</Text>
@@ -170,6 +216,30 @@ export default function RateReviewScreen() {
       </View>
 
       <ScrollView className="flex-1" contentContainerClassName="px-4" contentContainerStyle={{ paddingBottom: insets.bottom + 128 }}>
+        {multiItems && (
+          <View className="mb-4">
+            <Text className="text-figma-14 font-inter-600 text-textPrimary mb-2">Which item is this review about?</Text>
+            <Text className="text-figma-12 font-inter-400 text-textSecondary mb-3">One review per order — pick the item you are rating.</Text>
+            <View style={{ gap: 8 }}>
+              {order!.items.map((it, idx) => {
+                const on = idx === Math.min(reviewItemIdx, order!.items.length - 1);
+                return (
+                  <TouchableOpacity
+                    key={`${it.listingId}-${idx}`}
+                    onPress={() => setReviewItemIdx(idx)}
+                    className="flex-row items-center px-4 py-3 rounded-figma-12"
+                    style={{ backgroundColor: on ? colors.primaryContainer : colors.surfaceContainerLow }}
+                  >
+                    <Text className="flex-1 font-inter-600" numberOfLines={1} style={{ fontSize: 13, lineHeight: 18, color: on ? '#FFFFFF' : colors.textPrimary }}>
+                      {it.name} × {it.quantity}
+                    </Text>
+                    {on && <CheckIcon size={14} color="#FFFFFF" />}
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </View>
+        )}
         <View className="flex-row items-center bg-surfaceContainerLowest rounded-figma-12 p-4 mb-6"
           style={{ shadowColor: colors.textPrimary, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 2 }}
         >

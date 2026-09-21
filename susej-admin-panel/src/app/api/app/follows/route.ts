@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
 import { getAppUser } from "@/lib/app-auth";
+import { getClientIp } from "@/lib/auth";
+import { checkWriteRate } from "@/lib/rate-limit";
 
 export async function GET(req: NextRequest) {
   const auth = await getAppUser(req);
@@ -29,6 +31,9 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  if (!checkWriteRate(`follows:${getClientIp(req)}`, 60)) {
+    return NextResponse.json({ error: "Too many requests — slow down" }, { status: 429 });
+  }
   const auth = await getAppUser(req);
   if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   const prisma = await getPrisma();

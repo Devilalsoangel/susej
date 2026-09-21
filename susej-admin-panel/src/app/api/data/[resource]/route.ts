@@ -79,8 +79,10 @@ const READ_ONLY_RESOURCES = new Set(["audit-logs"]);
 // Moderators own the safety queues: community/review/ticket desks plus the
 // report queues they triage and the blocked list their mute/block actions
 // write to. Without these, the moderation screens 403 for the role that owns
-// them (chat moderation mute/block included).
-const MODERATOR_RESOURCES = new Set(["communities", "reviews", "tickets", "reported-messages", "reported-products", "reported-comments", "reported-users", "blocked", "posts", "hashtags", "notification-templates", "notification-history", "disputes"]);
+// them (chat moderation mute/block included). Broadcast (notification
+// templates/history) is manager+ only: a triage account must never push
+// app-wide blasts — the single-user warn path covers their need.
+const MODERATOR_RESOURCES = new Set(["communities", "reviews", "tickets", "reported-messages", "reported-products", "reported-comments", "reported-users", "blocked", "posts", "hashtags", "disputes"]);
 // Finance desk: money decisions only (payout/refund queues + their money
 // tables). Explicit — never inherited from the moderator set.
 const FINANCE_RESOURCES = new Set(["withdrawals", "refunds", "transactions", "ledger", "orders"]);
@@ -1357,6 +1359,28 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   }
   const validationErr = validateResourcePayload(resource, data as Record<string, unknown>);
   if (validationErr) return NextResponse.json({ error: validationErr }, { status: 400 });
+  // Last-super_admin demote guard (DELETE has the twin — PATCH didn't):
+  // demoting the sole super_admin to manager orphans admin management
+  // forever (managers can't touch admins/app-settings/audit). Recovery would
+  // be direct-DB-only. The guard lives on the role transition, not the verb.
+  if (resource === "admins" && typeof (data as Record<string, unknown>).role === "string") {
+    try {
+      const gdb = (await resolveDb()) as any;
+      if (!gdb) return NextResponse.json({ error: "Could not verify admin roles — change refused" }, { status: 503 });
+      const target = await gdb.admin.findUnique({ where: { id: String(id) }, select: { role: true, status: true } });
+      const curNorm = normalizeRole(String((target as { role?: unknown } | null)?.role ?? ""));
+      const nextNorm = normalizeRole(String((data as Record<string, unknown>).role ?? ""));
+      const targetActive = String((target as { status?: unknown } | null)?.status ?? "active").trim().toLowerCase() === "active";
+      if (targetActive && curNorm === "super_admin" && nextNorm !== "super_admin") {
+        const all = await gdb.admin.findMany({ where: { status: "active" }, select: { role: true } }).catch(() => []);
+        const supers = (Array.isArray(all) ? all : []).filter((a: { role?: unknown }) => normalizeRole(String(a?.role ?? "")) === "super_admin").length;
+        if (supers <= 1) return forbidden("Cannot demote the last Super Admin — promote a successor first.");
+      }
+    } catch (e) {
+      if (e instanceof NextResponse) throw e;
+      return NextResponse.json({ error: "Could not verify admin roles — change refused" }, { status: 503 });
+    }
+  }
   // Settlement-state resurrection guard: paymentStatus is machine-owned once
   // terminal (refunded/cancelled/partial_refund) — a hand-edit flipping it
   // back to paid/pending would resurrect withdrawable earnings the clawback
@@ -1519,6 +1543,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         } catch {}
       }
       appScopedData = sanitizeMessageForApp(raw, appUser);
+      // Thread moves are staff-only (audited): an app PATCH carrying threadId
+      // used to relocate the caller's own message into a victim's support
+      // thread (support-thread poisoning). Messages never legitimately change
+      // threads — strip it here (POST keeps it; creation validates ownership).
+      delete (appScopedData as Record<string, unknown>).threadId;
     } else if (resource === "refunds") {
       // Ownership: app user may only patch refunds tied to their orders
       const prismaTmp = (await resolveDb()) as any;
@@ -2186,6 +2215,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
             const prisma = tx;
           if (tracking && rawCurrent !== "cancelled" && nextStatus === "cancelled") {
             let reversed = false;
+            // True only when money moved back THIS call (repeat cancels set
+            // `reversed` via the already-settled branches — coupon release
+            // must fire once, never per repeat).
+            let reversedFresh = false;
             if (paysWallet && b.buyerUsername && Number(b.amount ?? 0) > 0) {
               const title = `Order cancelled - refund · ${tracking}`;
               // Cross-path guard: an app-approve/desk/dispute refund for the
@@ -2235,6 +2268,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
                     }
                   }
                   reversed = true;
+                  reversedFresh = true;
                 }
               } else {
                 reversed = true;
@@ -2288,6 +2322,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
                     }
                   }
                   reversed = true;
+                  reversedFresh = true;
                 }
               } else if (wasCredited) {
                 reversed = true;
@@ -2322,6 +2357,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
               }
             }
             if (reversed) (cleanPayload as Record<string, unknown>).paymentStatus = "refunded";
+            // Coupon release (desk cancel/refund = return-like): only when
+            // money moved back THIS call (`reversedFresh`, not the sticky
+            // `reversed` — repeat cancels must never double-release).
+            if (reversedFresh) {
+              const { releaseCoupon } = await import("@/lib/commission");
+              await releaseCoupon(prisma as never, (b as { itemsList?: unknown }).itemsList);
+            }
           }
             if (tracking && rawCurrent !== "delivered" && nextStatus === "delivered" && b.sellerUsername) {
               const earnTitle = `Order earnings · ${tracking}`;
@@ -2620,6 +2662,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
             const curMark = String((order as { paymentStatus?: unknown }).paymentStatus ?? "").trim().toLowerCase();
             if (!["refunded", "cancelled", "partial_refund"].includes(curMark)) {
               await prisma.order.update({ where: { id: order.id }, data: { paymentStatus: half && wasDelivered && clawLanded ? "partial_refund" : "refunded" } });
+            }
+            // Coupon release (dispute refund = return-like): only when this
+            // ruling moved money (buyer and/or seller leg landed) — a
+            // no-money ruling must not free a reusable code. Runs once: the
+            // mark above only advances on non-terminal rows.
+            if (!["refunded", "cancelled", "partial_refund"].includes(curMark) && (buyerPaid || sellerClawedPaid)) {
+              const { releaseCoupon } = await import("@/lib/commission");
+              await releaseCoupon(prisma as never, (order as { itemsList?: unknown }).itemsList);
             }
             // Ledger mirror for the ruling: LOUD, never swallowed (a ruling with
             // money moved but no mirror is unreconcilable). Count-guarded so a
@@ -3074,6 +3124,31 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const body = await request.json();
   if (typeof body !== "object" || body === null) {
     return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
+  }
+  // Session mint discipline (impersonation guard): a desk-minted Bearer
+  // impersonates the user on every /api/app/* lane, so client-chosen tokens
+  // and far-future expiries are refused. Super_admin-only, server-minted
+  // random token, max 1h, audited. Support short-lived grants flow through
+  // here under the same cap.
+  if (resource === "sessions") {
+    if (role !== "super_admin") return forbidden("Session grants are super_admin-only.");
+    const { randomUUID } = await import("node:crypto");
+    (body as Record<string, unknown>).token = `susej_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
+    (body as Record<string, unknown>).expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    // No ghost grants: the user row must exist (minting for a non-user
+    // creates a Bearer that authenticates as nobody — or collides later).
+    const grantUserId = String((body as Record<string, unknown>).userId ?? "").trim();
+    const grantUsername = String((body as Record<string, unknown>).username ?? "").trim();
+    if (!grantUserId || !grantUsername) {
+      return NextResponse.json({ error: "userId and username are required for a session grant." }, { status: 400 });
+    }
+    try {
+      const gdb = (await resolveDb()) as any;
+      const ghost = gdb ? await gdb.user.findUnique({ where: { id: grantUserId } }).catch(() => null) : null;
+      if (!ghost) return NextResponse.json({ error: "User not found — grant refused." }, { status: 404 });
+    } catch {
+      return NextResponse.json({ error: "Could not verify user — grant refused." }, { status: 503 });
+    }
   }
   const postValidationErr = validateResourcePayload(resource, body as Record<string, unknown>);
   if (postValidationErr) return NextResponse.json({ error: postValidationErr }, { status: 400 });

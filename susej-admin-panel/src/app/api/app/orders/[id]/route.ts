@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
 import { getAppUser } from "@/lib/app-auth";
-import { resolveCommissionRate, settlementGoodsBasis, settledFeeFromLegs } from "@/lib/commission";
+import { getClientIp } from "@/lib/auth";
+import { checkWriteRate } from "@/lib/rate-limit";
+import { resolveCommissionRate, settlementGoodsBasis, settledFeeFromLegs, releaseCoupon } from "@/lib/commission";
 import { notifyUser } from "@/lib/notifications";
 
 class OrderError extends Error {
@@ -46,6 +48,56 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
         where: { orderId: order.trackingNumber, status: { in: ["open", "under_review"] } },
         select: { orderId: true },
       }).then((r) => !!r).catch(() => false);
+  // Detail-lane parity with the list lane (second-device receipt/track/refund
+  // parity): dispute-credit legs (no Refund row), settled fee + promo code
+  // (derived from the settled legs, same helper as the idempotent acks).
+  // Fail-soft: omitted figures keep the optimistic/local display, never a
+  // guessed one. Refund timeline stays local-only (no server thread column).
+  let detailCredit: { amount: number; kind: "full" | "split" } | undefined;
+  try {
+    const credits = await prisma.walletTransaction.findMany({
+      where: {
+        username: username,
+        amount: { gt: 0 },
+        OR: [{ title: { startsWith: "Dispute refund · " } }, { title: { startsWith: "Dispute split refund · " } }],
+      },
+      select: { title: true, amount: true },
+    }).catch(() => [] as Array<{ title: string; amount: number }>);
+    for (const c of credits) {
+      const title = String(c.title ?? "");
+      const split = title.startsWith("Dispute split refund · ");
+      const tracking = title.slice(split ? "Dispute split refund · ".length : "Dispute refund · ".length).trim();
+      if (tracking && tracking === String(order.trackingNumber ?? "")) {
+        detailCredit = { amount: Math.max(0, Number(c.amount ?? 0)), kind: split ? "split" : "full" };
+        break;
+      }
+    }
+  } catch {}
+  let detailFee: number | undefined;
+  let detailPromo: string | undefined;
+  try {
+    const legs = Array.isArray((order as { itemsList?: unknown }).itemsList)
+      ? ((order as { itemsList: Array<Record<string, unknown>> }).itemsList)
+      : [];
+    for (const l of legs) {
+      const code = String(l?.promoCode ?? "").trim();
+      if (code) {
+        detailPromo = code;
+        break;
+      }
+    }
+    const preCoupon = legs.reduce((s, l) => s + Number(l.price ?? 0) * Math.max(1, Math.round(Number(l.qty ?? l.quantity ?? 1))), 0);
+    const netMerch = legs.reduce(
+      (s, l) => s + Number(l.netPrice ?? l.price ?? 0) * Math.max(1, Math.round(Number(l.qty ?? l.quantity ?? 1))),
+      0
+    );
+    if (Number.isFinite(preCoupon) && Number.isFinite(netMerch) && Number(order.amount ?? NaN) >= 0) {
+      // fee = amount − netMerch + shipShare… shipShare unknown here, so bound
+      // instead: fee is one of the fixed rails covered by the charge.
+      const remainder = Math.round(Number(order.amount)) - Math.round(netMerch);
+      if ([0, 12, 30].includes(remainder) && remainder >= 0) detailFee = remainder;
+    }
+  } catch {}
   return NextResponse.json({
     order: {
       id: order.id,
@@ -61,6 +113,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       status: order.status,
       paymentStatus: (order as { paymentStatus?: unknown }).paymentStatus ? String((order as { paymentStatus?: unknown }).paymentStatus) : "",
       disputeFrozen: detailFrozen,
+      ...(detailCredit ? { disputeCredit: detailCredit } : {}),
+      ...(detailFee !== undefined ? { deliveryFee: detailFee } : {}),
+      ...(detailPromo ? { promoCode: detailPromo } : {}),
       actualDelivery: (order as { actualDelivery?: unknown }).actualDelivery ? String((order as { actualDelivery?: unknown }).actualDelivery) : "",
       deliveryLog: Array.isArray((order as { deliveryLog?: unknown }).deliveryLog)
         ? (order as { deliveryLog: unknown }).deliveryLog
@@ -112,6 +167,9 @@ const sellerClawTitles = (tracking: string) => [
 // one transaction with the status flip.
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  if (!checkWriteRate(`orders-id:${getClientIp(req)}`, 30)) {
+    return NextResponse.json({ error: "Too many requests — slow down" }, { status: 429 });
+  }
   const auth = await getAppUser(req);
   if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   const prisma = await getPrisma();
@@ -421,6 +479,11 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         // failure must not roll back the refund legs above. Worst case the
         // seller re-edits stock on the desk; the buyer is already whole.
       }
+      // Coupon release: a consumed single-use code must not burn on a
+      // cancelled order — the buyer loses the discount through no fault.
+      // Fires once (this branch runs once per status change: repeat cancels
+      // dedupe at the gate, concurrent transitions serialize on the lock).
+      await releaseCoupon(tx as never, order.itemsList);
     } else if (next === "delivered") {
       data.status = "delivered";
       data.deliveryStatus = "delivered";
@@ -748,6 +811,9 @@ if (Number.isFinite(deliveredStamp) && Date.now() - deliveredStamp > 7 * 24 * 60
           }
         }
         await tx.refund.update({ where: { id: pending.id }, data: { status: "approved", respondedAt: new Date(), reason: decidedReason } });
+        // Coupon release (approved refund = return-like): the code the buyer
+        // paid with must not stay burned.
+        await releaseCoupon(tx as never, order.itemsList);
       } else {
         await tx.refund.update({ where: { id: pending.id }, data: { status: "rejected", respondedAt: new Date(), reason: decidedReason } });
       }
@@ -787,7 +853,21 @@ if (Number.isFinite(deliveredStamp) && Date.now() - deliveredStamp > 7 * 24 * 60
 
   // Money-event tells (fire-and-forget, post-commit only — never inside the
   // money tx). Identity fields come from the pre-tx snapshot (immutable).
+  // Ops audit (same fire-and-forget discipline): buyer/seller-initiated
+  // transitions were forensically dark — the desk trail saw none of them.
   {
+    const auditTracking = order.trackingNumber;
+    const what = next ?? (typeof body.rating === "number" ? "review" : typeof body.refundReason === "string" ? "refund_request" : typeof body.refundDecision === "string" ? `refund_${String(body.refundDecision).trim().toLowerCase()}` : "update");
+    void import("@/lib/audit").then((m) =>
+      m.writeAudit({
+        action: `app.order.${what}`,
+        entity: "order",
+        entityId: String(id),
+        details: `${what} on ${auditTracking} · amount ${Number(order.amount ?? 0)}`,
+        adminName: `app:${String(username ?? "?").slice(0, 120)}`,
+        ip: getClientIp(req),
+      }).catch(() => {})
+    );
     const t = order.trackingNumber;
     if (typeof body.refundReason === "string" && body.refundReason.trim() && order.sellerUsername) {
       notifyUser(prisma, {

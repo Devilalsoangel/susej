@@ -1,10 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
 import { getAppUser } from "@/lib/app-auth";
+import { getClientIp } from "@/lib/auth";
+import { checkWriteRate } from "@/lib/rate-limit";
 
 export async function GET(req: NextRequest) {
   const prisma = await getPrisma();
   if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
+  // Read-path hammer assist: lots past endsAt flip to ended here (no notify —
+  // the sweep owns winner/seller tells) so the list never shows a LIVE lot
+  // the bid lane 410s. Fire-and-forget; the read below is the truth either way.
+  void prisma.auction.updateMany({
+    where: { status: "live", endsAt: { lte: new Date() } },
+    data: { status: "ended" },
+  }).catch(() => null);
   const rows = await prisma.auction.findMany({ orderBy: { endsAt: "asc" }, take: 100 });
   // List-row photos: auctions carry imageKey = listing id, so join the
   // listing covers in ONE query — otherwise every list row is a blind tile
@@ -40,6 +49,9 @@ export async function GET(req: NextRequest) {
 
 // Place a bid on an auction (real multi-user bidding)
 export async function POST(req: NextRequest) {
+  if (!checkWriteRate(`auctions:${getClientIp(req)}`, 30)) {
+    return NextResponse.json({ error: "Too many requests — slow down" }, { status: 429 });
+  }
   const auth = await getAppUser(req);
   if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   const prisma = await getPrisma();
@@ -126,6 +138,13 @@ export async function POST(req: NextRequest) {
   const auction = await prisma.auction.findUnique({ where: { id: String(body.auctionId ?? "") } });
   if (!auction) return NextResponse.json({ error: "Auction not found" }, { status: 404 });
   if (auction.status !== "live") return NextResponse.json({ error: "Auction is not live" }, { status: 400 });
+  // Hammer clock (server-enforced): bids past endsAt are refused even when
+  // the status flip hasn't swept yet — a bid rail without a clock is an open
+  // cash register. The dead lot retires here so the next bidder sees ended.
+  if (auction.endsAt && new Date(auction.endsAt).getTime() <= Date.now()) {
+    await prisma.auction.update({ where: { id: auction.id }, data: { status: "ended" } }).catch(() => {});
+    return NextResponse.json({ error: "This auction has ended" }, { status: 410 });
+  }
   // Backing-listing liveness (orphan-lot guard, bid side): the listing may
   // have sold, hidden, or removed since the auction went live (including
   // lots minted before the create-time cover check). Funded bids on a dead
@@ -244,6 +263,9 @@ export async function POST(req: NextRequest) {
   const result = await prisma.$transaction(async (tx) => {
     const fresh = await tx.auction.findUnique({ where: { id: auction.id } });
     if (!fresh || fresh.status !== "live") throw new Error("closed");
+    // In-tx hammer re-check (TOCTOU close): the lot may have ended between
+    // the pre-check and this commit.
+    if (fresh.endsAt && new Date(fresh.endsAt).getTime() <= Date.now()) throw new Error("closed");
     if (amount <= Number(fresh.currentBid ?? 0)) throw new Error("outbid");
     const me = await tx.user.findUnique({ where: { id: auth.user.id }, select: { walletBalance: true } });
     if (!me || (me.walletBalance ?? 0) < amount) throw new Error("funds");

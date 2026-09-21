@@ -84,8 +84,8 @@ export default function ProfileScreen() {
           {user?.verification === 'approved' && <VerifiedIcon size={16} />}
         </View>
         <View className="flex-row items-center gap-4">
-          {user?.isSeller && (
-            <TouchableOpacity onPress={() => router.push(`/seller/${user?.username}`)}>
+          {user?.isSeller && !!user?.username && (
+            <TouchableOpacity onPress={() => router.push(`/seller/${user.username}`)}>
               <ShopIcon size={20} color={colors.primary} />
             </TouchableOpacity>
           )}

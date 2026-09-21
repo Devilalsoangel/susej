@@ -19,6 +19,7 @@ import { getFlow } from '../../utils/categoryFlow';
 import { getChildCategories, findMainCategory } from '../../utils/categories';
 import { serverApi } from '../../utils/serverApi';
 import { useBlockedSellers } from '../../utils/blockedSellers';
+import { goBack } from '../../utils/navigation';
 import {
   ChipRail,
   StoreAccentProvider,
@@ -985,7 +986,7 @@ function StorefrontRoute({
       style={{ backgroundColor: themeAccent ? `${themeAccent}0A` : colors.surface }}
     >
       <View className="flex-row items-center px-5" style={{ height: 52 + insets.top, paddingTop: insets.top, backgroundColor: themeAccent ? `${themeAccent}0A` : colors.surface }}>
-        <TouchableOpacity onPress={() => router.back()}>
+        <TouchableOpacity onPress={() => goBack('/search')}>
           <ChevronLeftIcon size={18} color={themeAccent ?? colors.primary} />
         </TouchableOpacity>
         <Text className="flex-1 text-center font-inter-700" style={{ fontSize: 20, lineHeight: 28, color: themeAccent ?? colors.primary }}>
@@ -1229,7 +1230,7 @@ function UserProfile({
     <View className="flex-1 bg-surface">
       {/* Header — back + susej + QR + more */}
       <View className="flex-row items-center px-5" style={{ height: 52 + insets.top, paddingTop: insets.top, backgroundColor: colors.surface }}>
-        <TouchableOpacity onPress={() => router.back()}>
+        <TouchableOpacity onPress={() => goBack('/search')}>
           <ChevronLeftIcon size={18} color={accent ?? colors.primary} />
         </TouchableOpacity>
         <Text className="flex-1 text-center font-inter-700" style={{ fontSize: 20, lineHeight: 28, color: accent ?? colors.primary }}>

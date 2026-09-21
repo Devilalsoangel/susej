@@ -272,7 +272,7 @@ export const serverApi = {
     request<{ dispute: any }>('/disputes', { method: 'POST', body: dispute }),
   /** Server-owned campaign purchase: debit + ACTIVE placement in one tx.
    *  Idempotent on checkoutRef — safe to retry after a timeout. */
-  purchasePromotion: (order: { packageId: string; postId?: string; checkoutRef: string }) =>
+  purchasePromotion: (order: { packageId: string; postId?: string; checkoutRef: string; discountedPrice?: number }) =>
     request<{ purchase: any }>('/promotions', { method: 'POST', body: order }),
   /** Accept / decline / counter a pending offer (either participant). */
   updateOfferStatus: (threadId: string, messageId: string, status: 'accepted' | 'declined' | 'countered') =>

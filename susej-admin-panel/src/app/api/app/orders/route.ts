@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 import { getPrisma } from "@/lib/db";
 import { getAppUser } from "@/lib/app-auth";
+import { getClientIp } from "@/lib/auth";
+import { checkWriteRate } from "@/lib/rate-limit";
 import { resolveCommissionRate } from "@/lib/commission";
 import { notifyUser } from "@/lib/notifications";
 
@@ -239,6 +241,9 @@ export async function GET(req: NextRequest) {
 // ledger entry — all in ONE transaction so the balance read can never race a
 // concurrent spend. Escrow: the seller is credited at DELIVERY, never here.
 export async function POST(req: NextRequest) {
+  if (!checkWriteRate(`orders-post:${getClientIp(req)}`, 20)) {
+    return NextResponse.json({ error: "Too many requests — slow down" }, { status: 429 });
+  }
   const auth = await getAppUser(req);
   if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   const prisma = await getPrisma();
@@ -756,6 +761,9 @@ export async function POST(req: NextRequest) {
       // Shipping share of any coupon discount (free_delivery in full): reduces
       // the shipping ledger leg so books balance exactly.
       let shipDiscountShare = 0;
+      // Consumed coupon code (null unless a discount actually applied): stamped
+      // on the first settled line so cancel/refund paths release the usage.
+      let appliedPromoCode: string | null = null;
       if (!(chargedTotal > 0)) {
         throw new OrderError(400, "Order total must be greater than zero");
       }
@@ -815,6 +823,7 @@ export async function POST(req: NextRequest) {
           merchDiscount += merchShare;
           shipDiscountShare += discount - merchShare;
           chargedTotal -= discount;
+          appliedPromoCode = rawPromo;
           const bumped = await tx.coupon.updateMany({ where: { id: coupon.id, usedCount: { lt: coupon.usageLimit } }, data: { usedCount: { increment: 1 } } });
           if (bumped.count === 0) throw new OrderError(400, "Coupon usage limit reached");
         }
@@ -914,6 +923,11 @@ export async function POST(req: NextRequest) {
           commission: fee,
           category: i.category || undefined,
           listingId: i.listingId,
+          // Coupon provenance (migration-free release): the applied code rides
+          // the first settled line so cancel/refund paths can release the
+          // usage count. Readers sum price/qty/commission only — unknown keys
+          // are ignored everywhere (verified settlement/receipt/ledger).
+          ...(settledLines.length === 0 && appliedPromoCode ? { promoCode: appliedPromoCode } : {}),
           // Accepted-offer audit ref (struck-deal provenance for disputes).
           ...((i as { offerRef?: unknown }).offerRef ? { offerRef: (i as { offerRef?: unknown }).offerRef } : {}),
           // Persisted so every device/relogin sees WHAT was bought (variant
@@ -999,6 +1013,17 @@ export async function POST(req: NextRequest) {
         targetId: created.trackingNumber,
       });
     }
+    // Ops audit: placements were forensically dark on the desk trail.
+    void import("@/lib/audit").then((m) =>
+      m.writeAudit({
+        action: "app.order.placed",
+        entity: "order",
+        entityId: String(created.id),
+        details: `placed ${created.trackingNumber} · charged ${Math.round(Number(created.amount ?? 0))} · ${created.sellerUsername ?? "?"}`,
+        adminName: `app:${String(username ?? "?").slice(0, 120)}`,
+        ip: getClientIp(req),
+      }).catch(() => {})
+    );
 
     return NextResponse.json(
       {

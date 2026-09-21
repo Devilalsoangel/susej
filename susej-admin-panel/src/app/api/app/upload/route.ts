@@ -3,15 +3,32 @@ import { mkdir, writeFile } from "fs/promises";
 import path from "path";
 import { randomBytes } from "crypto";
 import sharp from "sharp";
-import { checkAppKey, unauthorized } from "@/lib/promotions/api-auth";
+import { checkAppKeyAsync, getMintedKeyScope, unauthorized } from "@/lib/promotions/api-auth";
 import { getAppUser } from "@/lib/app-auth";
+import { getPrisma } from "@/lib/db";
 
 // Banner image upload for the seller dashboard (marketing banners).
 // Accepts a base64 data URL from expo-image-picker, writes the file into
 // public/uploads/ and returns a root-relative URL that both the app
 // (prefixed with the admin base URL) and this panel can render.
 
-const MAX_BYTES = 5 * 1024 * 1024; // 5MB
+const MAX_BYTES = 5 * 1024 * 1024; // 5MB fail-closed default
+
+// Admin-configured cap (Settings → Storage → maxUploadSize, MB): the desk
+// promise is honored here instead of 413ing above the configured limit.
+// Fail-closed to 5MB when the setting is missing or garbage; clamped 1–50MB.
+async function resolveMaxBytes(): Promise<number> {
+  try {
+    const prisma = await getPrisma();
+    if (!prisma) return MAX_BYTES;
+    const row = await (prisma as any).appSetting.findUnique({ where: { key: "maxUploadSize" } });
+    const mb = Number((row as { value?: unknown } | null)?.value);
+    if (!Number.isFinite(mb) || mb <= 0) return MAX_BYTES;
+    return Math.min(50, Math.max(1, Math.floor(mb))) * 1024 * 1024;
+  } catch {
+    return MAX_BYTES;
+  }
+}
 
 const MIME_EXT: Record<string, string> = {
   "image/png": "png",
@@ -36,7 +53,17 @@ function sniffImageExt(buf: Uint8Array): string | null {
 }
 
 export async function POST(request: NextRequest) {
-  if (!checkAppKey(request)) return unauthorized();
+  if (!await checkAppKeyAsync(request)) return unauthorized();
+  // Minted-key scopes bind here too (read-only desk keys upload nothing —
+  // the data-lane parseWriteSession already denies them; this lane never
+  // inherited the check). Env keys keep full scope; legacy scope-less rows
+  // are grandfathered.
+  const scope = await getMintedKeyScope(request).catch((): null => null);
+  if (scope !== "env" && scope !== null && Array.isArray(scope.permissions)) {
+    if (!scope.permissions.includes("write") && !scope.permissions.includes("admin")) {
+      return NextResponse.json({ error: "Read-only API key — uploads need write scope." }, { status: 403 });
+    }
+  }
   const auth = await getAppUser(request);
   if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
 
@@ -59,8 +86,9 @@ export async function POST(request: NextRequest) {
   if (buffer.length === 0) {
     return NextResponse.json({ error: "Empty image payload." }, { status: 400 });
   }
-  if (buffer.length > MAX_BYTES) {
-    return NextResponse.json({ error: "Image too large (max 5MB)." }, { status: 413 });
+  const maxBytes = await resolveMaxBytes();
+  if (buffer.length > maxBytes) {
+    return NextResponse.json({ error: `Image too large (max ${Math.round(maxBytes / 1048576)}MB).` }, { status: 413 });
   }
 
   // Industry pattern (accept broadly, store standard): phones send HEIC/HEIF
@@ -86,8 +114,8 @@ export async function POST(request: NextRequest) {
     } else {
       return NextResponse.json({ error: `Unsupported image type: ${mime}` }, { status: 415 });
     }
-    if (buffer.length > MAX_BYTES) {
-      return NextResponse.json({ error: "Image too large (max 5MB)." }, { status: 413 });
+    if (buffer.length > maxBytes) {
+      return NextResponse.json({ error: `Image too large (max ${Math.round(maxBytes / 1048576)}MB).` }, { status: 413 });
     }
   }
 

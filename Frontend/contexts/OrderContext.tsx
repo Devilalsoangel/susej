@@ -221,6 +221,92 @@ const REFUND_STATUS_LABELS: Record<RefundStatus, string> = {
   refunded: 'Refunded',
 };
 
+/**
+ * Shared server-row → Order mapper (second-device truth): order/[id] grew a
+ * 100-line inline version while track-order, rate-review and refund/[id]
+ * stayed local-only and 404ed rows the receipt resolves. Every order screen
+ * uses this — one mapping, no divergent children.
+ */
+export function toOrderFromServer(hit: any): Order | null {
+  if (!hit || typeof hit !== 'object' || !hit.id) return null;
+  const flowIdx = ORDER_STATUS_FLOW.indexOf((hit.status as Order['status']) ?? 'placed');
+  const labels = ['Order Placed', 'Confirmed', 'Preparing', 'Out for Delivery', 'Delivered'];
+  return {
+    id: String(hit.id),
+    orderNumber: String(hit.orderNumber ?? hit.id),
+    kind: (hit.kind as Order['kind']) ?? 'order',
+    sellerName: String(hit.sellerName ?? ''),
+    sellerUsername: String(hit.sellerUsername ?? ''),
+    buyerName: hit.buyerName ? String(hit.buyerName) : undefined,
+    buyerUsername: typeof hit.buyerUsername === 'string' && hit.buyerUsername ? String(hit.buyerUsername) : undefined,
+    items: Array.isArray(hit.items)
+      ? hit.items.map((i: any) => ({
+          listingId: String(i.listingId ?? i.postId ?? ''),
+          name: String(i.name ?? 'Item'),
+          price: Number(i.price ?? 0),
+          quantity: Number(i.quantity ?? 1),
+          ...(i.imageUrl ? { imageUrl: String(i.imageUrl) } : {}),
+          ...(typeof i.variantLabel === 'string' && i.variantLabel ? { variantLabel: i.variantLabel } : {}),
+          ...(typeof i.bundleId === 'string' && i.bundleId ? { bundleId: i.bundleId } : {}),
+          ...(typeof i.netPrice === 'number' && Number.isFinite(i.netPrice) ? { netPrice: i.netPrice } : {}),
+          ...(typeof i.commission === 'number' && Number.isFinite(i.commission) ? { commission: i.commission } : {}),
+          ...(typeof i.category === 'string' && i.category ? { category: i.category } : {}),
+        }))
+      : [],
+    total: Number(hit.total ?? 0),
+    chargedTotal: Number(hit.chargedTotal ?? hit.total ?? 0),
+    status: (hit.status as Order['status']) ?? 'placed',
+    placedAt: typeof hit.placedAt === 'string' ? Date.parse(hit.placedAt) : Number(hit.placedAt ?? Date.now()),
+    reviewed: Boolean(hit.reviewed),
+    rating: hit.rating ? Number(hit.rating) : undefined,
+    reviewComment: hit.reviewComment ? String(hit.reviewComment) : undefined,
+    address: hit.address ? String(hit.address) : undefined,
+    paymentMethod: hit.paymentMethod ? String(hit.paymentMethod) : undefined,
+    ...(typeof hit.actualDelivery === 'string' && hit.actualDelivery ? { actualDelivery: hit.actualDelivery } : {}),
+    ...(Array.isArray(hit.deliveryLog) && hit.deliveryLog.length ? { deliveryLog: hit.deliveryLog } : {}),
+    ...(hit.deliveryFee !== undefined ? { deliveryFee: Number(hit.deliveryFee) || 0 } : {}),
+    ...(typeof hit.promoCode === 'string' && hit.promoCode ? { promoCode: hit.promoCode } : {}),
+    ...(typeof hit.paymentStatus === 'string' && hit.paymentStatus ? { paymentStatus: hit.paymentStatus } : {}),
+    ...(hit.disputeFrozen !== undefined ? { disputeFrozen: Boolean(hit.disputeFrozen) } : {}),
+    ...(hit.disputeCredit && typeof hit.disputeCredit === 'object' && Number((hit.disputeCredit as { amount?: unknown }).amount ?? 0) > 0
+      ? {
+          disputeCredit: {
+            amount: Number((hit.disputeCredit as { amount?: unknown }).amount ?? 0),
+            kind: (hit.disputeCredit as { kind?: unknown }).kind === 'split' ? 'split' as const : 'full' as const,
+          },
+        }
+      : {}),
+    ...(hit.refund && typeof hit.refund === 'object'
+      ? (() => {
+          const sr = hit.refund as Partial<Refund> & { timeline?: Array<Partial<RefundTimelineEntry>> };
+          const st: RefundStatus =
+            sr.status === 'approved' || sr.status === 'rejected' || sr.status === 'refunded' ? sr.status : 'requested';
+          return {
+            refund: {
+              id: String(sr.id ?? ''),
+              reason: String(sr.reason ?? ''),
+              status: st,
+              timeline: Array.isArray(sr.timeline)
+                ? sr.timeline.map((t, i) => ({
+                    author: t.author === 'seller' || t.author === 'platform' ? t.author : ('you' as const),
+                    text: String(t.text ?? ''),
+                    time: Number(t.time ?? Date.now()),
+                  }))
+                : [],
+              requestedAt: Number(sr.requestedAt ?? Date.now()),
+            } as Refund,
+          };
+        })()
+      : {}),
+    serverId: String(hit.id),
+    tracking: labels.map((label, i) => ({
+      label,
+      time: i === 0 ? new Date(typeof hit.placedAt === 'string' ? Date.parse(hit.placedAt) : Number(hit.placedAt ?? Date.now())).toLocaleString() : '—',
+      done: flowIdx < 0 ? i === 0 : i <= flowIdx,
+    })),
+  };
+}
+
 const OrderContext = createContext<OrderContextType | null>(null);
 
 export function OrderProvider({ children }: { children: React.ReactNode }) {

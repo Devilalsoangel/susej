@@ -53,8 +53,7 @@ export default function NotificationsScreen() {
     }
   };
 
-  const messageFor = (n: AppNotification): string => {
-    const subject = n.target ? ` on ${n.target}` : '';
+  const messageFor = (n: AppNotification): string => {    const subject = n.target ? ` on ${n.target}` : '';
     switch (n.type) {
       case 'follower': return `${n.userName} started following you.`;
       case 'like': return `${n.userName} liked your post${subject}.`;
@@ -67,13 +66,21 @@ export default function NotificationsScreen() {
     }
   };
 
+  // Username-shaped handle check (letters/digits/._-, no spaces): display
+  // names route to search instead of a ghost seller store.
+  const couldBeUsername = (s: string) => /^[A-Za-z0-9._-]{2,64}$/.test(s);
+
   const openNotification = (n: AppNotification) => {
     markAsRead(n.id);
     const targetId = n.targetId || n.target;
     switch (n.type) {
       case 'follower': {
         const handle = n.userHandle || n.targetId;
-        router.push(handle ? `/seller/${handle}` : '/search');
+        // Encoded username-only: a display-name handle ("Anaya Sharma")
+        // misses the username-exact seller lookup — fall back to search
+        // instead of rendering an empty store.
+        const clean = String(handle ?? '').trim();
+        router.push(couldBeUsername(clean) ? `/seller/${encodeURIComponent(clean)}` : '/search');
         break;
       }
       case 'order':
@@ -88,17 +95,27 @@ export default function NotificationsScreen() {
       case 'bookmark':
         router.push('/saved');
         break;
-      case 'promotion':
-        router.push('/(tabs)/explore');
+      case 'promotion': {
+        // Campaign-live tells open My Campaigns; price-drop tells carry the
+        // listing and open its PDP. Legacy campaign tells stamped the
+        // *purchase* id as targetId (pre-fix builds) — those are not post
+        // ids, so route by the action copy, never by id shape.
+        const act = String((n as { action?: unknown }).action ?? '');
+        if (targetId && !/^started /.test(act)) {
+          router.push(`/product/${encodeURIComponent(String(targetId))}`);
+        } else {
+          router.push('/promotions');
+        }
         break;
+      }
       case 'warning':
         // Imageless-listing warnings carry the listing id: land on the
         // listing that needs the photo, not the generic feed.
-        router.push(targetId ? `/product/${targetId}` : '/(tabs)/feed');
+        router.push(targetId ? `/product/${encodeURIComponent(String(targetId))}` : '/(tabs)/feed');
         break;
       case 'like':
       case 'comment':
-        router.push(targetId ? `/product/${targetId}` : '/(tabs)/feed');
+        router.push(targetId ? `/product/${encodeURIComponent(String(targetId))}` : '/(tabs)/feed');
         break;
       default:
         router.push('/(tabs)/feed');
@@ -185,7 +202,12 @@ export default function NotificationsScreen() {
               <TouchableOpacity
                 className="px-4 py-2 rounded-full"
                 style={{ backgroundColor: colors.primaryContainer }}
-                onPress={() => router.push('/(tabs)/chat')}
+                onPress={() => {
+                  // Thread truth only: target (human title) is NOT a route —
+                  // pushing /product/<title> dead-ends. Post id or chat list.
+                  const tid = item.targetId;
+                  router.push(tid ? `/product/${tid}` : '/(tabs)/chat');
+                }}
               >
                 <Text className="font-inter-600 text-white" style={{ fontSize: 12, lineHeight: 14 }}>
                   Reply

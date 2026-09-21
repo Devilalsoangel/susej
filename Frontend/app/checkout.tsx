@@ -89,7 +89,7 @@ export default function CheckoutScreen() {
       let active = true;
       (async () => {
         void syncWalletFromServer().catch(() => {});
-        const [a, p, promo] = await Promise.all([getSelectedAddress(username), getSelectedPayment(), getAppliedPromo()]);
+        const [a, p, promo] = await Promise.all([getSelectedAddress(username), getSelectedPayment(username), getAppliedPromo()]);
         try {
           const w = await getWallet();
           if (active) setWalletBalance(w.balance);

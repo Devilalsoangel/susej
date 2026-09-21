@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
 import { getAppUser } from "@/lib/app-auth";
+import { getClientIp } from "@/lib/auth";
+import { checkWriteRate } from "@/lib/rate-limit";
 
 /**
  * POST /api/app/reports { postId, reason }
@@ -10,6 +12,9 @@ import { getAppUser } from "@/lib/app-auth";
  * the same listing bump reportCount instead of duplicating rows.
  */
 export async function POST(req: NextRequest) {
+  if (!checkWriteRate(`reports:${getClientIp(req)}`, 30)) {
+    return NextResponse.json({ error: "Too many requests — slow down" }, { status: 429 });
+  }
   const auth = await getAppUser(req);
   if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   const prisma = await getPrisma();

@@ -8,6 +8,7 @@ import { usePosts } from '../../contexts/PostContext';
 import { useHashtags, extractHashtags } from '../../contexts/HashtagContext';
 import { resolveListingImage, hasRealImage } from '../../utils/productImages';
 import { AvatarView } from '../../components/AvatarView';
+import { goBack } from '../../utils/navigation';
 
 const { width } = Dimensions.get('window');
 const COL = (width - 44) / 2;
@@ -56,7 +57,7 @@ function HashtagDetailContent() {
     <View className="flex-1 bg-surface">
       {/* Header */}
       <View className="flex-row items-center justify-between h-[52px] px-4 bg-surface" style={{ height: 52 + insets.top, paddingTop: insets.top }}>
-        <TouchableOpacity onPress={() => router.back()}>
+        <TouchableOpacity onPress={() => goBack('/search')}>
           <BackIcon size={20} color={colors.primary} />
         </TouchableOpacity>
         <Text className="text-figma-18 font-inter-700 text-primary">susej</Text>

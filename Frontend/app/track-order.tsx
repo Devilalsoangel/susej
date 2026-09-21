@@ -1,19 +1,48 @@
+import { useState, useEffect } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, Image, Share } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path, Rect } from 'react-native-svg';
 import { BackIcon, ShareIcon, MapPinIcon, ShopIcon, GpsTargetIcon, CheckIcon } from '../utils/icons';
 import { colors, formatPrice } from '../utils/theme';
-import { useOrders, STATUS_LABELS } from '../contexts/OrderContext';
+import { useOrders, STATUS_LABELS, toOrderFromServer, type Order } from '../contexts/OrderContext';
 import { resolveListingImage } from '../utils/productImages';
+import { serverApi } from '../utils/serverApi';
+import { goBack } from '../utils/navigation';
 
 export default function TrackOrderScreen() {
   const params = useLocalSearchParams<{ id?: string | string[] }>();
-  const { orders, getOrder } = useOrders();
+  const { getOrder } = useOrders();
   const insets = useSafeAreaInsets();
   const rawId = Array.isArray(params.id) ? params.id[0] : params.id;
   // No id must not leak another user's order — show empty state instead.
-  const order = rawId ? getOrder(String(rawId)) : undefined;
+  const localOrder = rawId ? getOrder(String(rawId)) : undefined;
+  // Server fallback (same as the receipt): a 2nd-device or notification
+  // deep-link resolves server-side — Track must agree with the receipt.
+  const [serverOrder, setServerOrder] = useState<Order | null>(null);
+  const [serverMiss, setServerMiss] = useState(false);
+  useEffect(() => {
+    setServerOrder(null);
+    setServerMiss(false);
+  }, [rawId]);
+  useEffect(() => {
+    if (localOrder || !rawId || serverOrder || serverMiss) return;
+    let alive = true;
+    serverApi
+      .getOrder(String(rawId))
+      .then((res) => {
+        if (!alive) return;
+        const hit = res.ok ? (res.data as { order?: unknown } | null)?.order : null;
+        const mapped = toOrderFromServer(hit);
+        if (!mapped) setServerMiss(true);
+        else setServerOrder(mapped);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [localOrder, rawId, serverOrder, serverMiss]);
+  const order = localOrder ?? serverOrder ?? undefined;
 
   // No map without real GPS: deterministic hash positions rendered fake
   // pickup/delivery pins around a hardcoded city — Amazon/IG show a status
@@ -24,7 +53,7 @@ export default function TrackOrderScreen() {
     return (
       <View className="flex-1 bg-surface">
         <View className="flex-row items-center justify-between px-4 border-b border-surfaceContainer" style={{ height: 64 + insets.top, paddingTop: insets.top }}>
-          <TouchableOpacity onPress={() => router.back()}>
+          <TouchableOpacity onPress={() => goBack('/orders')}>
             <BackIcon size={20} color={colors.primaryContainer} />
           </TouchableOpacity>
           <Text className="text-figma-18 font-inter-700 text-textPrimary">Track Order</Text>
@@ -35,7 +64,7 @@ export default function TrackOrderScreen() {
           <Text className="text-figma-14 font-inter-400 text-textSecondary mt-2 text-center">
             We couldn't find this order. It may have been removed or is no longer available.
           </Text>
-          <TouchableOpacity className="mt-6 px-6 py-3 bg-primaryContainer rounded-figma-full" onPress={() => router.back()}>
+          <TouchableOpacity className="mt-6 px-6 py-3 bg-primaryContainer rounded-figma-full" onPress={() => goBack('/orders')}>
             <Text className="text-figma-14 font-inter-600 text-white">Go back</Text>
           </TouchableOpacity>
         </View>
@@ -82,7 +111,10 @@ export default function TrackOrderScreen() {
   const itemsTotal = items.reduce((s, i) => s + Number(i?.price ?? 0) * Math.max(0, Math.round(Number(i?.quantity ?? 1))), 0);
   const firstItem = items[0] as any;
   const productName = firstItem?.name ?? 'Order items';
-  const productPrice = formatPrice(itemsTotal);
+  // Receipt parity: the settled amount (delivery + coupons applied) wins over
+  // the raw merchandise sum, so Track and receipt never show two "prices".
+  const settledTotal = Number((order as any)?.chargedTotal);
+  const productPrice = formatPrice(Number.isFinite(settledTotal) && settledTotal > 0 ? settledTotal : itemsTotal);
   const quantity = itemCount;
   const productImage = firstItem?.imageUrl ? { uri: firstItem.imageUrl } : resolveListingImage(null, firstItem?.listingId ?? (order as any)?.id);
 
@@ -97,16 +129,18 @@ export default function TrackOrderScreen() {
     (Number.isNaN(deliveredMs) || Date.now() <= deliveredMs + RETURN_WINDOW_MS);
 
   const handleShare = () => {
+    // Share the ORDER (receipt route), never the product: tracking a product
+    // is the wrong entity and dead-ends the recipient.
     Share.share({
       title: `Order ${orderNumber}`,
-      message: `Order ${orderNumber} (${statusLabel}) — ${productName} x ${quantity} at ${productPrice}.\nsusej://product/${firstItem?.listingId ?? ''}`,
+      message: `Order ${orderNumber} (${statusLabel}) — ${productName} x ${quantity} at ${productPrice}.\nsusej://order/${order?.serverId ?? order?.id ?? ''}`,
     }).catch(() => {});
   };
 
   return (
     <View className="flex-1">
       <View className="flex-row items-center justify-between px-4 border-b border-surfaceContainer bg-surface" style={{ height: 64 + insets.top, paddingTop: insets.top }}>
-        <TouchableOpacity onPress={() => router.back()}>
+        <TouchableOpacity onPress={() => goBack('/orders')}>
           <BackIcon size={20} color={colors.primaryContainer} />
         </TouchableOpacity>
         <Text className="text-figma-18 font-inter-700 text-textPrimary">Track Order</Text>

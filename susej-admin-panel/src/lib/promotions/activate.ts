@@ -193,6 +193,23 @@ export async function activatePromotion(checkoutRef: string, providerPaymentId?:
   }
 
   if (purchase.kind === "spotlight") {
+    // Honest scarcity: home serves at most 3 concurrent spotlights, so the
+    // 4th concurrent buyer is refused instead of paying for an invisible
+    // slot (position-1 take:1 newest-wins used to sell N overlapping
+    // exclusives and serve one). Serialized via a transaction-scoped advisory
+    // lock: the count+create below must be atomic across confirms (distinct
+    // checkoutRef rows never lock each other, so the count alone raced).
+    // Feed pins all actives; home serves 3.
+    try {
+      await (tx as any).$queryRawUnsafe?.(`SELECT pg_advisory_xact_lock(hashtext('spotlight-activate'))`);
+    } catch {
+      return { ok: false as const, error: "activation_failed" };
+    }
+    const liveCount = await prisma.spotlight.count({ where: { status: ACTIVE_STATUS } }).catch(() => 0);
+    if (liveCount >= 3) {
+      await tx.promotionPurchase.update({ where: { id: purchase.id }, data: { status: "expired", isPinned: false } });
+      return { ok: false as const, error: "spotlight_full" };
+    }
     // Spotlight pins a listing/post at the top of buyer feeds for a fixed
     // duration (24h). It always occupies position 1 — only one active
     // spotlight per seller at a time (enforced by unique constraint below).
@@ -227,6 +244,11 @@ export async function activatePromotion(checkoutRef: string, providerPaymentId?:
     if (!purchase) return { ok: false as const, error: "not_found" };
     return { ok: true as const, purchase: serializePurchase(purchase), alreadyProcessed: true };
   }
+  // Capacity refusal from inside the claiming tx (spotlight full): the
+  // purchase row was expired there — surface the reason, never a placement.
+  if ((claimed as { error?: unknown }).error === "spotlight_full") {
+    return { ok: false as const, error: "spotlight_full" };
+  }
   return { ok: true as const, purchase: serializePurchase(claimed) };
 }
 
@@ -241,7 +263,7 @@ export async function deactivateOnRefund(checkoutRef: string) {
     where: { id: purchase.id },
     data: { status: "refunded", isPinned: false } as never,
   });
-  await hideSlot(prisma, purchase.kind, purchase.position);
+  await hideSlot(prisma, purchase);
   // Money back: the purchase debit left the seller's wallet, so refunding
   // must re-credit it — previously the slot unpinned while the money stayed
   // taken. Race-safe by construction: the credit row is created FIRST inside
@@ -285,27 +307,43 @@ export async function deactivateOnRefund(checkoutRef: string) {
   return { ok: true as const, status: "refunded" };
 }
 
-async function hideSlot(prisma: NonNullable<Awaited<ReturnType<typeof getPrisma>>>, kind: string, position: number | null) {
-  if (position === null) return;
+/** Scoped unpin for a single purchase's rail row (end-early lane). */
+export async function hideSlotScoped(
+  purchase: { kind: string; position: number | null; sellerId?: unknown; productId?: unknown; postId?: unknown }
+): Promise<void> {
+  const prisma = await getPrisma();
+  if (!prisma) return;
+  await hideSlot(prisma, purchase);
+}
+
+async function hideSlot(
+  prisma: NonNullable<Awaited<ReturnType<typeof getPrisma>>>,
+  purchase: { kind: string; position: number | null; sellerId?: unknown; productId?: unknown; postId?: unknown }
+) {
+  // Scoped unpin (never by position value alone): co-position innocent rows
+  // used to die with a stranger's lifecycle. The purchase carries its rail
+  // key (seller / product / post id) — only that exact row expires.
+  const position = purchase.position;
+  if (position === null || position === undefined) return;
   try {
-    if (kind === "topSeller") {
+    if (purchase.kind === "topSeller") {
       await prisma.topSeller.updateMany({
-        where: { status: ACTIVE_STATUS, position },
+        where: { status: ACTIVE_STATUS, position, sellerId: String(purchase.sellerId ?? "") },
         data: { status: "expired", isPinned: false },
       });
-    } else if (kind === "hotDeal") {
+    } else if (purchase.kind === "hotDeal") {
       await prisma.hotDeal.updateMany({
-        where: { status: ACTIVE_STATUS, priority: position },
+        where: { status: ACTIVE_STATUS, priority: position, productId: String(purchase.productId ?? "") },
         data: { status: "expired" },
       });
-        } else if (kind === "featuredPost") {
+    } else if (purchase.kind === "featuredPost") {
       await prisma.featuredPost.updateMany({
-        where: { status: ACTIVE_STATUS, position },
+        where: { status: ACTIVE_STATUS, position, postId: String(purchase.postId ?? "") },
         data: { status: "expired", isPinned: false },
       });
-    } else if (kind === "spotlight") {
+    } else if (purchase.kind === "spotlight") {
       await prisma.spotlight.updateMany({
-        where: { status: ACTIVE_STATUS },
+        where: { status: ACTIVE_STATUS, sellerId: String(purchase.sellerId ?? "") },
         data: { status: "expired", isPinned: false },
       });
     }
@@ -321,11 +359,11 @@ export async function sweepExpiredPromotions() {
   const now = new Date();
   const expired = await prisma.promotionPurchase.findMany({
     where: { status: ACTIVE_STATUS, endsAt: { lte: now } },
-    select: { id: true, kind: true, position: true },
+    select: { id: true, kind: true, position: true, sellerId: true, productId: true, postId: true },
   });
 
   for (const p of expired) {
-    await hideSlot(prisma, p.kind, p.position);
+    await hideSlot(prisma, p);
     await prisma.promotionPurchase.update({ where: { id: p.id }, data: { status: "expired", isPinned: false } });
   }
 
@@ -475,6 +513,83 @@ export async function lazySweep() {
   if (now - lastSweepAt < 5 * 60 * 1000) return;
   lastSweepAt = now;
   await sweepExpiredPromotions();
+  await sweepSettledAuctions().catch(() => null);
+}
+
+/**
+ * Auction hammer sweep: lots past endsAt flip live→ended (lifts the
+ * direct-buy hold in the orders lane, which keys on live + future endsAt),
+ * and the winner + seller are told to settle via chat offer. No money moves
+ * here — full bid escrow is a product build; this closes the open register
+ * (bids past hammer refused at the bid lane) and the stranded lot. Winner =
+ * top bid at settle time. Idempotent: only live rows flip, notifies fire on
+ * the flip only.
+ */
+export async function sweepSettledAuctions(): Promise<{ ok: boolean; settled: number }> {
+  const prisma = await getPrisma();
+  if (!prisma) return { ok: false, settled: 0 };
+  const now = new Date();
+  let lots: Array<{ id: string; title: string; sellerUsername: string | null; currentBid: number }> = [];
+  try {
+    // Oldest hammer first: an unbounded take without order starves ancient
+    // lots behind fresh ones forever.
+    lots = (await prisma.auction.findMany({
+      where: { status: "live", endsAt: { lte: now } },
+      orderBy: { endsAt: "asc" },
+      select: { id: true, title: true, sellerUsername: true, currentBid: true },
+      take: 200,
+    })) as typeof lots;
+  } catch {
+    return { ok: false, settled: 0 };
+  }
+  let settled = 0;
+  const { notifyUser } = await import("@/lib/notifications");
+  for (const lot of lots) {
+    try {
+      const flip = await (prisma as any).auction.updateMany({
+        where: { id: lot.id, status: "live" },
+        data: { status: "ended" },
+      });
+      if (!flip || flip.count !== 1) continue;
+      settled += 1;
+      const top = await (prisma as any).auctionBid.findFirst({
+        where: { auctionId: lot.id },
+        orderBy: { amount: "desc" },
+        select: { bidder: true, amount: true },
+      }).catch(() => null);
+      const price = `₹${Math.round(Number(lot.currentBid ?? 0)).toLocaleString("en-IN")}`;
+      if (top?.bidder) {
+        notifyUser(prisma, {
+          username: String(top.bidder),
+          type: "auction",
+          userName: "susej auctions",
+          action: `won “${String(lot.title).slice(0, 80)}” at ${price} — message the seller to complete the purchase`,
+          target: price,
+          targetId: lot.id,
+        });
+        if (lot.sellerUsername) {
+          notifyUser(prisma, {
+            username: lot.sellerUsername,
+            type: "auction",
+            userName: "susej auctions",
+            userHandle: String(top.bidder),
+            action: `lot “${String(lot.title).slice(0, 80)}” ended at ${price} — confirm payment in chat`,
+            target: price,
+            targetId: lot.id,
+          });
+        }
+      } else if (lot.sellerUsername) {
+        notifyUser(prisma, {
+          username: lot.sellerUsername,
+          type: "auction",
+          userName: "susej auctions",
+          action: `lot “${String(lot.title).slice(0, 80)}” ended with no bids — relist or sell directly`,
+          targetId: lot.id,
+        });
+      }
+    } catch {}
+  }
+  return { ok: true, settled };
 }
 
 async function nextPosition(prisma: NonNullable<Awaited<ReturnType<typeof getPrisma>>>, kind: string): Promise<number> {
