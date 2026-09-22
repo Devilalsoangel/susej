@@ -141,6 +141,13 @@ function UserReelCard({ reel }: { reel: MyReel }) {
       pop();
       spawnBurst();
     }
+    // Server truth (fire-and-forget with explicit state — idempotent, never
+    // inverts on retry; offline keeps the local animation). Local-only drafts
+    // (myreel_ ids, never published) have no server row to like.
+    const rid = reel.serverId ? String(reel.serverId) : null;
+    if (rid) {
+      void serverApi.likeReel(rid, next).catch(() => {});
+    }
   };
 
   const handleDoubleTapLike = useDoubleTapLike(toggleLike);

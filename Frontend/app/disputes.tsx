@@ -361,17 +361,47 @@ export default function DisputesScreen() {
                 New dispute
               </Text>
               <Text className="font-inter-500 text-textSecondary mb-1" style={{ fontSize: 12, lineHeight: 14 }}>
-                ORDER REFERENCE
+                ORDER
               </Text>
-              <TextInput
-                className="px-4 mb-4"
-                style={{ height: 48, borderRadius: 12, backgroundColor: colors.surfaceContainerLowest, color: colors.textPrimary, fontSize: 15, fontFamily: 'Inter_400Regular' }}
-                placeholder="e.g. #SJ-102938"
-                placeholderTextColor={colors.textTertiary}
-                value={orderRef}
-                onChangeText={setOrderRef}
-                autoCapitalize="characters"
-              />
+              {/* Eligible-order picker (no free text): typos used to file
+                orphan disputes against refs matching nothing, paging sellers
+                for phantom cases. Only your non-cancelled purchases list. */}
+              {(() => {
+                const me = (user?.username ?? '').trim().toLowerCase();
+                const eligible = orders.filter(
+                  (o) => (o.sellerUsername ?? '').trim().toLowerCase() !== me && o.status !== 'cancelled' && !o.syncFailed
+                );
+                if (!eligible.length) {
+                  return (
+                    <Text className="font-inter-400 text-textSecondary mb-4" style={{ fontSize: 13, lineHeight: 18 }}>
+                      No eligible orders — disputes start from a delivered purchase in your orders.
+                    </Text>
+                  );
+                }
+                return (
+                  <View className="mb-4" style={{ gap: 8 }}>
+                    {eligible.slice(0, 10).map((o) => {
+                      const ref = o.orderNumber ?? o.id;
+                      const active = orderRef.trim() === ref || orderRef.trim() === `#${ref.replace(/^#/, '')}`;
+                      return (
+                        <TouchableOpacity
+                          key={o.id}
+                          className="px-4 py-3 rounded-figma-12"
+                          style={{ backgroundColor: active ? colors.primaryContainer : colors.surfaceContainerLowest }}
+                          onPress={() => setOrderRef(ref.startsWith('#') ? ref : `#${ref}`)}
+                        >
+                          <Text className="font-inter-600" style={{ fontSize: 14, lineHeight: 18, color: active ? colors.onPrimary : colors.textPrimary }}>
+                            {ref.startsWith('#') ? ref : `#${ref}`} · {o.sellerName || o.sellerUsername}
+                          </Text>
+                          <Text className="font-inter-400" style={{ fontSize: 12, lineHeight: 16, color: active ? colors.onPrimary : colors.textSecondary }}>
+                            {o.status} · {o.items?.length ?? 0} item{(o.items?.length ?? 0) === 1 ? '' : 's'}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                );
+              })()}
               <Text className="font-inter-500 text-textSecondary mb-2" style={{ fontSize: 12, lineHeight: 14 }}>
                 REASON
               </Text>

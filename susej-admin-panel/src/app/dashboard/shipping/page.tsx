@@ -94,7 +94,16 @@ const makeZoneColumns = (onToggle: (z: DeliveryZone) => void, onDelete: (z: Deli
   zColumn.accessor("region", { header: "Region", cell: (info) => <span className="text-[#71717A]">{info.getValue()}</span> }),
   zColumn.accessor("rate", { header: "Rate", cell: (info) => <span className="tabular-nums">₹{info.getValue().toFixed(2)}</span> }),
   zColumn.accessor("eta", { header: "ETA" }),
-  zColumn.accessor("coverage", { header: "Coverage", cell: (info) => <span className="font-medium">{info.getValue()}%</span> }),
+  zColumn.accessor("coverage", {
+    header: "Coverage",
+    // Seed unit split: small values are percent, 1000+ are pincode counts
+    // (Rest-of-India seeds 19000 pincodes — rendering it as 19000% was the
+    // absurdity; Metro/Tier-1 seed percent).
+    cell: (info) => {
+      const v = Number(info.getValue() ?? 0);
+      return <span className="font-medium">{v >= 1000 ? `${v.toLocaleString("en-IN")} pincodes` : `${v}%`}</span>;
+    },
+  }),
   zColumn.accessor("active", {
     header: "Status",
     cell: (info) => <Badge variant={info.getValue() ? "success" : "default"}>{info.getValue() ? "Active" : "Inactive"}</Badge>,

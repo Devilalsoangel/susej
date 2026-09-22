@@ -117,6 +117,7 @@ export default function OffersPage() {
     try {
       const res = await fetch("/api/data/coupons", {
         method: "PATCH",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: coupon.id, data: { status: next } }),
       });
@@ -140,6 +141,7 @@ export default function OffersPage() {
     try {
       const res = await fetch("/api/data/coupons", {
         method: "DELETE",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: target.id }),
       });
@@ -186,6 +188,7 @@ export default function OffersPage() {
     setList((prev) => [{ ...payload, id: ghostId } as Coupon, ...(prev ?? [])]);
     fetch("/api/data/coupons", {
       method: "POST",
+      credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }).then(async (res) => {

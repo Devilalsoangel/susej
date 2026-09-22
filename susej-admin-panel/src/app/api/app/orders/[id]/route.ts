@@ -5,6 +5,7 @@ import { getClientIp } from "@/lib/auth";
 import { checkWriteRate } from "@/lib/rate-limit";
 import { resolveCommissionRate, settlementGoodsBasis, settledFeeFromLegs, releaseCoupon } from "@/lib/commission";
 import { notifyUser } from "@/lib/notifications";
+import { orderFactsOf } from "@/lib/order-facts";
 
 class OrderError extends Error {
   status: number;
@@ -98,17 +99,27 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       if ([0, 12, 30].includes(remainder) && remainder >= 0) detailFee = remainder;
     }
   } catch {}
+  // Durable facts: columns when migrated, Json stamp otherwise (shared
+  // helper with the list lane — one read rule everywhere).
+  const facts = orderFactsOf(order as Parameters<typeof orderFactsOf>[0]);
+  const detailDiscount = facts.discount;
+  // Stamped/column fee wins over the bounded re-derivation above (exact at
+  // placement, never re-guessed from legs).
+  if (facts.deliveryFee !== undefined) detailFee = facts.deliveryFee;
   return NextResponse.json({
     order: {
       id: order.id,
       orderNumber: order.orderNumber ?? order.trackingNumber ?? order.id,
-      kind: "order",
+      kind: facts.kind,
+      ...(facts.bookingDate ? { bookingDate: facts.bookingDate } : {}),
+      ...(facts.bookingTime ? { bookingTime: facts.bookingTime } : {}),
+      ...(detailDiscount > 0 ? { discount: detailDiscount } : {}),
       sellerName: order.sellerName,
       sellerUsername: order.sellerUsername ?? "",
       buyerName: order.buyerName,
       buyerUsername: order.buyerUsername ?? "",
       items: order.itemsList,
-      total: order.amount,
+      total: Math.round(Number(order.amount ?? 0) + detailDiscount),
       chargedTotal: order.amount,
       status: order.status,
       paymentStatus: (order as { paymentStatus?: unknown }).paymentStatus ? String((order as { paymentStatus?: unknown }).paymentStatus) : "",
@@ -175,7 +186,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   const prisma = await getPrisma();
   if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
 
-  let body: { status?: string; rating?: number; reviewComment?: string; reviewAnonymous?: boolean; refundReason?: string; refundDecision?: string; decisionNote?: string; podNote?: string };
+    let body: { status?: string; rating?: number; reviewComment?: string; reviewAnonymous?: boolean; refundReason?: string; refundDecision?: string; decisionNote?: string; podNote?: string; cancelReason?: string };
   try {
     body = await req.json();
   } catch {
@@ -286,6 +297,19 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     if (next === "cancelled") {
       data.status = "cancelled";
       data.deliveryStatus = "cancelled";
+      // Cancel/decline reason rides the deliveryLog (no cancelReason column):
+      // the buyer tracking screen + desk read the same log as POD. Without
+      // this the seller's decline reason died on the device and the buyer saw
+      // bare "cancelled" with no rationale.
+      const cancelReason = typeof body.cancelReason === "string" ? body.cancelReason.trim().slice(0, 200) : "";
+      if (cancelReason) {
+        // Read the log from the locked re-read (not the pre-tx snapshot): a
+        // concurrent logger between read and lock would otherwise drop an entry.
+        const liveLog = Array.isArray((liveOrder as { deliveryLog?: unknown })?.deliveryLog)
+          ? ((liveOrder as { deliveryLog: unknown[] }).deliveryLog)
+          : [];
+        data.deliveryLog = [...liveLog, { at: new Date().toISOString(), by: username, note: `Cancelled: ${cancelReason}` }];
+      }
       let reversed = false;
       // Per-leg flags so the ledger mirrors exactly what moved THIS call
       // (repeat cancels must not mint duplicate reversal rows).

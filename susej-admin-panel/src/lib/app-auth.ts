@@ -15,10 +15,26 @@ export async function getAppUser(req: NextRequest) {
   if (!token) return null;
   const prisma = await getPrisma();
   if (!prisma) return null;
-  const session = await prisma.appSession.findUnique({
-    where: { token },
-    include: { user: true },
-  });
+  // Hash-first (one-shot hardening): new sessions store sha256(tokenHash);
+  // the plaintext `token` column stays readable until rotation lands, then
+  // goes away. Pre-migration DBs reject the unknown field → fall through.
+  let session: any = null;
+  try {
+    const { createHash } = await import("crypto");
+    const digest = createHash("sha256").update(token).digest("hex");
+    session = await prisma.appSession.findUnique({
+      where: { tokenHash: digest },
+      include: { user: true },
+    }).catch(() => null);
+  } catch {
+    session = null;
+  }
+  if (!session) {
+    session = await prisma.appSession.findUnique({
+      where: { token },
+      include: { user: true },
+    });
+  }
   if (!session) return null;
   if (session.expiresAt.getTime() < Date.now()) {
     await prisma.appSession.delete({ where: { id: session.id } }).catch(() => {});
@@ -32,11 +48,22 @@ export async function getAppUser(req: NextRequest) {
 export async function createAppSession(userId: string, username: string): Promise<string> {
   const prisma = await getPrisma();
   if (!prisma) throw new Error("db unavailable");
-  const { randomBytes } = await import("crypto");
+  const { randomBytes, createHash } = await import("crypto");
   const token = `susej_${randomBytes(32).toString("base64url")}`;
-  await prisma.appSession.create({
-    data: { token, userId, username, expiresAt: new Date(Date.now() + APP_SESSION_TTL_MS) },
-  });
+  const tokenHash = createHash("sha256").update(token).digest("hex");
+  const last4 = token.slice(-4);
+  // Dual-write (one-shot hardening): hash + last4 ride along when the
+  // columns exist; pre-migration DBs take the plaintext-only retry. The
+  // plaintext column stays until rotation lands (read path prefers hash).
+  try {
+    await prisma.appSession.create({
+      data: { token, tokenHash, last4, userId, username, expiresAt: new Date(Date.now() + APP_SESSION_TTL_MS) },
+    });
+  } catch {
+    await prisma.appSession.create({
+      data: { token, userId, username, expiresAt: new Date(Date.now() + APP_SESSION_TTL_MS) },
+    });
+  }
   return token;
 }
 

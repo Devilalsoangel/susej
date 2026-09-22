@@ -181,13 +181,26 @@ export default function EditShopScreen() {
         return;
       }
       if (!isCategoryLocked) setCategory(nextCategory);
-      // Device-only extras (no server column yet): tagline/email/phone/hours.
-      // Kept locally so nothing typed is lost; labelled as this-device-only.
+      // Shop extras ride the Seller row now (PATCH /api/app/sellers/me):
+      // tagline/hours/email/phone/address sync cross-device. Pre-migration
+      // servers answer localOnly — the device copy below stays as backup and
+      // the alert says so honestly instead of promising sync.
+      let extrasSynced = false;
+      try {
+        const { serverApi } = await import('../utils/serverApi');
+        const r = await serverApi.updateShopProfile({ tagline, email, phone, hours, address });
+        extrasSynced = !!r.ok && !(r as { localOnly?: unknown }).localOnly;
+      } catch {}
       await AsyncStorage.setItem(
         shopKey,
         JSON.stringify({ tagline, about, address, email, phone, hours, photoUri: hostedPhoto ?? photoUri })
       );
-      Alert.alert('Saved', 'Store name, photo, about and address synced to all devices. Tagline, email, phone and hours stay on this device for now.');
+      Alert.alert(
+        'Saved',
+        extrasSynced
+          ? 'Your full shop profile synced to all devices.'
+          : 'Store name, photo, about and address synced to all devices. Tagline, email, phone and hours stay on this device for now.'
+      );
     } catch {
       Alert.alert('Something went wrong', 'Please try again.');
     }

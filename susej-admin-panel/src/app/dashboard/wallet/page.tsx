@@ -63,7 +63,9 @@ export default function WalletPage() {
     // legs are platform take — including them inflated "Paid out" and
     // understated "Held by platform".
     const inTotal = (ledger ?? []).filter((l) => l.direction === "in" && (l.type === "settlement" || l.type === "payout")).reduce((s, l) => s + l.amount, 0);
-    const outTotal = (ledger ?? []).filter((l) => l.direction === "out").reduce((s, l) => s + l.amount, 0);
+    // Collected = buyer money in (charges + top-ups). Payout-out legs (bank
+    // exits) and seller clawback reversals are NOT collections.
+    const outTotal = (ledger ?? []).filter((l) => l.direction === "out" && (l.type === "charge" || l.type === "topup")).reduce((s, l) => s + l.amount, 0);
     const pending =
       (pendingWd ?? []).reduce((s, w) => s + Math.max(0, Number(w.amount) || 0), 0) +
       (pendingRf ?? []).reduce((s, r) => s + Math.max(0, Number(r.amount) || 0), 0);

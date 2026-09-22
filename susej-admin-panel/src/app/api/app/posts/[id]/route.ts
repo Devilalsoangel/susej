@@ -123,6 +123,21 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     }
     data.price = p;
   }
+  // MRP (was-price) stays editable post-publish (POST parity): empty clears
+  // it, otherwise must exceed the effective (incoming ?? stored) price —
+  // non-exceeding values null instead of silently dropping the badge later.
+  if ((body as unknown as { mrp?: unknown }).mrp !== undefined) {
+    const effPrice = typeof data.price === "number"
+      ? (data.price as number)
+      : (typeof (post as unknown as { price?: unknown }).price === "number" ? ((post as unknown as { price: number }).price) : 0);
+    const rawMrp = (body as unknown as { mrp?: unknown }).mrp;
+    if (rawMrp === null) {
+      data.mrp = null;
+    } else {
+      const m = Math.round(Number(rawMrp));
+      data.mrp = Number.isFinite(m) && m > 0 && m <= 10000000 && m > effPrice ? m : null;
+    }
+  }
   if (typeof body.category === "string") data.category = body.category.trim().slice(0, 60);
   if (typeof body.isSold === "boolean") data.isSold = body.isSold;
   // Authors may hide/publish their OWN listings (shop deactivation flows
@@ -186,6 +201,40 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   }
 
   const updated = await prisma.post.update({ where: { id }, data });
+
+  // Price-drop fan-out (one-shot): watchers whose baseline exceeds the new
+  // price get a notification (cross-device truth via the bell) and their
+  // baseline ratchets down so only FURTHER drops re-alert. Best-effort and
+  // missing-table tolerant — never fails the seller's save.
+  try {
+    if (typeof data.price === "number") {
+      const newPrice = data.price as number;
+      const watchers = await (prisma as any).priceWatch.findMany({
+        where: { listingId: id, priceAtWatch: { gt: newPrice } },
+        select: { username: true },
+      }).catch(() => null);
+      if (Array.isArray(watchers) && watchers.length) {
+        const { notifyUser } = await import("@/lib/notifications");
+        const title = String((updated as { title?: unknown }).title ?? "A watched listing").slice(0, 80);
+        for (const w of watchers as Array<{ username?: unknown }>) {
+          const uname = String(w?.username ?? "").trim();
+          if (!uname) continue;
+          notifyUser(prisma, {
+            username: uname,
+            type: "price",
+            userName: "susej Price Drops",
+            action: `dropped to ₹${Math.round(newPrice).toLocaleString("en-IN")}`,
+            target: title,
+            targetId: id,
+          });
+        }
+        await (prisma as any).priceWatch.updateMany({
+          where: { listingId: id, priceAtWatch: { gt: newPrice } },
+          data: { priceAtWatch: Math.round(newPrice) },
+        }).catch(() => null);
+      }
+    }
+  } catch {}
 
   // Paid-placement burn notice: rails suppress non-published/sold listings,
   // so hiding/selling/deleting a promoted listing silently burns paid days.

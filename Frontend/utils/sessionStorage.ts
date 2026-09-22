@@ -20,7 +20,9 @@ export const sessionStorage = {
         accessToken: tokens.accessToken,
         refreshToken: tokens.refreshToken,
         userId,
-        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000, // 7 days
+        // Matches the server AppSession TTL (30d): expiring earlier forced a
+        // weekly relogin against a still-live server session.
+        expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000, // 30 days
       };
       await AsyncStorage.setItem(TOKENS_KEY, JSON.stringify(session));
     } catch (error) {

@@ -1,11 +1,12 @@
 import { useCallback, useMemo, useState } from 'react';
-import { View, Text, Image, ScrollView, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
+import { View, Text, TextInput, Image, ScrollView, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BackIcon } from '../utils/icons';
 import { colors, formatPrice } from '../utils/theme';
 import { useCart } from '../contexts/CartContext';
 import { usePosts } from '../contexts/PostContext';
+import { useAuth } from '../contexts/AuthContext';
 import { serverApi } from '../utils/serverApi';
 import { resolveListingImage } from '../utils/productImages';
 
@@ -45,23 +46,22 @@ export default function BundlesScreen() {
   const [loading, setLoading] = useState(true);
   const [serverBundles, setServerBundles] = useState<any[]>([]);
 
+  const refreshBundles = useCallback(async () => {
+    try {
+      const res = await serverApi.getBundles();
+      if (res.ok && res.data?.bundles) setServerBundles(res.data.bundles);
+    } catch {
+      // offline: honest empty state below
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
-      let active = true;
-      (async () => {
-        try {
-          const res = await serverApi.getBundles();
-          if (active && res.ok && res.data?.bundles) setServerBundles(res.data.bundles);
-        } catch {
-          // offline: honest empty state below
-        } finally {
-          if (active) setLoading(false);
-        }
-      })();
-      return () => {
-        active = false;
-      };
-    }, [])
+      setLoading(true);
+      void refreshBundles();
+    }, [refreshBundles])
   );
 
   const postById = useMemo(() => {
@@ -184,6 +184,7 @@ export default function BundlesScreen() {
         <Text className="font-inter-400 mt-2 mb-4 text-textSecondary" style={{ fontSize: 13, lineHeight: 18 }}>
           Hand-picked combos at a better price — one tap adds the whole set.
         </Text>
+        <BundleComposer onPublished={() => refreshBundles()} />
         {loading && bundles.length === 0 && (
           <View className="items-center py-16">
             <ActivityIndicator size="large" color={colors.primaryContainer} />
@@ -258,6 +259,119 @@ export default function BundlesScreen() {
           );
         })}
       </ScrollView>
+    </View>
+  );
+}
+
+/** Seller combo composer (buyer rail above consumes the catalog): pick 2+
+ *  own live listings, name the combo, set the combo price. The server
+ *  validates ownership/liveness and reprices at placement — this price is
+ *  the offer, the Bundle row is the charge truth. Sellers only. */
+function BundleComposer({ onPublished }: { onPublished: () => void }) {
+  const { user } = useAuth();
+  const { posts } = usePosts();
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState('');
+  const [price, setPrice] = useState('');
+  const [picked, setPicked] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const me = (user?.username ?? '').trim().toLowerCase();
+  if (!user || !(user as { isSeller?: boolean }).isSeller) return null;
+  const mine = (posts as any[]).filter(
+    (p) => String(p?.sellerUsername ?? '').toLowerCase() === me && p?.status !== 'hidden' && p?.isSold !== true
+  );
+  const toggle = (id: string) =>
+    setPicked((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id].slice(0, 10)));
+  const mrpSum = mine.filter((p) => picked.includes(String(p.id))).reduce((s, p) => s + Math.max(0, Math.round(Number(p?.price ?? 0))), 0);
+  const comboPrice = Math.floor(Number(price));
+  const canPublish =
+    !busy && title.trim().length >= 3 && picked.length >= 2 && Number.isFinite(comboPrice) && comboPrice > 0 && comboPrice <= 10000000;
+  const publish = async () => {
+    if (!canPublish) return;
+    setBusy(true);
+    try {
+      const res = await serverApi.createBundle({ title: title.trim().slice(0, 80), items: picked, price: comboPrice });
+      if (!res.ok) {
+        Alert.alert('Could not publish', String((res as { error?: unknown }).error ?? 'Check your connection and try again.'));
+        return;
+      }
+      setTitle('');
+      setPrice('');
+      setPicked([]);
+      setOpen(false);
+      Alert.alert('Combo live', '"' + title.trim() + '" is now in Bundle Deals.');
+      onPublished();
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <View className="rounded-[24px] p-4 mb-4" style={{ backgroundColor: colors.surfaceContainerLow }}>
+      <TouchableOpacity onPress={() => setOpen((o) => !o)} accessibilityRole="button">
+        <Text className="font-inter-600 text-textPrimary" style={{ fontSize: 15, lineHeight: 22 }}>
+          {open ? '− Close combo composer' : '+ Create a combo from my listings'}
+        </Text>
+        <Text className="font-inter-400 text-textSecondary mt-0.5" style={{ fontSize: 12, lineHeight: 16 }}>
+          Sellers only · combos reprice from this row at checkout
+        </Text>
+      </TouchableOpacity>
+      {open && (
+        <View className="mt-3" style={{ gap: 10 }}>
+          <TextInput
+            className="px-4"
+            style={{ height: 48, borderRadius: 12, backgroundColor: colors.surfaceContainerLowest, color: colors.textPrimary, fontSize: 14 }}
+            placeholder="Combo title (e.g. Festive Kurti Set)"
+            placeholderTextColor={colors.textTertiary}
+            value={title}
+            onChangeText={setTitle}
+            maxLength={80}
+          />
+          <TextInput
+            className="px-4"
+            style={{ height: 48, borderRadius: 12, backgroundColor: colors.surfaceContainerLowest, color: colors.textPrimary, fontSize: 14 }}
+            placeholder={mrpSum > 0 ? 'Combo price (items total ' + formatPrice(mrpSum) + ')' : 'Combo price'}
+            placeholderTextColor={colors.textTertiary}
+            value={price}
+            onChangeText={setPrice}
+            keyboardType="numeric"
+          />
+          {mine.length === 0 ? (
+            <Text className="font-inter-400 text-textSecondary" style={{ fontSize: 13, lineHeight: 18 }}>
+              No live listings to bundle yet — publish a listing first.
+            </Text>
+          ) : (
+            mine.slice(0, 30).map((p) => {
+              const id = String(p.id);
+              const on = picked.includes(id);
+              return (
+                <TouchableOpacity
+                  key={id}
+                  className="flex-row items-center px-3 py-2.5 rounded-figma-12"
+                  style={{ backgroundColor: on ? colors.primaryContainer : colors.surfaceContainerLowest }}
+                  onPress={() => toggle(id)}
+                >
+                  <Text className="flex-1 font-inter-500" numberOfLines={1} style={{ fontSize: 13, lineHeight: 18, color: on ? colors.onPrimary : colors.textPrimary }}>
+                    {String(p.title ?? p.description ?? 'Listing').split('\n')[0].slice(0, 60)}
+                  </Text>
+                  <Text className="font-inter-600 ml-2" style={{ fontSize: 13, lineHeight: 18, color: on ? colors.onPrimary : colors.textSecondary }}>
+                    {formatPrice(Math.max(0, Math.round(Number(p?.price ?? 0))))}{on ? ' ✓' : ''}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })
+          )}
+          <TouchableOpacity
+            className="items-center justify-center"
+            style={{ height: 48, borderRadius: 16, backgroundColor: canPublish ? colors.primaryContainer : colors.surfaceContainer, opacity: canPublish ? 1 : 0.6 }}
+            disabled={!canPublish}
+            onPress={publish}
+          >
+            <Text className="font-inter-600" style={{ fontSize: 15, lineHeight: 20, color: canPublish ? colors.onPrimary : colors.textTertiary }}>
+              {busy ? 'Publishing…' : (picked.length >= 2 ? 'Publish combo (' + picked.length + ' items)' : 'Publish combo')}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </View>
   );
 }

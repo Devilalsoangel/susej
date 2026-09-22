@@ -80,7 +80,7 @@ export interface Post {
   /** Variant selector — e.g. Size/Colour with optional per-value price deltas. */
   variants?: PostVariant[];
   /** MRP (list price) for strikethrough discount display — optional, goods only. */
-  mrp?: number;
+  mrp?: number | null;
   /** Remaining stock for scarcity badges — optional, goods only. */
   stockLeft?: number;
   /**
@@ -536,7 +536,7 @@ export function PostProvider({ children }: { children: React.ReactNode }) {
           description: input.description,
           category: input.category,
           subCategories: (input as { subCategories?: unknown }).subCategories as string[] | undefined,
-          variants: (input as { variants?: unknown }).variants as { name: string; values: string[] }[] | undefined,
+          variants: (input as { variants?: unknown }).variants as Array<{ name: string; values: Array<{ label: string; priceDelta?: number; stock?: number }> }> | undefined,
           image: input.image,
           images: input.images,
           hashtags: input.hashtags,
@@ -636,6 +636,7 @@ export function PostProvider({ children }: { children: React.ReactNode }) {
           sp.description = patch.description;
         }
         if (patch.price !== undefined) sp.price = patch.price;
+        if (patch.mrp !== undefined) sp.mrp = patch.mrp;
         if (patch.category !== undefined) sp.category = patch.category;
         if (patch.isSold !== undefined) sp.isSold = patch.isSold;
         // Shop deactivation: the server accepts author-set hidden/published

@@ -238,6 +238,31 @@ export type LiveStream = Prisma.LiveStreamModel
  */
 export type Reel = Prisma.ReelModel
 /**
+ * Model Block
+ * 
+ */
+export type Block = Prisma.BlockModel
+/**
+ * Model ReelLike
+ * 
+ */
+export type ReelLike = Prisma.ReelLikeModel
+/**
+ * Model PriceWatch
+ * 
+ */
+export type PriceWatch = Prisma.PriceWatchModel
+/**
+ * Model Poll
+ * 
+ */
+export type Poll = Prisma.PollModel
+/**
+ * Model PollVote
+ * 
+ */
+export type PollVote = Prisma.PollVoteModel
+/**
  * Model Story
  * 
  */

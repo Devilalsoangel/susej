@@ -9,7 +9,7 @@ import { colors, formatPrice, shadows } from '../utils/theme';
 import { useAuth } from '../contexts/AuthContext';
 import { useOrders } from '../contexts/OrderContext';
 import { loadMarketplaceConfig, sellerNetForOrders, sellerGoodsForOrders, sellerCouponForOrders, isApprovedSeller } from '../utils/marketplace';
-import { getWallet, saveWallet, syncWalletFromServer, type WalletTx } from '../utils/walletStore';
+import { getWallet, syncWalletFromServer, type WalletTx } from '../utils/walletStore';
 import { getWithdrawalStatuses } from '../utils/adminSync';
 
 const WITHDRAWALS_KEY_BASE = '@susej_withdrawals';
@@ -246,10 +246,11 @@ export default function WalletScreen() {
     return () => { cancelled = true; clearInterval(timer); };
   }, [loaded, user?.username]);
 
-  useEffect(() => {
-    if (!loaded) return;
-    saveWallet({ balance, transactions }).catch(() => {});
-  }, [balance, transactions, loaded]);
+  // No blind persist effect here by design: every setBalance/setTransactions
+  // above mirrors walletStore (already persisted at write/sync time).
+  // Re-saving screen state on each render clobbered fresher store truth
+  // written by other screens (promotions/pins debit), flapping the balance
+  // on fast navigation. The store is the single writer.
 
   useEffect(() => {
     if (!loaded) return;

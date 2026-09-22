@@ -8,6 +8,15 @@ import { usePosts } from './PostContext';
 const ORDERS_KEY_BASE = '@susej_orders';
 const ORDERS_KEY = ORDERS_KEY_BASE;
 
+/** Transport failures where the server may have committed before the reply
+ *  was lost (commit-then-response-loss). These must NEVER trigger an
+ *  optimistic rollback — the money may have moved. Keep local state; the
+ *  next pull reconciles server-wins. Explicit server rejections (validation,
+ *  funds, state-machine) DO roll back. */
+function isAmbiguousTransport(error: unknown): boolean {
+  return error === 'offline' || error === 'server-unreachable';
+}
+
 export type OrderStatus =
   | 'placed'
   | 'confirmed'
@@ -79,6 +88,9 @@ export interface Order {
   total: number;
   /** Amount actually charged to the buyer (items + delivery − discount). Falls back to total. */
   chargedTotal?: number;
+  /** Settled coupon discount (server-stamped at placement, served on pulls).
+   *  Receipt savings render this instead of re-deriving fee deltas. */
+  discount?: number;
   status: OrderStatus;
   placedAt: number;
   reviewed: boolean;
@@ -483,8 +495,19 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
               : prior?.refund
                 ? { refund: prior.refund }
                 : {}),
-            // No server columns (yet): preserve local values across pulls.
-            ...(prior?.deliveryFee !== undefined ? { deliveryFee: prior.deliveryFee } : {}),
+            // Settled fee/promo/slot/discount are server columns now (stamped
+            // at placement, served on every pull): server wins when present,
+            // local survives pulls from older builds that omit them.
+            ...(Number.isFinite(Number((o as { deliveryFee?: unknown }).deliveryFee)) && Number((o as { deliveryFee?: unknown }).deliveryFee) >= 0
+              ? { deliveryFee: Number((o as { deliveryFee?: unknown }).deliveryFee) }
+              : prior?.deliveryFee !== undefined
+                ? { deliveryFee: prior.deliveryFee }
+                : {}),
+            ...((o as { discount?: unknown }).discount !== undefined && Number.isFinite(Number((o as { discount?: unknown }).discount))
+              ? { discount: Number((o as { discount?: unknown }).discount) }
+              : prior?.discount !== undefined
+                ? { discount: prior.discount }
+                : {}),
             // Dispute-credit leg rides through like the refund row (server
             // wins when present; no local equivalent to preserve).
             ...((o as { disputeCredit?: { amount?: unknown; kind?: unknown } }).disputeCredit &&
@@ -496,9 +519,21 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
                   },
                 }
               : {}),
-            ...(prior?.promoCode !== undefined ? { promoCode: prior.promoCode } : {}),
-            ...(prior?.bookingDate !== undefined ? { bookingDate: prior.bookingDate } : {}),
-            ...(prior?.bookingTime !== undefined ? { bookingTime: prior.bookingTime } : {}),
+            ...(typeof (o as { promoCode?: unknown }).promoCode === 'string' && (o as { promoCode?: string }).promoCode
+              ? { promoCode: (o as { promoCode?: string }).promoCode as string }
+              : prior?.promoCode !== undefined
+                ? { promoCode: prior.promoCode }
+                : {}),
+            ...(typeof (o as { bookingDate?: unknown }).bookingDate === 'string' && (o as { bookingDate?: string }).bookingDate
+              ? { bookingDate: (o as { bookingDate?: string }).bookingDate as string }
+              : prior?.bookingDate !== undefined
+                ? { bookingDate: prior.bookingDate }
+                : {}),
+            ...(typeof (o as { bookingTime?: unknown }).bookingTime === 'string' && (o as { bookingTime?: string }).bookingTime
+              ? { bookingTime: (o as { bookingTime?: string }).bookingTime as string }
+              : prior?.bookingTime !== undefined
+                ? { bookingTime: prior.bookingTime }
+                : {}),
             // Timeline done-flags derive from the SERVER status, not a default
             // placed-only template — otherwise pulled orders render stale state.
             tracking: (() => {
@@ -540,16 +575,18 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
   }, [ordersKey]);
 
   // Server-wins adoption shared by placement-ack AND explicit retry: the ack
-  // carries settled chargedTotal/deliveryFee (absent on older builds, where
-  // the optimistic preview stands until the next pull). Invalid figures are
-  // ignored, never written.
-  const adoptSettledFigures = useCallback((id: string, so: { chargedTotal?: unknown; deliveryFee?: unknown } | undefined) => {
+  // carries settled chargedTotal/deliveryFee/discount (absent on older builds,
+  // where the optimistic preview stands until the next pull). Invalid figures
+  // are ignored, never written.
+  const adoptSettledFigures = useCallback((id: string, so: { chargedTotal?: unknown; deliveryFee?: unknown; discount?: unknown } | undefined) => {
     if (!so) return;
     const settledTotal = Number(so.chargedTotal);
     const settledFee = Number(so.deliveryFee);
+    const settledDiscount = Number(so.discount);
     const hasTotal = Number.isFinite(settledTotal) && settledTotal >= 0;
     const hasFee = Number.isFinite(settledFee) && settledFee >= 0;
-    if (!hasTotal && !hasFee) return;
+    const hasDiscount = Number.isFinite(settledDiscount) && settledDiscount >= 0;
+    if (!hasTotal && !hasFee && !hasDiscount) return;
     setOrders((prev) => {
       const next = prev.map((x) =>
         x.id === id
@@ -557,6 +594,7 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
               ...x,
               ...(hasTotal ? { chargedTotal: settledTotal } : {}),
               ...(hasFee ? { deliveryFee: settledFee } : {}),
+              ...(hasDiscount ? { discount: settledDiscount } : {}),
             }
           : x
       );
@@ -578,7 +616,9 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
       const discount = Math.max(0, Math.round(Number(options?.discountEstimate ?? 0)));
       let first = true;
       for (const [sellerUsername, items] of sellers) {
-        const total = items.reduce((sum, i) => sum + i.price * i.quantity, 0);
+        // Rounded like the cart subtotal AND the server's Math.round charge:
+        // unrounded paise here drifted ≤₹1 vs both preview and receipt.
+        const total = Math.round(items.reduce((sum, i) => sum + i.price * i.quantity, 0));
         // Per-slice fee (server charges its fee PER order row, one row per
         // seller here): the old first-takes-all preview understated multi-
         // seller checkouts by (sellers-1)x fee vs the settled charge. Each
@@ -700,8 +740,9 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
           // older builds — the optimistic preview stands until the next pull.
           const settledTotal = serverOrder ? Number(serverOrder.chargedTotal) : NaN;
           const settledFee = serverOrder ? Number(serverOrder.deliveryFee) : NaN;
+          const settledDiscount = serverOrder ? Number((serverOrder as { discount?: unknown }).discount) : NaN;
           if (sid) {
-            adoptSettledFigures(o.id, { chargedTotal: settledTotal, deliveryFee: settledFee });
+            adoptSettledFigures(o.id, { chargedTotal: settledTotal, deliveryFee: settledFee, discount: settledDiscount });
             setOrders((prev) => {
               const next = prev.map((x) =>
                 x.id === o.id
@@ -721,10 +762,11 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
             reserveLocalStock(o);
             return;
           }
-          if (!res.ok && res.error === 'offline') {
-            // Network failure (NOT a server reject): the server may or may
-            // not have committed. NEVER ghost-delete — flag for explicit
-            // retry (idempotent on orderNumber, so retry can't double-charge).
+          if (!res.ok && isAmbiguousTransport((res as { error?: unknown }).error)) {
+            // Ambiguous transport (device offline OR our server unreachable
+            // mid-flight): the server may or may not have committed. NEVER
+            // flag rejected — flag for explicit retry (idempotent on
+            // orderNumber, so retry can't double-charge).
             setOrders((prev) => {
               const next = prev.map((x) => (x.id === o.id ? { ...x, syncPending: true } : x));
               persist(next);
@@ -889,10 +931,13 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
       };
       try {
         const res = await serverApi.updateOrder(realId, podNote ? { status, podNote } : { status });
-        if (!res.ok) rollbackStatus(); // Rollback optimistic update — server truth wins.
+        // Ambiguous transport: the status change may have committed — keep
+        // the optimistic state (next pull reconciles server-wins) and report
+        // false so the seller doesn't treat it as confirmed.
+        if (!res.ok && !isAmbiguousTransport((res as { error?: unknown }).error)) rollbackStatus();
         return res.ok;
       } catch {
-        rollbackStatus();
+        // Thrown = transport failed mid-flight: keep optimistic, no rollback.
         return false;
       }
     },
@@ -922,10 +967,11 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
       };
       try {
         const res = await serverApi.updateOrder(realId, { rating, reviewComment: comment ?? '', reviewAnonymous: !!anonymous });
-        if (!res.ok) rollbackReview();
+        if (!res.ok && !isAmbiguousTransport((res as { error?: unknown }).error)) rollbackReview();
         return res.ok;
       } catch {
-        rollbackReview();
+        // Ambiguous transport: a posted review the server stored must not
+        // render as unposted. Keep + let the next pull reconcile.
         return false;
       }
     },
@@ -962,7 +1008,7 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
       const realRefundId = order.serverId ?? orderId;
       try {
         const res = await serverApi.updateOrder(realRefundId, { refundReason: reason });
-        if (!res.ok) {
+        if (!res.ok && !isAmbiguousTransport((res as { error?: unknown }).error)) {
           setOrders((cur) => {
             const rolled = cur.map((x) => (x.id === orderId && prevSnapshot ? prevSnapshot : x));
             persist(rolled);
@@ -971,11 +1017,7 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
         }
         return res.ok;
       } catch {
-        setOrders((cur) => {
-          const rolled = cur.map((x) => (x.id === orderId && prevSnapshot ? prevSnapshot : x));
-          persist(rolled);
-          return rolled;
-        });
+        // Ambiguous: a stored request must not flip back to unrequested.
         return false;
       }
     },
@@ -1033,10 +1075,10 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
           // The seller's reason travels to the server (Refund row) — the old
           // call sent the decision alone and the reason never left the device.
           const res = await serverApi.respondRefund(realId, newStatus, note);
-          if (!res.ok) rollback();
+          if (!res.ok && !isAmbiguousTransport((res as { error?: unknown }).error)) rollback();
           return res.ok;
         } catch {
-          rollback();
+          // Ambiguous: a settled decision must not flip back. Keep + reconcile.
           return false;
         }
       }
@@ -1091,9 +1133,10 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
         return next;
       });
       // Single server sync OUTSIDE the updater (updaters must stay pure:
-      // StrictMode double-invokes them, which fired this PATCH twice), with
-      // rollback on refusal/offline — a cancel the server never saw must not
-      // read "cancelled / refund requested" (sync lie). Buyer-cancel settles
+      // StrictMode double-invokes them, which fired this PATCH twice).
+      // Rollback ONLY on explicit server refusal — ambiguous transport keeps
+      // the optimistic cancel (it may have settled money in-tx; the next
+      // pull reconciles server-wins). Buyer-cancel settles
       // the real refund + clawback server-side.
       const realId = ordersRef.current.find((o) => o.id === orderId)?.serverId ?? orderId;
       const rollback = () => {
@@ -1104,14 +1147,18 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
         });
       };
       try {
-        const res = await serverApi.updateOrder(realId, { status: 'cancelled' });
-        if (!res.ok) {
+        // The cancel/decline reason travels (server appends it to the
+        // deliveryLog the buyer tracking screen renders) — previously it
+        // died on the device and the buyer saw bare "cancelled".
+        const res = await serverApi.updateOrder(realId, reason ? { status: 'cancelled', cancelReason: reason } : { status: 'cancelled' });
+        // Ambiguous transport: the cancel may have settled money in-tx — a
+        // blind rollback would resurrect a refunded order. Keep + reconcile.
+        if (!res.ok && !isAmbiguousTransport((res as { error?: unknown }).error)) {
           rollback();
           return false;
         }
-        return true;
+        return res.ok;
       } catch {
-        rollback();
         return false;
       }
     },

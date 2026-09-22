@@ -51,6 +51,14 @@ export default function TransactionsPage() {
   const [typeFilter, setTypeFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
 
+  // Options derive from projected rows (the projection emits
+  // payment/withdrawal/refund/settlement only): static entries for types the
+  // engine never emits filter to a permanently empty table.
+  const typeOptions = useMemo(() => {
+    const seen = [...new Set((txns ?? []).map((t) => String(t.type ?? "")).filter(Boolean))].sort();
+    return [{ label: "All Types", value: "all" }, ...seen.map((t) => ({ label: t[0].toUpperCase() + t.slice(1), value: t }))];
+  }, [txns]);
+
   const filtered = useMemo(
     () =>
       (txns ?? []).filter(
@@ -88,14 +96,7 @@ export default function TransactionsPage() {
                 className="w-44"
                 value={typeFilter}
                 onChange={(e) => setTypeFilter(e.target.value)}
-                options={[
-                  { label: "All Types", value: "all" },
-                  { label: "Payment", value: "payment" },
-                  { label: "Withdrawal", value: "withdrawal" },
-                  { label: "Refund", value: "refund" },
-                  { label: "Commission", value: "commission" },
-                  { label: "Settlement", value: "settlement" },
-                ]}
+                options={typeOptions}
               />
               <Select
                 className="w-40"

@@ -28,10 +28,12 @@ export type AggregateWithdrawal = {
 
 export type WithdrawalAvgAggregateOutputType = {
   amount: number | null
+  fee: number | null
 }
 
 export type WithdrawalSumAggregateOutputType = {
   amount: number | null
+  fee: number | null
 }
 
 export type WithdrawalMinAggregateOutputType = {
@@ -39,6 +41,7 @@ export type WithdrawalMinAggregateOutputType = {
   userName: string | null
   method: string | null
   amount: number | null
+  fee: number | null
   status: string | null
   requestedAt: Date | null
   respondedAt: Date | null
@@ -49,6 +52,7 @@ export type WithdrawalMaxAggregateOutputType = {
   userName: string | null
   method: string | null
   amount: number | null
+  fee: number | null
   status: string | null
   requestedAt: Date | null
   respondedAt: Date | null
@@ -59,6 +63,7 @@ export type WithdrawalCountAggregateOutputType = {
   userName: number
   method: number
   amount: number
+  fee: number
   status: number
   requestedAt: number
   respondedAt: number
@@ -68,10 +73,12 @@ export type WithdrawalCountAggregateOutputType = {
 
 export type WithdrawalAvgAggregateInputType = {
   amount?: true
+  fee?: true
 }
 
 export type WithdrawalSumAggregateInputType = {
   amount?: true
+  fee?: true
 }
 
 export type WithdrawalMinAggregateInputType = {
@@ -79,6 +86,7 @@ export type WithdrawalMinAggregateInputType = {
   userName?: true
   method?: true
   amount?: true
+  fee?: true
   status?: true
   requestedAt?: true
   respondedAt?: true
@@ -89,6 +97,7 @@ export type WithdrawalMaxAggregateInputType = {
   userName?: true
   method?: true
   amount?: true
+  fee?: true
   status?: true
   requestedAt?: true
   respondedAt?: true
@@ -99,6 +108,7 @@ export type WithdrawalCountAggregateInputType = {
   userName?: true
   method?: true
   amount?: true
+  fee?: true
   status?: true
   requestedAt?: true
   respondedAt?: true
@@ -196,6 +206,7 @@ export type WithdrawalGroupByOutputType = {
   userName: string
   method: string
   amount: number
+  fee: number
   status: string
   requestedAt: Date
   respondedAt: Date | null
@@ -229,6 +240,7 @@ export type WithdrawalWhereInput = {
   userName?: Prisma.StringFilter<"Withdrawal"> | string
   method?: Prisma.StringFilter<"Withdrawal"> | string
   amount?: Prisma.FloatFilter<"Withdrawal"> | number
+  fee?: Prisma.FloatFilter<"Withdrawal"> | number
   status?: Prisma.StringFilter<"Withdrawal"> | string
   requestedAt?: Prisma.DateTimeFilter<"Withdrawal"> | Date | string
   respondedAt?: Prisma.DateTimeNullableFilter<"Withdrawal"> | Date | string | null
@@ -239,6 +251,7 @@ export type WithdrawalOrderByWithRelationInput = {
   userName?: Prisma.SortOrder
   method?: Prisma.SortOrder
   amount?: Prisma.SortOrder
+  fee?: Prisma.SortOrder
   status?: Prisma.SortOrder
   requestedAt?: Prisma.SortOrder
   respondedAt?: Prisma.SortOrderInput | Prisma.SortOrder
@@ -252,6 +265,7 @@ export type WithdrawalWhereUniqueInput = Prisma.AtLeast<{
   userName?: Prisma.StringFilter<"Withdrawal"> | string
   method?: Prisma.StringFilter<"Withdrawal"> | string
   amount?: Prisma.FloatFilter<"Withdrawal"> | number
+  fee?: Prisma.FloatFilter<"Withdrawal"> | number
   status?: Prisma.StringFilter<"Withdrawal"> | string
   requestedAt?: Prisma.DateTimeFilter<"Withdrawal"> | Date | string
   respondedAt?: Prisma.DateTimeNullableFilter<"Withdrawal"> | Date | string | null
@@ -262,6 +276,7 @@ export type WithdrawalOrderByWithAggregationInput = {
   userName?: Prisma.SortOrder
   method?: Prisma.SortOrder
   amount?: Prisma.SortOrder
+  fee?: Prisma.SortOrder
   status?: Prisma.SortOrder
   requestedAt?: Prisma.SortOrder
   respondedAt?: Prisma.SortOrderInput | Prisma.SortOrder
@@ -280,6 +295,7 @@ export type WithdrawalScalarWhereWithAggregatesInput = {
   userName?: Prisma.StringWithAggregatesFilter<"Withdrawal"> | string
   method?: Prisma.StringWithAggregatesFilter<"Withdrawal"> | string
   amount?: Prisma.FloatWithAggregatesFilter<"Withdrawal"> | number
+  fee?: Prisma.FloatWithAggregatesFilter<"Withdrawal"> | number
   status?: Prisma.StringWithAggregatesFilter<"Withdrawal"> | string
   requestedAt?: Prisma.DateTimeWithAggregatesFilter<"Withdrawal"> | Date | string
   respondedAt?: Prisma.DateTimeNullableWithAggregatesFilter<"Withdrawal"> | Date | string | null
@@ -290,6 +306,7 @@ export type WithdrawalCreateInput = {
   userName: string
   method: string
   amount: number
+  fee?: number
   status: string
   requestedAt: Date | string
   respondedAt?: Date | string | null
@@ -300,6 +317,7 @@ export type WithdrawalUncheckedCreateInput = {
   userName: string
   method: string
   amount: number
+  fee?: number
   status: string
   requestedAt: Date | string
   respondedAt?: Date | string | null
@@ -310,6 +328,7 @@ export type WithdrawalUpdateInput = {
   userName?: Prisma.StringFieldUpdateOperationsInput | string
   method?: Prisma.StringFieldUpdateOperationsInput | string
   amount?: Prisma.FloatFieldUpdateOperationsInput | number
+  fee?: Prisma.FloatFieldUpdateOperationsInput | number
   status?: Prisma.StringFieldUpdateOperationsInput | string
   requestedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   respondedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -320,6 +339,7 @@ export type WithdrawalUncheckedUpdateInput = {
   userName?: Prisma.StringFieldUpdateOperationsInput | string
   method?: Prisma.StringFieldUpdateOperationsInput | string
   amount?: Prisma.FloatFieldUpdateOperationsInput | number
+  fee?: Prisma.FloatFieldUpdateOperationsInput | number
   status?: Prisma.StringFieldUpdateOperationsInput | string
   requestedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   respondedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -330,6 +350,7 @@ export type WithdrawalCreateManyInput = {
   userName: string
   method: string
   amount: number
+  fee?: number
   status: string
   requestedAt: Date | string
   respondedAt?: Date | string | null
@@ -340,6 +361,7 @@ export type WithdrawalUpdateManyMutationInput = {
   userName?: Prisma.StringFieldUpdateOperationsInput | string
   method?: Prisma.StringFieldUpdateOperationsInput | string
   amount?: Prisma.FloatFieldUpdateOperationsInput | number
+  fee?: Prisma.FloatFieldUpdateOperationsInput | number
   status?: Prisma.StringFieldUpdateOperationsInput | string
   requestedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   respondedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -350,6 +372,7 @@ export type WithdrawalUncheckedUpdateManyInput = {
   userName?: Prisma.StringFieldUpdateOperationsInput | string
   method?: Prisma.StringFieldUpdateOperationsInput | string
   amount?: Prisma.FloatFieldUpdateOperationsInput | number
+  fee?: Prisma.FloatFieldUpdateOperationsInput | number
   status?: Prisma.StringFieldUpdateOperationsInput | string
   requestedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   respondedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -360,6 +383,7 @@ export type WithdrawalCountOrderByAggregateInput = {
   userName?: Prisma.SortOrder
   method?: Prisma.SortOrder
   amount?: Prisma.SortOrder
+  fee?: Prisma.SortOrder
   status?: Prisma.SortOrder
   requestedAt?: Prisma.SortOrder
   respondedAt?: Prisma.SortOrder
@@ -367,6 +391,7 @@ export type WithdrawalCountOrderByAggregateInput = {
 
 export type WithdrawalAvgOrderByAggregateInput = {
   amount?: Prisma.SortOrder
+  fee?: Prisma.SortOrder
 }
 
 export type WithdrawalMaxOrderByAggregateInput = {
@@ -374,6 +399,7 @@ export type WithdrawalMaxOrderByAggregateInput = {
   userName?: Prisma.SortOrder
   method?: Prisma.SortOrder
   amount?: Prisma.SortOrder
+  fee?: Prisma.SortOrder
   status?: Prisma.SortOrder
   requestedAt?: Prisma.SortOrder
   respondedAt?: Prisma.SortOrder
@@ -384,6 +410,7 @@ export type WithdrawalMinOrderByAggregateInput = {
   userName?: Prisma.SortOrder
   method?: Prisma.SortOrder
   amount?: Prisma.SortOrder
+  fee?: Prisma.SortOrder
   status?: Prisma.SortOrder
   requestedAt?: Prisma.SortOrder
   respondedAt?: Prisma.SortOrder
@@ -391,6 +418,7 @@ export type WithdrawalMinOrderByAggregateInput = {
 
 export type WithdrawalSumOrderByAggregateInput = {
   amount?: Prisma.SortOrder
+  fee?: Prisma.SortOrder
 }
 
 
@@ -400,6 +428,7 @@ export type WithdrawalSelect<ExtArgs extends runtime.Types.Extensions.InternalAr
   userName?: boolean
   method?: boolean
   amount?: boolean
+  fee?: boolean
   status?: boolean
   requestedAt?: boolean
   respondedAt?: boolean
@@ -410,6 +439,7 @@ export type WithdrawalSelectCreateManyAndReturn<ExtArgs extends runtime.Types.Ex
   userName?: boolean
   method?: boolean
   amount?: boolean
+  fee?: boolean
   status?: boolean
   requestedAt?: boolean
   respondedAt?: boolean
@@ -420,6 +450,7 @@ export type WithdrawalSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.Ex
   userName?: boolean
   method?: boolean
   amount?: boolean
+  fee?: boolean
   status?: boolean
   requestedAt?: boolean
   respondedAt?: boolean
@@ -430,12 +461,13 @@ export type WithdrawalSelectScalar = {
   userName?: boolean
   method?: boolean
   amount?: boolean
+  fee?: boolean
   status?: boolean
   requestedAt?: boolean
   respondedAt?: boolean
 }
 
-export type WithdrawalOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "userName" | "method" | "amount" | "status" | "requestedAt" | "respondedAt", ExtArgs["result"]["withdrawal"]>
+export type WithdrawalOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "userName" | "method" | "amount" | "fee" | "status" | "requestedAt" | "respondedAt", ExtArgs["result"]["withdrawal"]>
 
 export type $WithdrawalPayload<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   name: "Withdrawal"
@@ -445,6 +477,7 @@ export type $WithdrawalPayload<ExtArgs extends runtime.Types.Extensions.Internal
     userName: string
     method: string
     amount: number
+    fee: number
     status: string
     requestedAt: Date
     respondedAt: Date | null
@@ -875,6 +908,7 @@ export interface WithdrawalFieldRefs {
   readonly userName: Prisma.FieldRef<"Withdrawal", 'String'>
   readonly method: Prisma.FieldRef<"Withdrawal", 'String'>
   readonly amount: Prisma.FieldRef<"Withdrawal", 'Float'>
+  readonly fee: Prisma.FieldRef<"Withdrawal", 'Float'>
   readonly status: Prisma.FieldRef<"Withdrawal", 'String'>
   readonly requestedAt: Prisma.FieldRef<"Withdrawal", 'DateTime'>
   readonly respondedAt: Prisma.FieldRef<"Withdrawal", 'DateTime'>

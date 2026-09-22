@@ -237,6 +237,7 @@ export type WalletTransactionOrderByWithRelationInput = {
 
 export type WalletTransactionWhereUniqueInput = Prisma.AtLeast<{
   id?: string
+  username_title?: Prisma.WalletTransactionUsernameTitleCompoundUniqueInput
   AND?: Prisma.WalletTransactionWhereInput | Prisma.WalletTransactionWhereInput[]
   OR?: Prisma.WalletTransactionWhereInput[]
   NOT?: Prisma.WalletTransactionWhereInput | Prisma.WalletTransactionWhereInput[]
@@ -245,7 +246,7 @@ export type WalletTransactionWhereUniqueInput = Prisma.AtLeast<{
   detail?: Prisma.StringFilter<"WalletTransaction"> | string
   amount?: Prisma.FloatFilter<"WalletTransaction"> | number
   ts?: Prisma.DateTimeFilter<"WalletTransaction"> | Date | string
-}, "id">
+}, "id" | "username_title">
 
 export type WalletTransactionOrderByWithAggregationInput = {
   id?: Prisma.SortOrder
@@ -334,6 +335,11 @@ export type WalletTransactionUncheckedUpdateManyInput = {
   detail?: Prisma.StringFieldUpdateOperationsInput | string
   amount?: Prisma.FloatFieldUpdateOperationsInput | number
   ts?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+}
+
+export type WalletTransactionUsernameTitleCompoundUniqueInput = {
+  username: string
+  title: string
 }
 
 export type WalletTransactionCountOrderByAggregateInput = {

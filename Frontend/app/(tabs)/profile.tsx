@@ -161,7 +161,7 @@ export default function ProfileScreen() {
                     Edit Profile
                   </Text>
                 </TouchableOpacity>
-                <TouchableOpacity className="h-10 items-center justify-center rounded-figma-12" style={{ width: 147, backgroundColor: colors.surfaceContainerHigh }} onPress={() => Share.share({ message: `Check out ${name} on susej — @${username}` })}>
+                <TouchableOpacity className="h-10 items-center justify-center rounded-figma-12" style={{ width: 147, backgroundColor: colors.surfaceContainerHigh }} onPress={() => Share.share({ message: `Check out ${name} on susej — @${username}\nsusej://seller/${username}` })}>
                   <Text className="font-inter-600 text-textPrimary" style={{ fontSize: 14, lineHeight: 16, letterSpacing: 0.14 }}>
                     Share Profile
                   </Text>

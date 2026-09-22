@@ -192,8 +192,12 @@ export async function syncRefundRequest(_refund: {
   return false;
 }
 
-/** Mirror a freshly placed order to the admin DB (Order model shape). */
-export async function syncOrder(order: {
+/** DEPRECATED — do not call. Order placement runs on POST /api/app/orders
+ *  (atomic debit + escrow + ledger, idempotent on orderNumber); the pull lane
+ *  serves the same Order rows every device reads. This POSTed a second
+ *  client-priced mirror row per order (removed from APP_SYNC_RESOURCES, so it
+ *  403s). Kept as a no-op shell so old call sites fail safe. */
+export async function syncOrder(_order: {
   id: string;
   orderNumber?: string;
   buyerName?: string;
@@ -206,31 +210,8 @@ export async function syncOrder(order: {
   address?: string;
   paymentMethod?: string;
 }): Promise<boolean> {
-  const user = await getSyncUser();
-  const buyerName = order.buyerName ?? user?.name;
-  // Skip rather than invent an identity for the shared DB.
-  if (!buyerName) return false;
-  return post('orders', {
-    id: order.id,
-    buyerName,
-    sellerName: order.sellerName,
-    amount: order.chargedTotal ?? order.total,
-    status: order.status,
-    deliveryStatus: 'awaiting_shipment',
-    items: order.items.reduce((s, i) => s + i.quantity, 0),
-    itemsList: order.items.map((i) => ({ name: i.name, qty: i.quantity })),
-    shippingCarrier: '',
-    trackingNumber: order.orderNumber ?? order.id,
-    estimatedDelivery: '',
-    actualDelivery: '',
-    shippingAddress: order.address ?? '',
-    paymentMethod: order.paymentMethod ?? 'wallet',
-    // Industry-standard: COD is cash-on-DELIVERY — never 'paid' at placement.
-    // Marking every mirror paid corrupted the admin finance view.
-    paymentStatus: /cash|cod/i.test(order.paymentMethod ?? '') ? 'pending' : 'paid',
-    createdAt: iso(order.placedAt),
-    deliveryLog: [],
-  });
+  void _order;
+  return false;
 }
 
 /** Mirror a seller application to the admin verification queue. */

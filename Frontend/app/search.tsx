@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { View, Text, TextInput, FlatList, TouchableOpacity, Image } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -49,6 +49,15 @@ export default function SearchScreen() {
   const { blockedSet } = useBlockedSellers();
   const recentKey = user?.username ? `${RECENT_KEY_BASE}:${user.username}` : RECENT_KEY_BASE;
   const searchesKey = user?.username ? `${SEARCHES_KEY_BASE}:${user.username}` : SEARCHES_KEY_BASE;
+  // Writes must key on the account CURRENT at write time, not the render that
+  // created the closure — an account switch mid-keystroke wrote history into
+  // the prior account's key (cross-account recent-search leak).
+  const userRef = useRef(user);
+  userRef.current = user;
+  const recentKeyNow = () => {
+    const u = userRef.current?.username;
+    return u ? `${RECENT_KEY_BASE}:${u}` : RECENT_KEY_BASE;
+  };
   const insets = useSafeAreaInsets();
 
   useEffect(() => {
@@ -120,15 +129,16 @@ export default function SearchScreen() {
 
   const persistRecent = (next: string[]) => {
     setRecentSearches(next);
-    AsyncStorage.setItem(recentKey, JSON.stringify(next)).catch(() => {});
+    AsyncStorage.setItem(recentKeyNow(), JSON.stringify(next)).catch(() => {});
   };
 
   const addRecentSearch = (raw: string) => {
     const termToSave = raw.trim();
     if (!termToSave) return;
+    const key = recentKeyNow();
     setRecentSearches((prev) => {
       const next = [termToSave, ...prev.filter((s) => s.toLowerCase() !== termToSave.toLowerCase())].slice(0, 8);
-      AsyncStorage.setItem(recentKey, JSON.stringify(next)).catch(() => {});
+      AsyncStorage.setItem(key, JSON.stringify(next)).catch(() => {});
       return next;
     });
   };

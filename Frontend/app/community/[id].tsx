@@ -70,9 +70,10 @@ export default function CommunityChatScreen() {
 
   // Room open = pull the shared history (server truth). Member B sees member
   // A's messages, and a second device sees the same room — chat that only
-  // lives on one device is theater, not community.
+  // lives on one device is theater, not community. Polls ride the same open.
   useEffect(() => {
     if (communityId) refreshMessages(communityId);
+    if (communityId) refreshPolls();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [communityId]);
   // Live incoming (DM parity): poll the open room so members staring at it
@@ -81,6 +82,7 @@ export default function CommunityChatScreen() {
     if (!communityId) return;
     const t = setInterval(() => {
       refreshMessages(communityId);
+      refreshPolls();
     }, 6000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -170,9 +172,12 @@ export default function CommunityChatScreen() {
     const question = pollQuestion.trim();
     const options = pollOptions.map((o) => o.trim()).filter(Boolean);
     if (!question || options.length < 2) return;
-    // Honest poll: every option starts at zero votes.
+    // Optimistic local row first (instant UI), then the shared server row —
+    // every member sees the same poll with shared tallies. Offline keeps the
+    // local row (merges on next refresh, same as messages).
+    const tempId = `poll_${Date.now()}`;
     const poll: PollMessage = {
-      id: `poll_${Date.now()}`,
+      id: tempId,
       communityId,
       author: 'You',
       authorUsername: 'you',
@@ -187,6 +192,15 @@ export default function CommunityChatScreen() {
     setPollQuestion('');
     setPollOptions(['', '']);
     setShowPollBuilder(false);
+    void import('../../utils/serverApi').then(({ serverApi }) =>
+      serverApi.createPoll(communityId, question, options).then((res) => {
+        const sid = res.ok ? (res.data as { poll?: { id?: unknown } } | null)?.poll?.id : null;
+        if (res.ok && sid) {
+          const serverId = String(sid);
+          setPollMessages((prev) => prev.map((p) => (p.id === tempId ? { ...p, id: serverId } : p)));
+        }
+      }).catch(() => {})
+    ).catch(() => {});
   };
 
   const cancelPoll = () => {
@@ -206,6 +220,53 @@ export default function CommunityChatScreen() {
         return { ...p, votes, votedOption: optionIndex };
       })
     );
+    // Shared tally (fire-and-forget with explicit option id — idempotent, the
+    // server holds one vote per user). Local-only draft polls (poll_ ids the
+    // server never acked) skip it. Next refresh adopts server truth.
+    if (!pollId.startsWith('poll_')) {
+      void import('../../utils/serverApi').then(({ serverApi }) =>
+        serverApi.votePoll(communityId, pollId, `o${optionIndex}`).then(() => {
+          void refreshPolls();
+        }).catch(() => {})
+      ).catch(() => {});
+    }
+  };
+
+  // Shared poll truth: server rows win by id (tallies + my vote); local-only
+  // unsynced drafts stay until acked. Runs on room open + with the message
+  // poll so every member sees the same counts.
+  const refreshPolls = () => {
+    if (!communityId) return;
+    void import('../../utils/serverApi').then(({ serverApi }) =>
+      serverApi.getPolls(communityId).then((res) => {
+        const rows = res.ok && Array.isArray(res.data?.polls) ? res.data.polls : null;
+        if (!rows) return;
+        setPollMessages((prev) => {
+          const localOnly = prev.filter((p) => p.id.startsWith('poll_'));
+          const serverRows: PollMessage[] = rows
+            .filter((r) => r && r.id && r.question)
+            .map((r) => {
+              const opts = Array.isArray(r.options) ? r.options : [];
+              const optIds = opts.map((o, i) => String(o?.id ?? `o${i}`));
+              const votedIdx = typeof r.votedOption === 'string' ? optIds.indexOf(r.votedOption) : -1;
+              return {
+                id: String(r.id),
+                communityId,
+                author: '',
+                authorUsername: '',
+                kind: 'poll' as const,
+                question: String(r.question),
+                options: opts.map((o) => String(o?.text ?? '')),
+                votes: opts.map((_, i) => Number(r.votes?.[i] ?? 0)),
+                votedOption: votedIdx >= 0 ? votedIdx : null,
+                createdAt: Number(r.createdAt ?? Date.now()),
+              };
+            });
+          const serverIds = new Set(serverRows.map((p) => p.id));
+          return [...serverRows, ...localOnly.filter((p) => !serverIds.has(p.id))];
+        });
+      }).catch(() => {})
+    ).catch(() => {});
   };
 
   return (

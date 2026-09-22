@@ -33,6 +33,7 @@ async function classifyTransportError(): Promise<'offline' | 'server-unreachable
 export function transportMessage(error: string | undefined, action: string): string {
   if (error === 'offline') return `You're offline. Check your connection and ${action}.`;
   if (error === 'server-unreachable') return `Couldn't reach the susej server. Please ${action}.`;
+  if (error === 'session-expired') return `Your session expired. Please log in again and ${action}.`;
   return error || `Something went wrong. Please ${action}.`;
 }
 
@@ -58,6 +59,15 @@ export interface ServerComment {
 async function getToken(): Promise<string | null> {
   const session = await sessionStorage.getSession();
   return session?.accessToken && session.accessToken.startsWith('susej_') ? session.accessToken : null;
+}
+
+/** Fired when a call proves the Bearer is dead (HTTP 401 on a non-auth lane).
+ *  AuthContext registers the local-wipe handler; serverApi never imports it
+ *  (import cycle). Auth lanes are excluded — a 401 there is a credential
+ *  rejection (wrong OTP/password), not a session death. */
+let expiredListener: (() => void) | null = null;
+export function onSessionExpired(cb: () => void): void {
+  expiredListener = cb;
 }
 
 async function request<T>(path: string, options: { method?: string; body?: unknown } = {}): Promise<ApiResult<T>> {
@@ -86,6 +96,15 @@ async function request<T>(path: string, options: { method?: string; body?: unkno
     if (!res.ok) {
       const err = (json as { error?: string } | null)?.error ?? `HTTP ${res.status}`;
       const needsSignup = (json as { needsSignup?: boolean } | null)?.needsSignup;
+      // Dead Bearer (revoked server-side, rotated, or forged): never present
+      // cache as live. Wipe the token and tell the app to force re-auth.
+      if (res.status === 401 && token && !path.startsWith('/auth')) {
+        await sessionStorage.clearSession().catch(() => {});
+        try {
+          expiredListener?.();
+        } catch {}
+        return { ok: false, data: null, error: 'session-expired' };
+      }
       return { ok: false, data: null, error: err, ...(needsSignup ? { needsSignup: true } : {}) };
     }
     return { ok: true, data: json };
@@ -123,6 +142,19 @@ async function requestWithAppKey<T>(path: string, options: { method?: string; bo
     }
     if (!res.ok) {
       const err = (json as { error?: string } | null)?.error ?? `HTTP ${res.status}`;
+      // Dead-Bearer kill-switch — ONLY on Bearer-gated /api/app/* lanes
+      // (getAppUser rejects dead tokens there, so 401 proves session death).
+      // /api/v1/* is key-gated (bad APP_API_KEY 401s with a perfectly valid
+      // Bearer — wiping there logged users out over a server-config problem)
+      // and /api/data/* checks the key first (ambiguous). No /auth exclusion:
+      // this lane carries no auth routes.
+      if (res.status === 401 && token && path.startsWith("/api/app/")) {
+        await sessionStorage.clearSession().catch(() => {});
+        try {
+          expiredListener?.();
+        } catch {}
+        return { ok: false, data: null, error: 'session-expired' };
+      }
       return { ok: false, data: null, error: err };
     }
     return { ok: true, data: json };
@@ -198,6 +230,17 @@ export const serverApi = {
   /** Count one watch (server increments; throttled per IP). Fire-and-forget. */
   viewReel: (id: string) =>
     request<{ ok: boolean }>('/reels', { method: 'PATCH', body: { id, action: 'view' } }),
+  /** Explicit-state reel like (server toggle row + counter). Fire-and-forget:
+   *  the local animation stays on failure (offline), reconciling on next load. */
+  likeReel: (id: string, liked: boolean) =>
+    request<{ ok: boolean; liked: boolean; likes: number }>('/reels', { method: 'PATCH', body: { id, action: 'like', value: liked } }),
+
+  // ── Price watches (server bell on drops; local banner logic stays) ──────
+  getWatches: () => request<{ watches: { listingId: string; priceAtWatch: number }[] }>('/watches'),
+  watchPrice: (listingId: string) =>
+    request<{ ok: boolean }>('/watches', { method: 'POST', body: { listingId } }),
+  unwatchPrice: (listingId: string) =>
+    request<{ ok: boolean }>('/watches', { method: 'DELETE', body: { listingId } }),
   endPromotion: (id: string, postId?: string) =>
     request<{ ok: boolean; status: string }>('/promotions', {
       method: 'PATCH',
@@ -264,6 +307,10 @@ export const serverApi = {
   /** Withdraw my own pending application (owner only, pending only). */
   withdrawSellerApplication: () =>
     request<{ ok: boolean; withdrawn: boolean }>('/sellers/me', { method: 'DELETE' }),
+  /** Shop profile extras (Seller row — cross-device truth; localOnly when the
+   *  server predates the columns, so the app keeps its device copy honestly). */
+  updateShopProfile: (body: { tagline?: string; email?: string; phone?: string; hours?: string; address?: string }) =>
+    request<{ ok: boolean; localOnly?: boolean; shop?: { tagline: string; hours: string } }>('/sellers/me', { method: 'PATCH', body }),
   /** My disputes (raised by or against me) — cross-device truth. */
   getDisputes: () => request<{ disputes: any[] }>('/disputes'),
   /** Raise a dispute on my order (server row — the desk sees it). Idempotent
@@ -323,6 +370,9 @@ export const serverApi = {
 
   // ── Bundle deals (server catalog; legacy rows without items link shop) ───
   getBundles: () => request<{ bundles: any[] }>('/bundles'),
+  /** Seller composes a combo from own live listings (server validates). */
+  createBundle: (body: { title: string; items: string[]; price: number }) =>
+    request<{ ok: boolean; bundle: { id: string } }>('/bundles', { method: 'POST', body }),
 
   // ── Broadcast channels (server directory; joins stay local prefs) ─────────
   getBroadcasts: () => request<{ broadcasts: any[] }>('/broadcasts'),
@@ -340,6 +390,20 @@ export const serverApi = {
    *  back to a local-only row in the caller. */
   createCommunity: (community: { name: string; description?: string; type?: string }) =>
     request<{ community: any }>('/communities', { method: 'POST', body: community }),
+  /** Shared polls (server vote truth; localOnly fallback pre-migration). */
+  getPolls: (communityId: string) =>
+    request<{ polls: { id: string; question: string; options: { id: string; text: string }[]; votes: number[]; votedOption: string | null; createdBy: string; createdAt: number }[] }>(`/communities/${encodeURIComponent(communityId)}/polls`),
+  createPoll: (communityId: string, question: string, options: string[]) =>
+    request<{ ok: boolean; localOnly?: boolean; poll?: { id: string } }>(`/communities/${encodeURIComponent(communityId)}/polls`, { method: 'POST', body: { question, options } }),
+  votePoll: (communityId: string, pollId: string, optionId: string) =>
+    request<{ ok: boolean; localOnly?: boolean }>(`/communities/${encodeURIComponent(communityId)}/polls`, { method: 'POST', body: { pollId, optionId } }),
+
+  // ── User blocks (server enforcement; local list stays as offline mirror) ─
+  getBlocks: () => request<{ blocked: string[] }>('/blocks'),
+  blockUser: (username: string) =>
+    request<{ ok: boolean }>('/blocks', { method: 'POST', body: { username } }),
+  unblockUser: (username: string) =>
+    request<{ ok: boolean }>('/blocks', { method: 'DELETE', body: { username } }),
 
   // ── Notifications ────────────────────────────────────────────────────────
   getNotifications: (before?: number) =>

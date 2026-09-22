@@ -68,6 +68,8 @@ export type SellerMinAggregateOutputType = {
   selfieUrl: string | null
   kycStatus: string | null
   gstStatus: string | null
+  tagline: string | null
+  hours: string | null
   score: number | null
   productsCount: number | null
   totalSales: number | null
@@ -99,6 +101,8 @@ export type SellerMaxAggregateOutputType = {
   selfieUrl: string | null
   kycStatus: string | null
   gstStatus: string | null
+  tagline: string | null
+  hours: string | null
   score: number | null
   productsCount: number | null
   totalSales: number | null
@@ -130,6 +134,8 @@ export type SellerCountAggregateOutputType = {
   selfieUrl: number
   kycStatus: number
   gstStatus: number
+  tagline: number
+  hours: number
   score: number
   productsCount: number
   totalSales: number
@@ -183,6 +189,8 @@ export type SellerMinAggregateInputType = {
   selfieUrl?: true
   kycStatus?: true
   gstStatus?: true
+  tagline?: true
+  hours?: true
   score?: true
   productsCount?: true
   totalSales?: true
@@ -214,6 +222,8 @@ export type SellerMaxAggregateInputType = {
   selfieUrl?: true
   kycStatus?: true
   gstStatus?: true
+  tagline?: true
+  hours?: true
   score?: true
   productsCount?: true
   totalSales?: true
@@ -245,6 +255,8 @@ export type SellerCountAggregateInputType = {
   selfieUrl?: true
   kycStatus?: true
   gstStatus?: true
+  tagline?: true
+  hours?: true
   score?: true
   productsCount?: true
   totalSales?: true
@@ -363,6 +375,8 @@ export type SellerGroupByOutputType = {
   selfieUrl: string | null
   kycStatus: string
   gstStatus: string
+  tagline: string | null
+  hours: string | null
   score: number
   productsCount: number
   totalSales: number
@@ -417,6 +431,8 @@ export type SellerWhereInput = {
   selfieUrl?: Prisma.StringNullableFilter<"Seller"> | string | null
   kycStatus?: Prisma.StringFilter<"Seller"> | string
   gstStatus?: Prisma.StringFilter<"Seller"> | string
+  tagline?: Prisma.StringNullableFilter<"Seller"> | string | null
+  hours?: Prisma.StringNullableFilter<"Seller"> | string | null
   score?: Prisma.IntFilter<"Seller"> | number
   productsCount?: Prisma.IntFilter<"Seller"> | number
   totalSales?: Prisma.IntFilter<"Seller"> | number
@@ -450,6 +466,8 @@ export type SellerOrderByWithRelationInput = {
   selfieUrl?: Prisma.SortOrderInput | Prisma.SortOrder
   kycStatus?: Prisma.SortOrder
   gstStatus?: Prisma.SortOrder
+  tagline?: Prisma.SortOrderInput | Prisma.SortOrder
+  hours?: Prisma.SortOrderInput | Prisma.SortOrder
   score?: Prisma.SortOrder
   productsCount?: Prisma.SortOrder
   totalSales?: Prisma.SortOrder
@@ -486,6 +504,8 @@ export type SellerWhereUniqueInput = Prisma.AtLeast<{
   selfieUrl?: Prisma.StringNullableFilter<"Seller"> | string | null
   kycStatus?: Prisma.StringFilter<"Seller"> | string
   gstStatus?: Prisma.StringFilter<"Seller"> | string
+  tagline?: Prisma.StringNullableFilter<"Seller"> | string | null
+  hours?: Prisma.StringNullableFilter<"Seller"> | string | null
   score?: Prisma.IntFilter<"Seller"> | number
   productsCount?: Prisma.IntFilter<"Seller"> | number
   totalSales?: Prisma.IntFilter<"Seller"> | number
@@ -519,6 +539,8 @@ export type SellerOrderByWithAggregationInput = {
   selfieUrl?: Prisma.SortOrderInput | Prisma.SortOrder
   kycStatus?: Prisma.SortOrder
   gstStatus?: Prisma.SortOrder
+  tagline?: Prisma.SortOrderInput | Prisma.SortOrder
+  hours?: Prisma.SortOrderInput | Prisma.SortOrder
   score?: Prisma.SortOrder
   productsCount?: Prisma.SortOrder
   totalSales?: Prisma.SortOrder
@@ -558,6 +580,8 @@ export type SellerScalarWhereWithAggregatesInput = {
   selfieUrl?: Prisma.StringNullableWithAggregatesFilter<"Seller"> | string | null
   kycStatus?: Prisma.StringWithAggregatesFilter<"Seller"> | string
   gstStatus?: Prisma.StringWithAggregatesFilter<"Seller"> | string
+  tagline?: Prisma.StringNullableWithAggregatesFilter<"Seller"> | string | null
+  hours?: Prisma.StringNullableWithAggregatesFilter<"Seller"> | string | null
   score?: Prisma.IntWithAggregatesFilter<"Seller"> | number
   productsCount?: Prisma.IntWithAggregatesFilter<"Seller"> | number
   totalSales?: Prisma.IntWithAggregatesFilter<"Seller"> | number
@@ -589,6 +613,8 @@ export type SellerCreateInput = {
   selfieUrl?: string | null
   kycStatus: string
   gstStatus: string
+  tagline?: string | null
+  hours?: string | null
   score: number
   productsCount: number
   totalSales?: number
@@ -622,6 +648,8 @@ export type SellerUncheckedCreateInput = {
   selfieUrl?: string | null
   kycStatus: string
   gstStatus: string
+  tagline?: string | null
+  hours?: string | null
   score: number
   productsCount: number
   totalSales?: number
@@ -655,6 +683,8 @@ export type SellerUpdateInput = {
   selfieUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   kycStatus?: Prisma.StringFieldUpdateOperationsInput | string
   gstStatus?: Prisma.StringFieldUpdateOperationsInput | string
+  tagline?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  hours?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   score?: Prisma.IntFieldUpdateOperationsInput | number
   productsCount?: Prisma.IntFieldUpdateOperationsInput | number
   totalSales?: Prisma.IntFieldUpdateOperationsInput | number
@@ -688,6 +718,8 @@ export type SellerUncheckedUpdateInput = {
   selfieUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   kycStatus?: Prisma.StringFieldUpdateOperationsInput | string
   gstStatus?: Prisma.StringFieldUpdateOperationsInput | string
+  tagline?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  hours?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   score?: Prisma.IntFieldUpdateOperationsInput | number
   productsCount?: Prisma.IntFieldUpdateOperationsInput | number
   totalSales?: Prisma.IntFieldUpdateOperationsInput | number
@@ -721,6 +753,8 @@ export type SellerCreateManyInput = {
   selfieUrl?: string | null
   kycStatus: string
   gstStatus: string
+  tagline?: string | null
+  hours?: string | null
   score: number
   productsCount: number
   totalSales?: number
@@ -752,6 +786,8 @@ export type SellerUpdateManyMutationInput = {
   selfieUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   kycStatus?: Prisma.StringFieldUpdateOperationsInput | string
   gstStatus?: Prisma.StringFieldUpdateOperationsInput | string
+  tagline?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  hours?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   score?: Prisma.IntFieldUpdateOperationsInput | number
   productsCount?: Prisma.IntFieldUpdateOperationsInput | number
   totalSales?: Prisma.IntFieldUpdateOperationsInput | number
@@ -783,6 +819,8 @@ export type SellerUncheckedUpdateManyInput = {
   selfieUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   kycStatus?: Prisma.StringFieldUpdateOperationsInput | string
   gstStatus?: Prisma.StringFieldUpdateOperationsInput | string
+  tagline?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  hours?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   score?: Prisma.IntFieldUpdateOperationsInput | number
   productsCount?: Prisma.IntFieldUpdateOperationsInput | number
   totalSales?: Prisma.IntFieldUpdateOperationsInput | number
@@ -814,6 +852,8 @@ export type SellerCountOrderByAggregateInput = {
   selfieUrl?: Prisma.SortOrder
   kycStatus?: Prisma.SortOrder
   gstStatus?: Prisma.SortOrder
+  tagline?: Prisma.SortOrder
+  hours?: Prisma.SortOrder
   score?: Prisma.SortOrder
   productsCount?: Prisma.SortOrder
   totalSales?: Prisma.SortOrder
@@ -855,6 +895,8 @@ export type SellerMaxOrderByAggregateInput = {
   selfieUrl?: Prisma.SortOrder
   kycStatus?: Prisma.SortOrder
   gstStatus?: Prisma.SortOrder
+  tagline?: Prisma.SortOrder
+  hours?: Prisma.SortOrder
   score?: Prisma.SortOrder
   productsCount?: Prisma.SortOrder
   totalSales?: Prisma.SortOrder
@@ -886,6 +928,8 @@ export type SellerMinOrderByAggregateInput = {
   selfieUrl?: Prisma.SortOrder
   kycStatus?: Prisma.SortOrder
   gstStatus?: Prisma.SortOrder
+  tagline?: Prisma.SortOrder
+  hours?: Prisma.SortOrder
   score?: Prisma.SortOrder
   productsCount?: Prisma.SortOrder
   totalSales?: Prisma.SortOrder
@@ -976,6 +1020,8 @@ export type SellerCreateWithoutDocumentsInput = {
   selfieUrl?: string | null
   kycStatus: string
   gstStatus: string
+  tagline?: string | null
+  hours?: string | null
   score: number
   productsCount: number
   totalSales?: number
@@ -1008,6 +1054,8 @@ export type SellerUncheckedCreateWithoutDocumentsInput = {
   selfieUrl?: string | null
   kycStatus: string
   gstStatus: string
+  tagline?: string | null
+  hours?: string | null
   score: number
   productsCount: number
   totalSales?: number
@@ -1056,6 +1104,8 @@ export type SellerUpdateWithoutDocumentsInput = {
   selfieUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   kycStatus?: Prisma.StringFieldUpdateOperationsInput | string
   gstStatus?: Prisma.StringFieldUpdateOperationsInput | string
+  tagline?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  hours?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   score?: Prisma.IntFieldUpdateOperationsInput | number
   productsCount?: Prisma.IntFieldUpdateOperationsInput | number
   totalSales?: Prisma.IntFieldUpdateOperationsInput | number
@@ -1088,6 +1138,8 @@ export type SellerUncheckedUpdateWithoutDocumentsInput = {
   selfieUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   kycStatus?: Prisma.StringFieldUpdateOperationsInput | string
   gstStatus?: Prisma.StringFieldUpdateOperationsInput | string
+  tagline?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  hours?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   score?: Prisma.IntFieldUpdateOperationsInput | number
   productsCount?: Prisma.IntFieldUpdateOperationsInput | number
   totalSales?: Prisma.IntFieldUpdateOperationsInput | number
@@ -1120,6 +1172,8 @@ export type SellerCreateWithoutAuditLogsInput = {
   selfieUrl?: string | null
   kycStatus: string
   gstStatus: string
+  tagline?: string | null
+  hours?: string | null
   score: number
   productsCount: number
   totalSales?: number
@@ -1152,6 +1206,8 @@ export type SellerUncheckedCreateWithoutAuditLogsInput = {
   selfieUrl?: string | null
   kycStatus: string
   gstStatus: string
+  tagline?: string | null
+  hours?: string | null
   score: number
   productsCount: number
   totalSales?: number
@@ -1200,6 +1256,8 @@ export type SellerUpdateWithoutAuditLogsInput = {
   selfieUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   kycStatus?: Prisma.StringFieldUpdateOperationsInput | string
   gstStatus?: Prisma.StringFieldUpdateOperationsInput | string
+  tagline?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  hours?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   score?: Prisma.IntFieldUpdateOperationsInput | number
   productsCount?: Prisma.IntFieldUpdateOperationsInput | number
   totalSales?: Prisma.IntFieldUpdateOperationsInput | number
@@ -1232,6 +1290,8 @@ export type SellerUncheckedUpdateWithoutAuditLogsInput = {
   selfieUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   kycStatus?: Prisma.StringFieldUpdateOperationsInput | string
   gstStatus?: Prisma.StringFieldUpdateOperationsInput | string
+  tagline?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  hours?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   score?: Prisma.IntFieldUpdateOperationsInput | number
   productsCount?: Prisma.IntFieldUpdateOperationsInput | number
   totalSales?: Prisma.IntFieldUpdateOperationsInput | number
@@ -1304,6 +1364,8 @@ export type SellerSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs =
   selfieUrl?: boolean
   kycStatus?: boolean
   gstStatus?: boolean
+  tagline?: boolean
+  hours?: boolean
   score?: boolean
   productsCount?: boolean
   totalSales?: boolean
@@ -1338,6 +1400,8 @@ export type SellerSelectCreateManyAndReturn<ExtArgs extends runtime.Types.Extens
   selfieUrl?: boolean
   kycStatus?: boolean
   gstStatus?: boolean
+  tagline?: boolean
+  hours?: boolean
   score?: boolean
   productsCount?: boolean
   totalSales?: boolean
@@ -1369,6 +1433,8 @@ export type SellerSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.Extens
   selfieUrl?: boolean
   kycStatus?: boolean
   gstStatus?: boolean
+  tagline?: boolean
+  hours?: boolean
   score?: boolean
   productsCount?: boolean
   totalSales?: boolean
@@ -1400,6 +1466,8 @@ export type SellerSelectScalar = {
   selfieUrl?: boolean
   kycStatus?: boolean
   gstStatus?: boolean
+  tagline?: boolean
+  hours?: boolean
   score?: boolean
   productsCount?: boolean
   totalSales?: boolean
@@ -1409,7 +1477,7 @@ export type SellerSelectScalar = {
   submittedAt?: boolean
 }
 
-export type SellerOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "businessName" | "ownerName" | "logo" | "email" | "phone" | "address" | "category" | "storeLat" | "storeLng" | "storeAddress" | "taxId" | "idType" | "idNumber" | "nameOnId" | "dob" | "pan" | "bankAccount" | "selfieUrl" | "kycStatus" | "gstStatus" | "score" | "productsCount" | "totalSales" | "rating" | "reviewCount" | "joinedAt" | "submittedAt", ExtArgs["result"]["seller"]>
+export type SellerOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "businessName" | "ownerName" | "logo" | "email" | "phone" | "address" | "category" | "storeLat" | "storeLng" | "storeAddress" | "taxId" | "idType" | "idNumber" | "nameOnId" | "dob" | "pan" | "bankAccount" | "selfieUrl" | "kycStatus" | "gstStatus" | "tagline" | "hours" | "score" | "productsCount" | "totalSales" | "rating" | "reviewCount" | "joinedAt" | "submittedAt", ExtArgs["result"]["seller"]>
 export type SellerInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   documents?: boolean | Prisma.Seller$documentsArgs<ExtArgs>
   auditLogs?: boolean | Prisma.Seller$auditLogsArgs<ExtArgs>
@@ -1446,6 +1514,8 @@ export type $SellerPayload<ExtArgs extends runtime.Types.Extensions.InternalArgs
     selfieUrl: string | null
     kycStatus: string
     gstStatus: string
+    tagline: string | null
+    hours: string | null
     score: number
     productsCount: number
     totalSales: number
@@ -1899,6 +1969,8 @@ export interface SellerFieldRefs {
   readonly selfieUrl: Prisma.FieldRef<"Seller", 'String'>
   readonly kycStatus: Prisma.FieldRef<"Seller", 'String'>
   readonly gstStatus: Prisma.FieldRef<"Seller", 'String'>
+  readonly tagline: Prisma.FieldRef<"Seller", 'String'>
+  readonly hours: Prisma.FieldRef<"Seller", 'String'>
   readonly score: Prisma.FieldRef<"Seller", 'Int'>
   readonly productsCount: Prisma.FieldRef<"Seller", 'Int'>
   readonly totalSales: Prisma.FieldRef<"Seller", 'Int'>

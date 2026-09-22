@@ -459,8 +459,10 @@ function ApiKeysSettings() {
         const row = (body.rows as AppSettingRow[] | undefined)?.find((r) => r.key === "apiKeys");
         if (Array.isArray(row?.value)) {
           let list = row.value.filter(isApiKeyEntry);
-          // Self-migration: legacy rows stored the full key (readable via the
-          // settings GET by anyone with read access). Hash them once and
+          // Self-migration (retired as primary — the data lane migrates
+          // server-side on read and strips secrets from served rows, so this
+          // finds nothing on fresh reads; kept as defense-in-depth).
+          // Legacy rows stored the full key. Hash them once and
           // re-persist hashed so the plaintext never rests again. Legacy
           // human-string expiries ("30 days") never parsed in the gateway —
           // convert them to ISO from createdAt (or now) so they actually end.

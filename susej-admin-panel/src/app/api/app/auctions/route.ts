@@ -56,6 +56,11 @@ export async function POST(req: NextRequest) {
   if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   const prisma = await getPrisma();
   if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
+  // Shared per-account enforcement (one-shot).
+  const { checkSharedWriteRate: checkSharedAuction } = await import("@/lib/rate-limit");
+  if (!(await checkSharedAuction(prisma, `auctions-user:${String(auth.user.username ?? "").toLowerCase()}`, 30))) {
+    return NextResponse.json({ error: "Too many requests — slow down" }, { status: 429 });
+  }
 
   let body: { auctionId?: string; amount?: number; title?: string; startPrice?: number; durationHours?: number; imageKey?: string };
   try {

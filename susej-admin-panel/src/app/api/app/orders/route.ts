@@ -6,6 +6,7 @@ import { getClientIp } from "@/lib/auth";
 import { checkWriteRate } from "@/lib/rate-limit";
 import { resolveCommissionRate } from "@/lib/commission";
 import { notifyUser } from "@/lib/notifications";
+import { orderFactsOf } from "@/lib/order-facts";
 
 /** Raised inside the placement transaction; mapped to an HTTP error response. */
 class OrderError extends Error {
@@ -184,10 +185,18 @@ export async function GET(req: NextRequest) {
   }
 
   return NextResponse.json({
-    orders: rows.map((o) => ({
+    orders: rows.map((o) => {
+      // Durable facts: columns when migrated, Json stamp otherwise.
+      const facts = orderFactsOf(o as Parameters<typeof orderFactsOf>[0]);
+      return {
       id: o.id,
       orderNumber: o.orderNumber ?? o.trackingNumber ?? o.id,
-      kind: "order",
+      kind: facts.kind,
+      ...(facts.bookingDate ? { bookingDate: facts.bookingDate } : {}),
+      ...(facts.bookingTime ? { bookingTime: facts.bookingTime } : {}),
+      ...(facts.deliveryFee !== undefined ? { deliveryFee: facts.deliveryFee } : {}),
+      ...(facts.promoCode ? { promoCode: facts.promoCode } : {}),
+      ...(facts.discount > 0 ? { discount: facts.discount } : {}),
       sellerName: o.sellerName,
       sellerUsername: o.sellerUsername ?? "",
       buyerName: o.buyerName,
@@ -206,7 +215,7 @@ export async function GET(req: NextRequest) {
             category?: string;
           }[])
         : [],
-      total: o.amount,
+      total: Math.round(Number(o.amount ?? 0) + facts.discount),
       chargedTotal: o.amount,
       status: o.status,
       // Withdrawable-truth for seller surfaces: refunded rows are clawed back
@@ -233,7 +242,8 @@ export async function GET(req: NextRequest) {
       deliveryLog: Array.isArray((o as { deliveryLog?: unknown }).deliveryLog)
         ? (o as { deliveryLog: unknown }).deliveryLog
         : [],
-    })),
+      };
+    }),
   });
 }
 
@@ -246,14 +256,19 @@ export async function POST(req: NextRequest) {
   }
   const auth = await getAppUser(req);
   if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-  // Per-account second bucket (same in-memory, per-instance limits): rotating
-  // IPs no longer multiplies the 20/min money cap per account. A shared store
-  // (Upstash/Neon) is still tracked for cross-isolate enforcement.
+  // Per-account second bucket: memory pre-filter + SHARED enforcement (one-
+  // shot) — rotating IPs no longer multiplies the 20/min money cap per
+  // account on any isolate count.
   if (!checkWriteRate(`orders-post-user:${auth.user.username!.toLowerCase()}`, 20)) {
     return NextResponse.json({ error: "Too many requests — slow down" }, { status: 429 });
   }
   const prisma = await getPrisma();
   if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
+  // Shared cross-isolate enforcement for the per-account money bucket.
+  const { checkSharedWriteRate } = await import("@/lib/rate-limit");
+  if (!(await checkSharedWriteRate(prisma, `orders-post-user:${auth.user.username!.toLowerCase()}`, 20))) {
+    return NextResponse.json({ error: "Too many requests — slow down" }, { status: 429 });
+  }
 
   let body: {
     sellerName?: string;
@@ -274,6 +289,11 @@ export async function POST(req: NextRequest) {
     /** Validated against the app's fixed fee table before use. */
     deliveryFee?: number;
     promoCode?: string;
+    /** Booking slot (service orders): persisted on the settled lines so every
+     *  device/pull sees the appointment. Required when the locked listing
+     *  types resolve to a booking. */
+    bookingDate?: string;
+    bookingTime?: string;
     /** Accepted-offer lock (chat negotiation → checkout): the struck deal
      *  prices this order instead of the live listing price. Verified inside
      *  the tx against the offer row (accepted only, matching listing +
@@ -347,6 +367,11 @@ export async function POST(req: NextRequest) {
     // assigned inside the tx from the authoritative fee/total/discount.
     let settledFee = 0;
     let settledDiscount = 0;
+    // Durable-columns probe BEFORE the tx: a failed SELECT inside Postgres
+    // aborts the whole tx, so probing in-tx would 500 every pre-migration
+    // placement even though the Json path is fully viable.
+    const { hasOrderFactsCols } = await import("@/lib/order-facts");
+    const factsCols = await hasOrderFactsCols(prisma).catch(() => false);
     const created = await prisma.$transaction(async (tx) => {
       const commissionRate = await resolveCommissionRate(tx);
 
@@ -697,6 +722,10 @@ export async function POST(req: NextRequest) {
             }
             line.unitPrice = oAmt;
             (line as { offerRef?: unknown }).offerRef = { threadId: offerThreadId, messageId: offerMessageId, amount: oAmt };
+            // Struck deal = LINE TOTAL for the negotiated lot (OLX norm: the
+            // chat agrees a figure for the lot, not per unit). qty still
+            // drives stock reservation below; only the money basis is fixed.
+            (line as unknown as { offerTotal?: unknown }).offerTotal = oAmt;
           }
           // Bundle override (server-side pricer above): the Bundle row price
           // replaces the listing mirror. Bundles never combine with accepted
@@ -712,9 +741,13 @@ export async function POST(req: NextRequest) {
           // Accounting runs on the RESOLVED server price (mirror truth), never
           // the client-supplied figure — clients may omit price entirely and
           // rely on server pricing, which previously accounted ₹0 and silently
-          // skipped the seller credit + settlement legs.
+          // skipped the seller credit + settlement legs. Offer lots contribute
+          // their struck line total (not per-unit × qty).
+          const lineTotal = typeof (line as unknown as { offerTotal?: unknown }).offerTotal === "number"
+            ? Number((line as unknown as { offerTotal: number }).offerTotal)
+            : line.unitPrice * line.qty;
           if (line.ownerUsername) {
-            sellerAccountedTotal += line.unitPrice * line.qty;
+            sellerAccountedTotal += lineTotal;
           }
         } else {
           // No listingId → reject: server has no price oracle, client price untrusted.
@@ -722,7 +755,9 @@ export async function POST(req: NextRequest) {
         }
         if (!Number.isFinite(line.unitPrice) || line.unitPrice < 0) line.unitPrice = 0;
         if (line.unitPrice > 10000000) throw new OrderError(400, "Listing price exceeds limit");
-        computedTotal += line.unitPrice * line.qty;
+        computedTotal += typeof (line as unknown as { offerTotal?: unknown }).offerTotal === "number"
+          ? Number((line as unknown as { offerTotal: number }).offerTotal)
+          : line.unitPrice * line.qty;
       }
       // Flush staged variant decrements (accumulated across all lines of each
       // listing — same-listing multi-line orders share one reservation, so
@@ -748,6 +783,24 @@ export async function POST(req: NextRequest) {
         throw new OrderError(400, "Invalid delivery fee — refresh and try again");
       }
       const deliveryFee = serverFee;
+      // Order kind is SERVER-DERIVED from the locked listing types (never the
+      // client-sent kind — the list lane hardcoded "order" and wiped bookings
+      // on every pull). Booking slot rides along for service orders.
+      const lineKind: "booking" | "food" | "order" =
+        lineTypes.length > 0 && lineTypes.every((t) => t === "service")
+          ? "booking"
+          : lineTypes.some((t) => t === "food_item" || t === "food")
+            ? "food"
+            : "order";
+      let bookingDate = "";
+      let bookingTime = "";
+      if (lineKind === "booking") {
+        bookingDate = String(body.bookingDate ?? "").slice(0, 10);
+        bookingTime = String(body.bookingTime ?? "").slice(0, 20);
+        if (!bookingDate || !bookingTime) {
+          throw new OrderError(400, "Booking slot required — pick a date and time");
+        }
+      }
       // Zero-total never falls back to the client figure: pricing is
       // server-authoritative, and a clientTotal fallback would re-open the
       // free-order hole (client says 0, server charges 0, seller credited 0).
@@ -912,7 +965,10 @@ export async function POST(req: NextRequest) {
       // never disagree, whatever the admin configures later.
       const settledLines: Array<Record<string, unknown>> = [];
       for (const i of normalized) {
-        const lineTotal = i.unitPrice * i.qty;
+        // Offer lots settle their struck total (not per-unit × qty).
+        const lineTotal = typeof (i as unknown as { offerTotal?: unknown }).offerTotal === "number"
+          ? Number((i as unknown as { offerTotal: number }).offerTotal)
+          : i.unitPrice * i.qty;
         const share = merchDiscount > 0 ? (lineTotal / goodsForShare) * merchDiscount : 0;
         const netTotal = Math.max(0, lineTotal - share);
         const rate = await resolveCommissionRate(tx, i.category || undefined);
@@ -944,6 +1000,19 @@ export async function POST(req: NextRequest) {
       // Ack figures (server-wins receipt): settled fee + discount as charged.
       settledFee = Math.round(deliveryFee);
       settledDiscount = Math.max(0, Math.round(itemsTotal + deliveryFee - chargedTotal));
+      // Durable order facts on the first settled line (migration-free, same
+      // pattern as promoCode provenance above): kind + slot + settled
+      // fee/discount so list/detail/pulls serve them on every device.
+      if (settledLines.length > 0) {
+        const head = settledLines[0] as Record<string, unknown>;
+        head.kind = lineKind;
+        head.deliveryFee = settledFee;
+        head.discount = settledDiscount;
+        if (lineKind === "booking") {
+          head.bookingDate = bookingDate;
+          head.bookingTime = bookingTime;
+        }
+      }
       const order = await tx.order.create({
         data: {
           buyerName: auth.user.name,
@@ -955,6 +1024,19 @@ export async function POST(req: NextRequest) {
           deliveryStatus: "awaiting_shipment",
           items: normalized.reduce((n, i) => n + i.qty, 0),
           itemsList: settledLines as never,
+          // Durable facts as COLUMNS (Json stamp above stays as fallback for
+          // pre-migration rows). factsCols was probed pre-tx: in-tx probing
+          // would abort the tx on old DBs.
+          ...(factsCols
+            ? {
+                kind: lineKind,
+                bookingDate,
+                bookingTime,
+                deliveryFee: settledFee,
+                discount: settledDiscount,
+                promoCode: appliedPromoCode ?? "",
+              }
+            : {}),
           shippingCarrier: "",
           trackingNumber,
           estimatedDelivery: "",

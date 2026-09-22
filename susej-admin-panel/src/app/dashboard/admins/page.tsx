@@ -16,7 +16,7 @@ import { AdminForm } from "@/components/forms/admin-form";
 import { useDbResource } from "@/hooks/use-db-resource";
 import { apiPatch, apiPost, apiDelete } from "@/lib/api-mutate";
 import { formatDate } from "@/lib/utils";
-import { Plus, MoreVertical, AlertTriangle, Shield, Users, MessageSquare, Pencil, Filter, X, CheckCircle2, Copy, Mail } from "lucide-react";
+import { Plus, MoreVertical, AlertTriangle, Shield, Users, MessageSquare, Wallet, Headset, Pencil, Filter, X, CheckCircle2, Copy, Mail } from "lucide-react";
 import type { AdminUser, AuditLog } from "@/types";
 
 function getInitials(name: string): string {
@@ -26,19 +26,25 @@ function getInitials(name: string): string {
 const roleLabels: Record<string, string> = {
   super_admin: "Super Admin",
   manager: "Manager",
+  finance: "Finance",
   moderator: "Moderator",
+  support: "Support",
 };
 
 const roleIcons: Record<string, typeof Shield> = {
   super_admin: Shield,
   manager: Users,
+  finance: Wallet,
   moderator: MessageSquare,
+  support: Headset,
 };
 
 const roleColors: Record<string, string> = {
   super_admin: "#EF4444",
   manager: "#6C3BFF",
+  finance: "#10B981",
   moderator: "#F59E0B",
+  support: "#0EA5E9",
 };
 
 const modules = [
@@ -54,6 +60,10 @@ const managerModules = ["Dashboard", "Users", "Sellers", "Products", "Categories
 const managerActions = ["View", "Create", "Edit", "Delete"];
 const moderatorModules = ["Communities", "Reviews", "Reports", "Messages"];
 const moderatorActions = ["View", "Edit", "Approve", "Reject"];
+const financeModules = ["Dashboard", "Orders", "Payments"];
+const financeActions = ["View", "Approve", "Reject"];
+const supportModules = ["Dashboard", "Support", "Messages"];
+const supportActions = ["View", "Edit"];
 
 function getActionVariant(action: string): "info" | "success" | "danger" | "warning" | "default" {
   const map: Record<string, "info" | "success" | "danger" | "warning" | "default"> = {
@@ -77,6 +87,8 @@ const auditColumns: ColumnDef<AuditLog>[] = [
 const initialPermissions: Record<string, { [module: string]: { [action: string]: boolean } }> = {
   "Super Admin": Object.fromEntries(modules.map((m) => [m, Object.fromEntries(actions.map((a) => [a, true]))])),
   "Manager": Object.fromEntries(modules.map((m) => [m, Object.fromEntries(actions.map((a) => [a, managerModules.includes(m) && managerActions.includes(a)]))])),
+  "Finance": Object.fromEntries(modules.map((m) => [m, Object.fromEntries(actions.map((a) => [a, financeModules.includes(m) && financeActions.includes(a)]))])),
+  "Support": Object.fromEntries(modules.map((m) => [m, Object.fromEntries(actions.map((a) => [a, supportModules.includes(m) && supportActions.includes(a)]))])),
   "Moderator": Object.fromEntries(modules.map((m) => [m, Object.fromEntries(actions.map((a) => [a, moderatorModules.includes(m) && moderatorActions.includes(a)]))])),
 };
 
@@ -257,8 +269,8 @@ export default function AdminsPage() {
           This matrix is recorded for the RBAC-v2 rollout and does not enforce anything yet — changing a checkbox here changes no access today.
         </p>
         <div className="grid grid-cols-3 gap-6">
-          {(["Super Admin", "Manager", "Moderator"] as const).map((role) => {
-            const roleKey = role === "Super Admin" ? "super_admin" : role.toLowerCase() as "manager" | "moderator";
+          {(["Super Admin", "Manager", "Finance", "Support", "Moderator"] as const).map((role) => {
+            const roleKey = role === "Super Admin" ? "super_admin" : role.toLowerCase() as "manager" | "finance" | "support" | "moderator";
             const Icon = roleIcons[roleKey];
             const color = roleColors[roleKey];
             const mods = permissions[role];
@@ -333,7 +345,7 @@ export default function AdminsPage() {
                                 <div className="flex items-center gap-3">
                                   <div
                                     className="flex h-8 w-8 items-center justify-center rounded-full text-sm font-semibold text-white"
-                                    style={{ backgroundColor: roleColors[admin.role] }}
+                                    style={{ backgroundColor: roleColors[admin.role] ?? "#71717A" }}
                                   >
                                     {getInitials(admin.name)}
                                   </div>
@@ -346,7 +358,7 @@ export default function AdminsPage() {
                               <td className="py-3 text-sm text-gray-500">{admin.email || "â€”"}</td>
                               <td className="py-3">
                                 <div className="flex items-center gap-1.5">
-                                  <RoleIcon className="h-3.5 w-3.5" style={{ color: roleColors[admin.role] }} />
+                                  <RoleIcon className="h-3.5 w-3.5" style={{ color: roleColors[admin.role] ?? "#71717A" }} />
                                   <span className="text-sm text-gray-600 ">
                                     {roleLabels[admin.role] || admin.role}
                                   </span>

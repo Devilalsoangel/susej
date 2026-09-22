@@ -18,6 +18,15 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 
+# OWNERSHIP (Sep21 one-shot): the Next.js admin panel (susej-admin-panel) +
+# Neon Postgres is the money owner (orders escrow, wallet, payouts, ledger in
+# INR; the app talks to it). This FastAPI service keeps social/catalog feeds
+# only — its cart/checkout/order/like lanes are legacy (USD intents, in-memory
+# state, client-price history) and must NOT take new traffic: every money lane
+# below is auth-guarded + server-repriced, and any client flip back to this
+# service resurrects currency/escrow drift. Delete these lanes once no client
+# references EXPO_PUBLIC_API_BASE_URL for money (grep eas.json + serverApi).
+
 # unified import strategy: try relative (package), fall back to absolute (direct run)
 try:
     from . import auth_routes, utils

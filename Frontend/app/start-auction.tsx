@@ -225,7 +225,7 @@ export default function StartAuctionScreen() {
 
         {/* Duration */}
         <Text className="font-inter-500 mt-5" style={{ fontSize: 12, lineHeight: 16, color: colors.textSecondary, marginBottom: 8 }}>
-          Auction duration
+          Auction duration · max 10 auctions per day
         </Text>
         <View className="flex-row flex-wrap" style={{ gap: 8 }}>
           {DURATIONS.map((d) => {

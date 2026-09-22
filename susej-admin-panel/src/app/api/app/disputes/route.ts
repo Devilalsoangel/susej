@@ -14,14 +14,36 @@ export async function GET(req: NextRequest) {
 
   const username = auth.user.username!;
   // Case-insensitive party match (write paths already are — an exact-match
-  // list hid rows the PATCH lane would happily mutate).
-  const rows = await prisma.dispute.findMany({
-    where: {
-      OR: [{ buyerName: { equals: username, mode: "insensitive" } }, { sellerName: { equals: username, mode: "insensitive" } }],
-    },
-    orderBy: { raisedAt: "desc" },
-    take: 100,
-  });
+  // list hid rows the PATCH lane would happily mutate). Stable username
+  // columns first; display-name legacy rows widen the same query. Pre-
+  // migration DBs reject the unknown columns → display-only fallback.
+  const displayName = String(auth.user.name ?? "").trim();
+  const fullOrs: Array<Record<string, unknown>> = [
+    { buyerUsername: { equals: username, mode: "insensitive" } },
+    { sellerUsername: { equals: username, mode: "insensitive" } },
+    { buyerName: { equals: username, mode: "insensitive" } },
+    { sellerName: { equals: username, mode: "insensitive" } },
+  ];
+  if (displayName && displayName.toLowerCase() !== username.toLowerCase()) {
+    fullOrs.push(
+      { buyerName: { equals: displayName, mode: "insensitive" } },
+      { sellerName: { equals: displayName, mode: "insensitive" } },
+    );
+  }
+  let rows: Array<{ id: string; orderId: string; reason: string; status: string; outcome: unknown; note: unknown; raisedAt: Date }>;
+  try {
+    rows = await prisma.dispute.findMany({
+      where: { OR: fullOrs as never },
+      orderBy: { raisedAt: "desc" },
+      take: 100,
+    });
+  } catch {
+    rows = await prisma.dispute.findMany({
+      where: { OR: fullOrs.filter((c) => !("buyerUsername" in c) && !("sellerUsername" in c)) as never },
+      orderBy: { raisedAt: "desc" },
+      take: 100,
+    });
+  }
   return NextResponse.json({
     disputes: rows.map((d) => ({
       id: d.id,
@@ -47,6 +69,11 @@ export async function POST(req: NextRequest) {
   if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   const prisma = await getPrisma();
   if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
+  // Shared per-account enforcement (one-shot).
+  const { checkSharedWriteRate: checkSharedDispute } = await import("@/lib/rate-limit");
+  if (!(await checkSharedDispute(prisma, `disputes-user:${String(auth.user.username ?? "").toLowerCase()}`, 20))) {
+    return NextResponse.json({ error: "Too many requests — slow down" }, { status: 429 });
+  }
 
   let body: { orderRef?: string; reason?: string; description?: string };
   try {
@@ -83,6 +110,15 @@ export async function POST(req: NextRequest) {
   if (String(order.status ?? "") === "cancelled" || ["refunded", "partial_refund"].includes(String(order.paymentStatus ?? ""))) {
     return NextResponse.json({ error: "This order is already closed — contact support instead" }, { status: 400 });
   }
+  // Stable-identity columns probe (one-shot migration): decided BEFORE the
+  // tx — a failed statement inside Postgres aborts the whole tx, so an
+  // in-tx retry would 500 every pre-migration create.
+  let disputeUserCols = true;
+  try {
+    await prisma.$queryRawUnsafe(`SELECT "buyerUsername" FROM "Dispute" LIMIT 0`);
+  } catch {
+    disputeUserCols = false;
+  }
   // Serialized open-or-return: check-then-create double-tapped twin "open"
   // rows for one order (queue dupes + double seller pages). The order-row
   // lock serializes concurrent opens; the re-read inside observes committed
@@ -116,6 +152,14 @@ export async function POST(req: NextRequest) {
         orderId: order.trackingNumber,
         buyerName: order.buyerUsername ?? order.buyerName,
         sellerName: order.sellerUsername ?? order.sellerName,
+        // Stable identity columns when migrated (probed above); omitted on
+        // old DBs where the write would abort the whole tx.
+        ...(disputeUserCols
+          ? {
+              buyerUsername: String(order.buyerUsername ?? ""),
+              sellerUsername: String(order.sellerUsername ?? ""),
+            }
+          : {}),
         // The free-text complaint rides with the reason (the model has no
         // separate body field); desk reads the full string.
         reason: description ? `${reason} — ${description.slice(0, 400)}` : reason,

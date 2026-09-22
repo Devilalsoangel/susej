@@ -87,6 +87,13 @@ export async function POST(req: NextRequest) {
 
   if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
 
+  // Shared per-account enforcement (one-shot): the IP bucket above is a
+  // pre-filter only on serverless.
+  const { checkSharedWriteRate } = await import("@/lib/rate-limit");
+  if (!(await checkSharedWriteRate(prisma, `wallet-post-user:${String(auth.user.username ?? "").toLowerCase()}`, 20))) {
+    return NextResponse.json({ error: "Too many requests — slow down" }, { status: 429 });
+  }
+
 
 
   let body: { amount?: number; title?: string; detail?: string; type?: string; ref?: string };
@@ -310,6 +317,22 @@ export async function POST(req: NextRequest) {
 
     await tx.walletTransaction.create({ data: { username: existing.username!, title, detail, amount } });
 
+    // Ledger mirror (one-shot: top-ups were WalletTransaction-only, so the
+    // books never balanced platform-side). Buyer-out charge leg + platform-in
+    // leg, same tx (fail together). Types are topup-distinct: settlement
+    // pages (settlement/payout filter) and fee maps (orderId join) ignore
+    // them; the wallet Collected/Held tiles count them as platform float.
+    if (amount > 0) {
+      const nowLeg = new Date();
+      const legOrderId = `topup:${title}`.slice(0, 120);
+      await tx.ledgerEntry.createMany({
+        data: [
+          { partyName: existing.username!, partyRole: "buyer", direction: "out", type: "topup", amount, method: "wallet", status: "success", orderId: legOrderId, createdAt: nowLeg },
+          { partyName: "susej", partyRole: "platform", direction: "in", type: "topup", amount, method: "wallet", status: "success", orderId: legOrderId, createdAt: nowLeg },
+        ],
+      });
+    }
+
     return { newBalance, bal: newBalance - amount };
 
   }).catch(async (e: unknown) => {
@@ -395,6 +418,19 @@ export async function PUT(req: NextRequest) {
   if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   const prisma = await getPrisma();
   if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
+  // Shared per-account enforcement (one-shot).
+  const { checkSharedWriteRate: checkSharedPut } = await import("@/lib/rate-limit");
+  if (!(await checkSharedPut(prisma, `wallet-put-user:${String(auth.user.username ?? "").toLowerCase()}`, 20))) {
+    return NextResponse.json({ error: "Too many requests — slow down" }, { status: 429 });
+  }
+  // Withdrawal.fee column probe BEFORE the tx (one-shot migration): a failed
+  // write inside Postgres aborts the whole payout tx, so no in-tx fallback.
+  let withdrawalFeeCol = true;
+  try {
+    await prisma.$queryRawUnsafe(`SELECT "fee" FROM "Withdrawal" LIMIT 0`);
+  } catch {
+    withdrawalFeeCol = false;
+  }
 
   let body: { amount?: number; method?: string; ref?: unknown; destination?: unknown; feePreview?: unknown };
   try {
@@ -720,7 +756,9 @@ export async function PUT(req: NextRequest) {
           userName: { equals: user.username!, mode: "insensitive" },
           status: { in: ["requested", "approved", "completed"] },
         },
-        select: { id: true, amount: true },
+        // fee column only when migrated (probed pre-tx): selecting it on old
+        // DBs aborts the whole payout tx — then the detail-parse path applies.
+        select: withdrawalFeeCol ? { id: true, amount: true, fee: true } : { id: true, amount: true },
       });
       // Committed in TOTAL-DEBIT terms (amount + fee): each payout locked
       // amount+fee from the balance, so the earnings check must subtract the
@@ -749,7 +787,12 @@ export async function PUT(req: NextRequest) {
         for (const f of feeByWd.values()) if (Number.isFinite(f) && f > maxHistoricFee) maxHistoricFee = f;
         for (const w of priorWd) {
           const principal = Math.max(0, Number((w as { amount?: unknown }).amount ?? 0));
-          const wfee = feeByWd.get(String((w as { id?: unknown }).id ?? ""));
+          // Stamped fee first (exact per-row actuals); detail-parse second;
+          // maxHistoric fallback last (legacy rows, safe direction).
+          const stamped = Number((w as { fee?: unknown }).fee);
+          const wfee = Number.isFinite(stamped) && stamped >= 0
+            ? Math.max(0, stamped)
+            : feeByWd.get(String((w as { id?: unknown }).id ?? ""));
           paidOut += principal + (wfee !== undefined ? Math.max(0, wfee) : maxHistoricFee);
         }
       }
@@ -779,6 +822,9 @@ export async function PUT(req: NextRequest) {
           userName: user.username!,
           method,
           amount,
+          // Actual fee stamped (one-shot migration; -1 = unknown legacy).
+          // Omitted entirely pre-migration (probed above).
+          ...(withdrawalFeeCol ? { fee } : {}),
           status: "requested",
           requestedAt: new Date(),
         },
@@ -793,6 +839,22 @@ export async function PUT(req: NextRequest) {
           // keep `· to <destination>` at the end.
           detail: `Payout request ${wd.id} · ₹${fee} fee · via ${method === "upi" ? "UPI" : "bank"} · to ${destination}`,
           amount: -totalDebit,
+        },
+      });
+      // Ledger mirror (one-shot): the payout debit previously left no books
+      // trace. Buyer-out payout leg, same tx. Type-distinct from settlement
+      // (Paid-out tile counts settlement/payout IN legs only).
+      await tx.ledgerEntry.create({
+        data: {
+          partyName: user.username!,
+          partyRole: "seller",
+          direction: "out",
+          type: "payout",
+          amount: totalDebit,
+          method,
+          status: "success",
+          orderId: `payout:${wd.id}`,
+          createdAt: new Date(),
         },
       });
       return { id: wd.id, destination };

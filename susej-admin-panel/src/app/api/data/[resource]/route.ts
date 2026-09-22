@@ -95,12 +95,14 @@ const MONEY_RESOURCES = new Set(["withdrawals", "refunds", "transactions", "ledg
 // NOTE: withdrawals are NOT app-writable. Payout requests are created only
 // through the transactional /api/app/wallet POST (debit + desk row in one
 // $transaction); /api/data/withdrawals is decision-only for the admin desk.
+// NOTE: orders/promotions mirrors were REMOVED (dead lanes): no caller sends
+// them (placement runs on /api/app/orders, promos on purchasePromotion), and
+// the sanitizers strip required columns (amount/checkoutRef/...) so every
+// call 503d — an advertised-but-unwritable lane is a sync lie. Fail-closed.
 const APP_SYNC_RESOURCES = new Set([
-  "orders",
   "sellers",
   "tickets",
   "messages",
-  "promotions",
   "refunds",
   "storefront-banners",
 ]);
@@ -138,8 +140,12 @@ async function writeAuditSafe(entry: {
   try {
     const { writeAudit } = await import("@/lib/audit");
     await writeAudit(entry);
-  } catch {
-    // no DB available (e.g. static Netlify demo) - audit is best-effort
+  } catch (err) {
+    // no DB available (e.g. static Netlify demo) - audit is best-effort.
+    // LOUD on failure: maker-checker executions prove prior approval by
+    // reading the audit trail, so a silently-dropped approve audit bricks the
+    // later complete/refund with an inexplicable "no prior approval" 409.
+    console.error(`[audit-write-failed] ${entry.action} ${entry.entity}:${entry.entityId} by ${entry.adminName}:`, err);
   }
 }
 
@@ -295,6 +301,20 @@ function serialize(value: unknown, resource?: string): unknown {
         const v = String(out.value);
         out.value = v.length <= 4 ? "••••" : `••••${v.slice(-4)}`;
       }
+      return out;
+    }
+    // Minted apiKeys rows are an ARRAY of {keyHash,...}: the string branch
+    // above misses them, leaking sha256 key hashes (offline-bruteforceable
+    // credential material) to every app-settings reader. Strip the hash —
+    // last4 + metadata stay for the desk.
+    if (resource === "app-settings" && typeof out.key === "string" && Array.isArray(out.value)) {
+      out.value = (out.value as unknown[]).map((e) => {
+        if (!e || typeof e !== "object") return e;
+        const entry = { ...(e as Record<string, unknown>) };
+        delete entry.keyHash;
+        delete entry.key;
+        return entry;
+      });
       return out;
     }
     return out;
@@ -515,7 +535,8 @@ function sanitizePromotionForApp(
   delete (out as Record<string, unknown>).createdAt;
   delete (out as Record<string, unknown>).durationDays;
   delete (out as Record<string, unknown>).discountedPrice;
-  delete (out as Record<string, unknown>).provider;
+  // NOTE: provider stays "app" (stamped above) — deleting it here used to
+  // mislabel every mirror row as manual and blind finance reconciliation.
   return out;
 }
 
@@ -574,6 +595,11 @@ function sanitizeMessageForApp(raw: Record<string, unknown>, appUser: Record<str
   for (const k of MESSAGE_APP_FIELDS) if (raw[k] !== undefined) out[k] = raw[k];
   const userName = String(appUser.name ?? appUser.username ?? "").trim();
   if (userName) out.sender = userName;
+  // Server-stamped (both required columns): the whitelist carried senderRole
+  // from the client before, and never set createdAt — every ticket-opener
+  // message half 503d as P2012 while the ticket itself succeeded.
+  out.senderRole = "user";
+  out.createdAt = new Date();
   return out;
 }
 
@@ -894,12 +920,55 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
           // count query failed — fall through with stored values rather than fabricating
         }
       }
-      // Sellers: products count is COMPUTED from real Product rows — the stored
-      // column is stale after Post→Product mirroring (was 0 for all). Live count
-      // matches the Product table grouped by sellerName so admin sees the same
-      // inventory the buyer feed does. Product.sellerName is "Display Name (@handle)"
-      // while Seller.businessName is "Display Name" — strip the handle for matching.
+      // apiKeys: server-side self-migration (runs on read, best-effort).
+      // Legacy rows stored the FULL key (readable via this GET) — hash them
+      // in-DB once (sha256 + last4) and fix unparseable human-string expiries
+      // so they actually end. The client migration is retired: serialize()
+      // below strips keyHash/key from every served row, so the client can no
+      // longer see plaintext to migrate. Plaintext never rests after this.
+      if (resource === "app-settings") {
+        try {
+          const keyRow = (rowsOut as Array<Record<string, unknown>>).find((r) => String(r.key ?? "") === "apiKeys");
+          const val = (keyRow as { value?: unknown } | undefined)?.value;
+          if (keyRow && Array.isArray(val)) {
+            const { createHash } = await import("crypto");
+            let dirty = false;
+            const migrated = (val as Array<Record<string, unknown>>).map((e) => {
+              if (!e || typeof e !== "object") return e;
+              let out = { ...e };
+              if (!out.keyHash && typeof out.key === "string" && out.key) {
+                const full = String(out.key);
+                out.keyHash = createHash("sha256").update(full).digest("hex");
+                out.last4 = full.slice(-4);
+                dirty = true;
+              }
+              if (typeof out.keyHash === "string") delete out.key;
+              if (typeof out.expiresAt === "string" && out.expiresAt && Number.isNaN(Date.parse(out.expiresAt))) {
+                const base = typeof out.createdAt === "string" && out.createdAt ? Date.parse(out.createdAt) : Date.now();
+                out.expiresAt = new Date(Number.isFinite(base) ? base + 30 * 864e5 : Date.now() + 30 * 864e5).toISOString();
+                dirty = true;
+              }
+              return out;
+            });
+            // Strip check runs on the served copy regardless; persist only
+            // when something actually changed.
+            const changed = JSON.stringify(migrated) !== JSON.stringify(val);
+            if (changed) {
+              await prisma.appSetting.update({ where: { key: "apiKeys" }, data: { value: migrated as never } }).catch(() => null);
+              (keyRow as Record<string, unknown>).value = migrated;
+            }
+          }
+        } catch {
+          // fall through with stored values — serialize() still strips secrets
+        }
+      }
       if (resource === "sellers") {
+        // Sellers: products count is COMPUTED from real Product rows — the
+        // stored column is stale after Post→Product mirroring (was 0 for
+        // all). Live count matches the Product table grouped by sellerName
+        // so admin sees the same inventory the buyer feed does.
+        // Product.sellerName is "Display Name (@handle)" while
+        // Seller.businessName is "Display Name" — strip the handle.
         try {
           const counts = await prisma.product.groupBy({ by: ["sellerName"], _count: { _all: true } });
           const map = new Map<string, number>();
@@ -1588,6 +1657,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   // above — the Shipment model has no such column, so strip it before the
   // row write (else Prisma 503s every staff delivery).
   if (resource === "shipments") delete (cleanPayload as Record<string, unknown>).podNote;
+  // refundStatus/refundReason are decision intents consumed by the refund
+  // machine above (transitionRefund settles the linked Refund row) — the
+  // Order model has no such columns. Persisting them 503d AFTER the machine
+  // already moved money (error after settlement). Strip before the row write.
+  if (resource === "orders") {
+    delete (cleanPayload as Record<string, unknown>).refundStatus;
+    delete (cleanPayload as Record<string, unknown>).refundReason;
+  }
 
   const prisma = (await resolveDb()) as any;
   if (prisma) {
@@ -3158,6 +3235,22 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   }
   const postValidationErr = validateResourcePayload(resource, body as Record<string, unknown>);
   if (postValidationErr) return NextResponse.json({ error: postValidationErr }, { status: 400 });
+  // Creation lanes force initial states (PATCH-lane parity): money moves only
+  // inside the decision machines (payout approve/complete, refund approve/
+  // refund, promo engine activate). A staff POST of withdrawals/completed or
+  // refunds/refunded with an arbitrary amount would mint a terminal-money row
+  // with no wallet legs behind it (maker-checker + settlement re-check
+  // bypassed) while finance tiles sum the display amount. Decisions run
+  // through PATCH; creation is always the initial state.
+  if (role !== "app") {
+    if (resource === "withdrawals") {
+      (body as Record<string, unknown>).status = "requested";
+    } else if (resource === "refunds") {
+      (body as Record<string, unknown>).status = "requested";
+    } else if (resource === "promotions") {
+      (body as Record<string, unknown>).status = "pending_payment";
+    }
+  }
 
   let appScopedBody: Record<string, unknown> | null = null;
   if (role === "app") {
@@ -3373,10 +3466,39 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         (cleanPayloadPost as Record<string, unknown>).orderRef = String((linked as { trackingNumber?: unknown }).trackingNumber ?? ref);
         // Server-stamped (client timestamps left the whitelist with P3-2).
         (cleanPayloadPost as Record<string, unknown>).requestedAt = new Date();
+        // Claim amount = the linked order's charged total (rounded). The app
+        // sanitizer zeroes amount and PATCH blocks later edits, so without
+        // this stamp every app-flow refund reports ₹0 on Overview net-revenue,
+        // the Refunds-desk tile, and Wallet pending — while money itself
+        // settles correctly on order.amount. Never a client figure.
+        const linkedAmount = Number((linked as { amount?: unknown }).amount);
+        if (Number.isFinite(linkedAmount) && linkedAmount > 0) {
+          (cleanPayloadPost as Record<string, unknown>).amount = Math.round(linkedAmount);
+        }
         // Seller identity from the linked order (sanitizeRefundForApp forces
         // buyerName from the token but nothing set sellerName — required
         // column, so every data-lane app refund 500d as P2012).
         (cleanPayloadPost as Record<string, unknown>).sellerName = String((linked as { sellerName?: unknown }).sellerName ?? "");
+        // Buyer display name from the linked order too (not the token): a
+        // renamed buyer filed under a stale token name orphans the finance
+        // queue's party join (desk search by order buyer misses the row).
+        const linkedBuyer = String((linked as { buyerName?: unknown }).buyerName ?? "").trim();
+        if (linkedBuyer) (cleanPayloadPost as Record<string, unknown>).buyerName = linkedBuyer;
+      }
+      // Staff POST refunds: same claim-amount stamp when the orderRef resolves
+      // to a real order (tile truth matches the machine settlement basis).
+      // Free-text refs that match nothing keep the staff-entered amount.
+      if (resource === "refunds" && role !== "app") {
+        const ref = String((cleanPayloadPost as Record<string, unknown>).orderRef ?? "").trim().replace(/^#/, "");
+        if (ref) {
+          const linkedStaff = await prisma.order.findFirst({
+            where: { OR: [{ id: ref }, { trackingNumber: ref }, { orderNumber: ref }, { trackingNumber: `#${ref}` }, { orderNumber: `#${ref}` }] },
+          }).catch(() => null);
+          const staffAmount = Number((linkedStaff as { amount?: unknown } | null)?.amount);
+          if (linkedStaff && Number.isFinite(staffAmount) && staffAmount > 0) {
+            (cleanPayloadPost as Record<string, unknown>).amount = Math.round(staffAmount);
+          }
+        }
       }
       const row = await prisma[PRISMA_MODELS[resource]].create({ data: cleanPayloadPost });
       // Block parity: creating a blocked/banned row must ALSO flip the linked
@@ -3433,6 +3555,31 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       });
       return NextResponse.json({ row: serialize(row, resource) });
     } catch (err) {
+      // Idempotent replay (app outboxes re-POST the same client id after a
+      // commit-then-response-loss): a P2002 on the client id means the row
+      // already exists. Return it as success ONLY when it belongs to the
+      // caller — otherwise a cross-user id guess would read another's row.
+      if ((err as { code?: string })?.code === "P2002" && role === "app") {
+        try {
+          const wantId = String((cleanPayloadPost as Record<string, unknown>).id ?? "");
+          const appU = (session as unknown as { appUser?: Record<string, unknown> }).appUser ?? {};
+          const uid = String(appU.username ?? "").trim();
+          const uname = String(appU.name ?? appU.username ?? "").trim();
+          if (wantId) {
+            const existing = await prisma[PRISMA_MODELS[resource]].findUnique({ where: { id: wantId } }).catch(() => null) as Record<string, unknown> | null;
+            if (existing) {
+              const mine =
+                (resource === "storefront-banners" && String(existing.sellerUsername ?? "") === uid) ||
+                (resource === "tickets" && String(existing.userName ?? "") === uname) ||
+                (resource === "messages" && String(existing.sender ?? "") === uname) ||
+                (resource === "refunds" && String(existing.buyerName ?? "") === uname) ||
+                (resource === "sellers" && String(existing.id ?? "") === `app_${uid}`) ||
+                (resource === "promotions" && String(existing.sellerId ?? "") === uid);
+              if (mine && uid) return NextResponse.json({ row: serialize(existing, resource), replayed: true });
+            }
+          }
+        } catch {}
+      }
       // DB error — surface it, never fake success
       if (process.env.NODE_ENV !== "production") {
         const msg = err instanceof Error ? err.message : String(err);

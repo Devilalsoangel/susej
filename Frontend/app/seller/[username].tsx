@@ -12,7 +12,7 @@ import { colors, formatPrice } from '../../utils/theme';
 import { useFollow } from '../../contexts/FollowContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { usePosts } from '../../contexts/PostContext';
-import { resolveListingImage } from '../../utils/productImages';
+import { resolveListingImage, listingTitle } from '../../utils/productImages';
 import { generateShopProfile } from '../../utils/storefronts';
 import type { ShopProfile, StorefrontArchetype, ListingItem, BulkProduct, StorefrontChip } from '../../utils/storefronts';
 import { getFlow } from '../../utils/categoryFlow';
@@ -305,6 +305,7 @@ function StorefrontRoute({
     businessName?: string;
     bio?: string;
     location?: string;
+    shop?: { tagline: string; hours: string; email: string; phone: string; address: string };
   } | null>(null);
   useEffect(() => {
     if (!username) return;
@@ -324,6 +325,15 @@ function StorefrontRoute({
             businessName: typeof u.businessName === 'string' ? u.businessName : undefined,
             bio: typeof u.bio === 'string' ? u.bio : undefined,
             location: typeof u.location === 'string' ? u.location : undefined,
+            shop: (u as { shop?: { tagline?: unknown; hours?: unknown; email?: unknown; phone?: unknown; address?: unknown } }).shop
+              ? {
+                  tagline: String((u as { shop: { tagline?: unknown } }).shop.tagline ?? ''),
+                  hours: String((u as { shop: { hours?: unknown } }).shop.hours ?? ''),
+                  email: String((u as { shop: { email?: unknown } }).shop.email ?? ''),
+                  phone: String((u as { shop: { phone?: unknown } }).shop.phone ?? ''),
+                  address: String((u as { shop: { address?: unknown } }).shop.address ?? ''),
+                }
+              : undefined,
           });
           const rs = Array.isArray(res.data.reviews) ? res.data.reviews : [];
           setStoreReviews(
@@ -489,7 +499,7 @@ function StorefrontRoute({
     if (sellerPosts.length > 0) {
       return sellerPosts.map((post) => ({
         id: post.id,
-        title: (post.description || '').split('\n')[0],
+        title: listingTitle(post),
         price: post.price || 0,
         image: post.image ? { uri: post.image } : resolveListingImage(post, post.id),
         metaLines: post.category ? [post.category] : undefined,
@@ -636,7 +646,8 @@ function StorefrontRoute({
         list = [...list, { username, name: displayName }];
         await AsyncStorage.setItem(bKey, JSON.stringify(list));
       }
-      Alert.alert('User blocked', `@${username} is blocked on this device — their messages are hidden here.`);
+      void import('../../utils/blockedSellers').then(({ pushBlockRemote }) => pushBlockRemote(username)).catch(() => {});
+      Alert.alert('User blocked', `@${username} is blocked — their messages are hidden and they can no longer message you.`);
     } catch {
       Alert.alert('Something went wrong', 'Please try again.');
     }
@@ -735,6 +746,33 @@ function StorefrontRoute({
       <Text className="font-inter-400 text-textPrimary mt-3" style={{ fontSize: 14, lineHeight: 22 }}>
         {displayBio}
       </Text>
+
+      {/* Shop info (server Seller row — cross-device truth). Renders only
+        when the seller filled it; never placeholder contact data. */}
+      {realStats?.shop && (realStats.shop.tagline || realStats.shop.hours || realStats.shop.phone || realStats.shop.email) ? (
+        <View className="mt-3 p-4 rounded-figma-16" style={{ backgroundColor: colors.surfaceContainerLow }}>
+          {realStats.shop.tagline ? (
+            <Text className="font-inter-600 text-textPrimary" style={{ fontSize: 13, lineHeight: 18 }}>
+              {realStats.shop.tagline}
+            </Text>
+          ) : null}
+          {realStats.shop.hours ? (
+            <Text className="font-inter-400 text-textSecondary mt-1" style={{ fontSize: 12, lineHeight: 16 }}>
+              Hours: {realStats.shop.hours}
+            </Text>
+          ) : null}
+          {realStats.shop.phone ? (
+            <Text className="font-inter-400 text-textSecondary mt-1" style={{ fontSize: 12, lineHeight: 16 }}>
+              Phone: {realStats.shop.phone}
+            </Text>
+          ) : null}
+          {realStats.shop.email ? (
+            <Text className="font-inter-400 text-textSecondary mt-1" style={{ fontSize: 12, lineHeight: 16 }}>
+              Email: {realStats.shop.email}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
 
       {/* Trust chips: ONLY real verification status — no invented response
           times, certifications or locations. */}

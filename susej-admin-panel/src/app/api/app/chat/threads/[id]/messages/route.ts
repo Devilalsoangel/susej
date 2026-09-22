@@ -72,6 +72,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: "Not your thread" }, { status: 403 });
   }
   const receiver = thread.participantA === username ? thread.participantB : thread.participantA;
+  // Server-side block enforcement (either direction, no oracle).
+  try {
+    const { blockBetween } = await import("@/lib/blocks");
+    if (await blockBetween(prisma, username, receiver)) {
+      return NextResponse.json({ error: "You can't message this user." }, { status: 403 });
+    }
+  } catch {}
 
   let body: { body?: string; offer?: { amount?: unknown; productId?: unknown; productName?: unknown } };
   try {

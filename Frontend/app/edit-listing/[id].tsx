@@ -98,6 +98,7 @@ export default function EditListingScreen() {
       title: post.title?.trim() || bodyTitle,
       body,
       price: String(post.price ?? ''),
+      mrp: typeof post.mrp === 'number' && Number.isFinite(post.mrp) ? String(post.mrp) : '',
       stock: typeof post.stockLeft === 'number' ? String(post.stockLeft) : '',
       negotiable: post.negotiable === true,
       hidden: (post.status ?? 'published') === 'hidden',
@@ -107,6 +108,7 @@ export default function EditListingScreen() {
   const [title, setTitle] = useState(initial?.title ?? '');
   const [body, setBody] = useState(initial?.body ?? '');
   const [price, setPrice] = useState(initial?.price ?? '');
+  const [mrp, setMrp] = useState(initial?.mrp ?? '');
   const [stock, setStock] = useState(initial?.stock ?? '');
   const [negotiable, setNegotiable] = useState(initial?.negotiable ?? false);
   const [hidden, setHidden] = useState(initial?.hidden ?? false);
@@ -130,6 +132,7 @@ export default function EditListingScreen() {
     setTitle(initial.title);
     setBody(initial.body);
     setPrice(initial.price);
+    setMrp(initial.mrp);
     setStock(initial.stock);
     setNegotiable(initial.negotiable);
     setHidden(initial.hidden);
@@ -233,10 +236,24 @@ export default function EditListingScreen() {
   const trimmedStock = stock.trim();
   const numericStock = trimmedStock === '' ? null : Math.floor(Number(trimmedStock));
   const priceValid = Number.isFinite(numericPrice) && numericPrice >= 1 && numericPrice <= 10000000;
+  // MRP (was-price) is editable post-publish (start a sale or fix a stale
+  // MRP without delete-and-repost): empty clears it, otherwise must exceed
+  // the saving price (server nulls non-exceeding MRP the same way).
+  const trimmedMrp = mrp.trim();
+  const numericMrp = trimmedMrp === '' ? null : Math.round(Number(trimmedMrp));
+  const mrpValid =
+    numericMrp === null ||
+    (Number.isFinite(numericMrp) && numericMrp > 0 && numericMrp <= 10000000 && (!priceValid || numericMrp > Math.round(numericPrice)));
+  // Variant-tracked listings hold stock per value (server nulls base
+  // stockLeft): the base field is display-only here — sending it fights the
+  // invariant and reverts on next pull. Per-value edits need repost for now.
+  const variantsTracked = Array.isArray((post as { variants?: Array<{ values?: Array<{ stock?: unknown }> }> }).variants) &&
+    (post as { variants: Array<{ values?: Array<{ stock?: unknown }> }> }).variants.some((g) =>
+      Array.isArray(g?.values) && g.values.some((v) => typeof v?.stock === 'number'));
   const stockValid =
     numericStock === null || (Number.isFinite(numericStock) && numericStock >= 0 && numericStock <= 100000);
   const canSave =
-    !saving && trimmedTitle.length >= 3 && trimmedTitle.length <= 200 && priceValid && stockValid;
+    !saving && trimmedTitle.length >= 3 && trimmedTitle.length <= 200 && priceValid && mrpValid && stockValid;
 
   const save = async () => {
     if (!canSave) return;
@@ -250,6 +267,7 @@ export default function EditListingScreen() {
     const prev = {
       description: post.description,
       price: post.price,
+      mrp: post.mrp ?? null,
       stockLeft: post.stockLeft,
       negotiable: post.negotiable,
       status: post.status,
@@ -295,7 +313,8 @@ export default function EditListingScreen() {
       title: trimmedTitle.slice(0, 200),
       description: fullDescription,
       price: Math.round(numericPrice),
-      ...(numericStock !== null ? { stockLeft: numericStock } : {}),
+      ...(numericMrp !== null ? { mrp: numericMrp } : { mrp: null }),
+      ...(!variantsTracked && numericStock !== null ? { stockLeft: numericStock } : {}),
       negotiable,
       ...(statusChanged ? { status: nextStatus } : {}),
       ...(photosChanged ? { images: hostedPhotos, ...(hostedPhotos[0] ? { image: hostedPhotos[0] } : {}) } : {}),
@@ -309,10 +328,11 @@ export default function EditListingScreen() {
         title: trimmedTitle.slice(0, 200),
         description: fullDescription,
         price: Math.round(numericPrice),
+        mrp: numericMrp,
         negotiable,
         ...(statusChanged ? { status: nextStatus } : {}),
       };
-      if (numericStock !== null) sp.stockLeft = numericStock;
+      if (!variantsTracked && numericStock !== null) sp.stockLeft = numericStock;
       if (photosChanged) sp.images = hostedPhotos;
       const res = await serverApi.updatePost(post.id, sp);
       if (!res.ok) throw new Error(res.error || 'Could not save. Check your connection and try again.');
@@ -394,17 +414,41 @@ export default function EditListingScreen() {
         )}
 
         <Text className="font-inter-600 mt-5 mb-1.5" style={{ fontSize: 13, color: colors.textPrimary }}>
-          Stock left <Text style={{ color: colors.textTertiary }}>(optional — blank keeps current)</Text>
+          Original price (MRP) <Text style={{ color: colors.textTertiary }}>(optional — must beat the price)</Text>
         </Text>
         <TextInput
           className={field}
           style={{ fontSize: 14, color: colors.textPrimary }}
+          value={mrp}
+          onChangeText={setMrp}
+          keyboardType="numeric"
+          placeholder="Empty = no sale badge"
+          placeholderTextColor={colors.textTertiary}
+        />
+        {!mrpValid && (
+          <Text className="font-inter-400 mt-1" style={{ fontSize: 12, color: colors.error }}>
+            MRP must exceed the selling price (or stay empty to clear the sale).
+          </Text>
+        )}
+
+        <Text className="font-inter-600 mt-5 mb-1.5" style={{ fontSize: 13, color: colors.textPrimary }}>
+          Stock left <Text style={{ color: colors.textTertiary }}>(optional — blank keeps current)</Text>
+        </Text>
+        <TextInput
+          className={field}
+          style={{ fontSize: 14, color: variantsTracked ? colors.textTertiary : colors.textPrimary }}
           value={stock}
           onChangeText={setStock}
           keyboardType="numeric"
-          placeholder={typeof post.stockLeft === 'number' ? String(post.stockLeft) : 'No limit set'}
+          editable={!variantsTracked}
+          placeholder={variantsTracked ? 'Tracked per variant' : typeof post.stockLeft === 'number' ? String(post.stockLeft) : 'No limit set'}
           placeholderTextColor={colors.textTertiary}
         />
+        {variantsTracked && (
+          <Text className="font-inter-400 mt-1" style={{ fontSize: 12, color: colors.textSecondary }}>
+            Stock is tracked per variant on this listing — the base number is ignored by the server.
+          </Text>
+        )}
         {!stockValid && (
           <Text className="font-inter-400 mt-1" style={{ fontSize: 12, color: colors.error }}>
             Stock must be a whole number between 0 and 100000.

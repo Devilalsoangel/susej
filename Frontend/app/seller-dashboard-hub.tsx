@@ -154,6 +154,10 @@ export default function SellerDashboardHubScreen() {
   // is not a sale and poisoned naive AOV math). Buckets disclose frozen +
   // settling like the wallet (headline-only hid withdrawable truth).
   const orderCount = useMemo(() => myOrders.filter((o) => o.status !== 'cancelled').length, [myOrders]);
+  // Declared above first use: bucketCaption's memo calls it during render,
+  // so a later const declaration TDZ-crashed every seller WITH settling or
+  // frozen money on mount (zero-sale sellers never touched the binding).
+  const formatRevenue = (n: number) => (n >= 100000 ? `₹${(n / 100000).toFixed(1)}L` : n >= 1000 ? `₹${(n / 1000).toFixed(1)}k` : `₹${n}`);
   const bucketCaption = useMemo(() => {
     const b = sellerBucketsForOrders(myOrders);
     const parts: string[] = [];
@@ -268,8 +272,6 @@ export default function SellerDashboardHubScreen() {
       ]);
     })();
   };
-
-  const formatRevenue = (n: number) => (n >= 100000 ? `₹${(n / 100000).toFixed(1)}L` : n >= 1000 ? `₹${(n / 1000).toFixed(1)}k` : `₹${n}`);
 
   // Approved sellers only (SELLER-C1): buyers/pending deep-links get status,
   // never tools. Matches server 403s. After all hooks (rules-of-hooks safe).
@@ -619,7 +621,7 @@ export default function SellerDashboardHubScreen() {
                 ) : (
                   <>
                     <View className="flex-row flex-wrap" style={{ gap: 8 }}>
-                      {(['placed', 'delivered', 'cancelled'] as const).map((s) => (
+                      {(['placed', 'confirmed', 'preparing', 'out_for_delivery', 'delivered', 'cancelled'] as const).map((s) => (
                         <View key={s} className="px-3 py-1.5 rounded-full" style={{ backgroundColor: colors.surfaceContainerLow }}>
                           <Text className="font-inter-500" style={{ fontSize: 11, lineHeight: 14, color: colors.textSecondary }}>
                             {s.replace('_', ' ')}: <Text className="font-inter-700" style={{ color: colors.textPrimary }}>{myOrders.filter((o) => o.status === s).length}</Text>
@@ -638,9 +640,9 @@ export default function SellerDashboardHubScreen() {
                     <Text className="font-inter-400 text-textSecondary mt-1" style={{ fontSize: 10.5, lineHeight: 14 }}>
                       Delivered revenue by day (last 7 days)
                     </Text>
-                    {analytics.top && (
+                    {analytics.top && analytics.topUnits > 0 && (
                       <Text className="font-inter-400 text-textSecondary mt-3" style={{ fontSize: 12, lineHeight: 16 }} numberOfLines={1}>
-                        Top listing: <Text className="font-inter-600" style={{ color: colors.textPrimary }}>{listingTitle(analytics.top)}</Text> ({analytics.topUnits > 0 ? `${analytics.topUnits} sold` : `${analytics.top.likes || 0} likes`})
+                        Top listing: <Text className="font-inter-600" style={{ color: colors.textPrimary }}>{listingTitle(analytics.top)}</Text> ({analytics.topUnits} sold)
                       </Text>
                     )}
                   </>
@@ -713,7 +715,7 @@ export default function SellerDashboardHubScreen() {
               { label: 'Banner', route: '/storefront-editor' },
               { label: 'Categories', route: '/categories-manager' },
               { label: 'Top Deals', route: '/storefront-editor' },
-              { label: 'Auctions', route: '/start-auction' },
+              { label: 'Auctions', route: '/auctions' },
             ].map((item) => (
               <TouchableOpacity
                 key={item.label}

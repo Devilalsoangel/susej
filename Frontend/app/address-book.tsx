@@ -99,10 +99,13 @@ export default function AddressBookScreen() {
         if (active) setSelectedId(selected?.id ?? real[0]?.id ?? null);
         // Server truth (cross-device): replace the mirror when reachable.
         // Offline/unreachable keeps the local cache — never blank the book.
+        // Empty-server replaces too (deleted elsewhere propagates) UNLESS
+        // local rows were never synced (addr_ ids the server never acked) —
+        // wiping those would destroy data the server never saw.
         try {
           const mod = await import('../utils/serverApi');
           const res = await mod.serverApi.getAddresses();
-          if (active && res.ok && Array.isArray(res.data?.addresses) && res.data.addresses.length > 0) {
+          if (active && res.ok && Array.isArray(res.data?.addresses)) {
             const server = res.data.addresses.map((a) => ({
               id: a.id,
               type: a.type,
@@ -111,12 +114,36 @@ export default function AddressBookScreen() {
               city: a.city,
               phone: a.phone,
             }));
-            setAddresses(server);
-            await AsyncStorage.setItem(addressesKey(username), JSON.stringify(server)).catch(() => {});
+            const hasUnsynced = real.some((a) => String(a.id ?? '').startsWith('addr_'));
+            // Never destroy rows the server never saw: unsynced offline adds
+            // merge into the replaced list (and upload, see addAddress) instead
+            // of dying under a non-empty server pull. Content-match backstop:
+            // rows already forked (server cuid adopted after an addr_ twin was
+            // born) dedupe by doorstep instead of twinning forever.
+            const sameDoor = (a: SavedAddress, s: { type: string; street: string; city: string; phone: string }) =>
+              String(a.type ?? '').trim().toLowerCase() === String(s.type ?? '').trim().toLowerCase() &&
+              String(a.street ?? '').trim().toLowerCase() === String(s.street ?? '').trim().toLowerCase() &&
+              String(a.city ?? '').trim().toLowerCase() === String(s.city ?? '').trim().toLowerCase() &&
+              String(a.phone ?? '').replace(/\D/g, '') === String(s.phone ?? '').replace(/\D/g, '');
+            const unsyncedKept = real.filter(
+              (a) => String(a.id ?? '').startsWith('addr_') && !server.some((s) => s.id === a.id || sameDoor(a, s))
+            );
+            const merged = [...server, ...unsyncedKept];
+            if (server.length > 0 || !hasUnsynced) {
+              setAddresses(merged);
+              await AsyncStorage.setItem(addressesKey(username), JSON.stringify(merged)).catch(() => {});
+            }
+            const replaced = server.length > 0 || !hasUnsynced;
             const sel = await getSelectedAddress(username);
-            if (!sel) {
+            if (server.length === 0 && !hasUnsynced) {
+              // Book is empty everywhere: drop the stale local selection too.
+              await AsyncStorage.removeItem(selectedAddressKey(username)).catch(() => {});
+              if (active) setSelectedId(null);
+            } else if (!sel && replaced) {
+              // Adopt the server default only when the replace ran — never
+              // point the selection at an id outside the displayed list.
               const def = res.data.addresses.find((a) => a.isDefault) ?? res.data.addresses[0];
-              const match = server.find((s) => s.id === def.id);
+              const match = def ? merged.find((s) => s.id === def.id) : undefined;
               if (match) {
                 await AsyncStorage.setItem(selectedAddressKey(username), JSON.stringify(match)).catch(() => {});
                 setSelectedId(match.id);
@@ -220,8 +247,10 @@ export default function AddressBookScreen() {
     AsyncStorage.setItem(selectedAddressKey(username), JSON.stringify(addr)).catch(() => {});
     setSelectedId(addr.id);
     closeForm();
-    // Mirror to the server (cross-device truth). Fire-and-forget: offline
-    // keeps the local entry; the next load pulls server truth when reachable.
+    // Mirror to the server (cross-device truth). Adopt the server cuid on ack:
+    // keeping the local addr_ id forks a permanent twin (server row + local
+    // row, same doorstep) that edit/delete can never touch (owner-check 404s).
+    // Offline keeps the local entry; the merge on load dedupes by content.
     import('../utils/serverApi')
       .then((mod) =>
         mod.serverApi.addAddress({
@@ -230,7 +259,21 @@ export default function AddressBookScreen() {
           city: addr.city,
           phone: addr.phone,
           isDefault: addresses.length === 0,
-        })
+        }).then((res) => {
+          const sid = res.ok ? String((res.data as { address?: { id?: unknown } } | null)?.address?.id ?? "") : "";
+          if (!sid) return;
+          setAddresses((prev) => {
+            if (!prev) return prev;
+            const next = prev.map((a) => (a.id === addr.id ? { ...a, id: sid } : a));
+            persist(next);
+            return next;
+          });
+          setSelectedId((cur) => {
+            if (cur !== addr.id) return cur;
+            AsyncStorage.setItem(selectedAddressKey(username), JSON.stringify({ ...addr, id: sid })).catch(() => {});
+            return sid;
+          });
+        }).catch(() => {})
       )
       .catch(() => {});
   }, [addresses, canSave, editingId, form, persist, username]);

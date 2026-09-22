@@ -249,7 +249,7 @@ export interface Transaction {
 
 export type LedgerDirection = "in" | "out";
 
-export type LedgerType = "payment" | "refund" | "payout" | "settlement" | "withdrawal" | "fee";
+export type LedgerType = "payment" | "refund" | "payout" | "settlement" | "withdrawal" | "fee" | "charge" | "shipping" | "reversal" | "topup" | "promo" | "pin";
 
 export interface LedgerEntry {
   id: string;

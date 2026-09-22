@@ -45,6 +45,7 @@ export type BundleMinAggregateOutputType = {
   price: number | null
   discount: number | null
   sellerName: string | null
+  sellerUsername: string | null
   status: string | null
   createdAt: Date | null
 }
@@ -56,6 +57,7 @@ export type BundleMaxAggregateOutputType = {
   price: number | null
   discount: number | null
   sellerName: string | null
+  sellerUsername: string | null
   status: string | null
   createdAt: Date | null
 }
@@ -67,6 +69,7 @@ export type BundleCountAggregateOutputType = {
   price: number
   discount: number
   sellerName: number
+  sellerUsername: number
   status: number
   createdAt: number
   items: number
@@ -93,6 +96,7 @@ export type BundleMinAggregateInputType = {
   price?: true
   discount?: true
   sellerName?: true
+  sellerUsername?: true
   status?: true
   createdAt?: true
 }
@@ -104,6 +108,7 @@ export type BundleMaxAggregateInputType = {
   price?: true
   discount?: true
   sellerName?: true
+  sellerUsername?: true
   status?: true
   createdAt?: true
 }
@@ -115,6 +120,7 @@ export type BundleCountAggregateInputType = {
   price?: true
   discount?: true
   sellerName?: true
+  sellerUsername?: true
   status?: true
   createdAt?: true
   items?: true
@@ -214,6 +220,7 @@ export type BundleGroupByOutputType = {
   price: number
   discount: number
   sellerName: string
+  sellerUsername: string | null
   status: string
   createdAt: Date
   items: runtime.JsonValue | null
@@ -249,6 +256,7 @@ export type BundleWhereInput = {
   price?: Prisma.FloatFilter<"Bundle"> | number
   discount?: Prisma.IntFilter<"Bundle"> | number
   sellerName?: Prisma.StringFilter<"Bundle"> | string
+  sellerUsername?: Prisma.StringNullableFilter<"Bundle"> | string | null
   status?: Prisma.StringFilter<"Bundle"> | string
   createdAt?: Prisma.DateTimeFilter<"Bundle"> | Date | string
   items?: Prisma.JsonNullableFilter<"Bundle">
@@ -261,6 +269,7 @@ export type BundleOrderByWithRelationInput = {
   price?: Prisma.SortOrder
   discount?: Prisma.SortOrder
   sellerName?: Prisma.SortOrder
+  sellerUsername?: Prisma.SortOrderInput | Prisma.SortOrder
   status?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   items?: Prisma.SortOrderInput | Prisma.SortOrder
@@ -276,6 +285,7 @@ export type BundleWhereUniqueInput = Prisma.AtLeast<{
   price?: Prisma.FloatFilter<"Bundle"> | number
   discount?: Prisma.IntFilter<"Bundle"> | number
   sellerName?: Prisma.StringFilter<"Bundle"> | string
+  sellerUsername?: Prisma.StringNullableFilter<"Bundle"> | string | null
   status?: Prisma.StringFilter<"Bundle"> | string
   createdAt?: Prisma.DateTimeFilter<"Bundle"> | Date | string
   items?: Prisma.JsonNullableFilter<"Bundle">
@@ -288,6 +298,7 @@ export type BundleOrderByWithAggregationInput = {
   price?: Prisma.SortOrder
   discount?: Prisma.SortOrder
   sellerName?: Prisma.SortOrder
+  sellerUsername?: Prisma.SortOrderInput | Prisma.SortOrder
   status?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   items?: Prisma.SortOrderInput | Prisma.SortOrder
@@ -308,6 +319,7 @@ export type BundleScalarWhereWithAggregatesInput = {
   price?: Prisma.FloatWithAggregatesFilter<"Bundle"> | number
   discount?: Prisma.IntWithAggregatesFilter<"Bundle"> | number
   sellerName?: Prisma.StringWithAggregatesFilter<"Bundle"> | string
+  sellerUsername?: Prisma.StringNullableWithAggregatesFilter<"Bundle"> | string | null
   status?: Prisma.StringWithAggregatesFilter<"Bundle"> | string
   createdAt?: Prisma.DateTimeWithAggregatesFilter<"Bundle"> | Date | string
   items?: Prisma.JsonNullableWithAggregatesFilter<"Bundle">
@@ -320,6 +332,7 @@ export type BundleCreateInput = {
   price: number
   discount: number
   sellerName: string
+  sellerUsername?: string | null
   status: string
   createdAt: Date | string
   items?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
@@ -332,6 +345,7 @@ export type BundleUncheckedCreateInput = {
   price: number
   discount: number
   sellerName: string
+  sellerUsername?: string | null
   status: string
   createdAt: Date | string
   items?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
@@ -344,6 +358,7 @@ export type BundleUpdateInput = {
   price?: Prisma.FloatFieldUpdateOperationsInput | number
   discount?: Prisma.IntFieldUpdateOperationsInput | number
   sellerName?: Prisma.StringFieldUpdateOperationsInput | string
+  sellerUsername?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   status?: Prisma.StringFieldUpdateOperationsInput | string
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   items?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
@@ -356,6 +371,7 @@ export type BundleUncheckedUpdateInput = {
   price?: Prisma.FloatFieldUpdateOperationsInput | number
   discount?: Prisma.IntFieldUpdateOperationsInput | number
   sellerName?: Prisma.StringFieldUpdateOperationsInput | string
+  sellerUsername?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   status?: Prisma.StringFieldUpdateOperationsInput | string
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   items?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
@@ -368,6 +384,7 @@ export type BundleCreateManyInput = {
   price: number
   discount: number
   sellerName: string
+  sellerUsername?: string | null
   status: string
   createdAt: Date | string
   items?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
@@ -380,6 +397,7 @@ export type BundleUpdateManyMutationInput = {
   price?: Prisma.FloatFieldUpdateOperationsInput | number
   discount?: Prisma.IntFieldUpdateOperationsInput | number
   sellerName?: Prisma.StringFieldUpdateOperationsInput | string
+  sellerUsername?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   status?: Prisma.StringFieldUpdateOperationsInput | string
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   items?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
@@ -392,6 +410,7 @@ export type BundleUncheckedUpdateManyInput = {
   price?: Prisma.FloatFieldUpdateOperationsInput | number
   discount?: Prisma.IntFieldUpdateOperationsInput | number
   sellerName?: Prisma.StringFieldUpdateOperationsInput | string
+  sellerUsername?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   status?: Prisma.StringFieldUpdateOperationsInput | string
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   items?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
@@ -404,6 +423,7 @@ export type BundleCountOrderByAggregateInput = {
   price?: Prisma.SortOrder
   discount?: Prisma.SortOrder
   sellerName?: Prisma.SortOrder
+  sellerUsername?: Prisma.SortOrder
   status?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   items?: Prisma.SortOrder
@@ -422,6 +442,7 @@ export type BundleMaxOrderByAggregateInput = {
   price?: Prisma.SortOrder
   discount?: Prisma.SortOrder
   sellerName?: Prisma.SortOrder
+  sellerUsername?: Prisma.SortOrder
   status?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
 }
@@ -433,6 +454,7 @@ export type BundleMinOrderByAggregateInput = {
   price?: Prisma.SortOrder
   discount?: Prisma.SortOrder
   sellerName?: Prisma.SortOrder
+  sellerUsername?: Prisma.SortOrder
   status?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
 }
@@ -452,6 +474,7 @@ export type BundleSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs =
   price?: boolean
   discount?: boolean
   sellerName?: boolean
+  sellerUsername?: boolean
   status?: boolean
   createdAt?: boolean
   items?: boolean
@@ -464,6 +487,7 @@ export type BundleSelectCreateManyAndReturn<ExtArgs extends runtime.Types.Extens
   price?: boolean
   discount?: boolean
   sellerName?: boolean
+  sellerUsername?: boolean
   status?: boolean
   createdAt?: boolean
   items?: boolean
@@ -476,6 +500,7 @@ export type BundleSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.Extens
   price?: boolean
   discount?: boolean
   sellerName?: boolean
+  sellerUsername?: boolean
   status?: boolean
   createdAt?: boolean
   items?: boolean
@@ -488,12 +513,13 @@ export type BundleSelectScalar = {
   price?: boolean
   discount?: boolean
   sellerName?: boolean
+  sellerUsername?: boolean
   status?: boolean
   createdAt?: boolean
   items?: boolean
 }
 
-export type BundleOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "title" | "itemsCount" | "price" | "discount" | "sellerName" | "status" | "createdAt" | "items", ExtArgs["result"]["bundle"]>
+export type BundleOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "title" | "itemsCount" | "price" | "discount" | "sellerName" | "sellerUsername" | "status" | "createdAt" | "items", ExtArgs["result"]["bundle"]>
 
 export type $BundlePayload<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   name: "Bundle"
@@ -505,6 +531,7 @@ export type $BundlePayload<ExtArgs extends runtime.Types.Extensions.InternalArgs
     price: number
     discount: number
     sellerName: string
+    sellerUsername: string | null
     status: string
     createdAt: Date
     items: runtime.JsonValue | null
@@ -937,6 +964,7 @@ export interface BundleFieldRefs {
   readonly price: Prisma.FieldRef<"Bundle", 'Float'>
   readonly discount: Prisma.FieldRef<"Bundle", 'Int'>
   readonly sellerName: Prisma.FieldRef<"Bundle", 'String'>
+  readonly sellerUsername: Prisma.FieldRef<"Bundle", 'String'>
   readonly status: Prisma.FieldRef<"Bundle", 'String'>
   readonly createdAt: Prisma.FieldRef<"Bundle", 'DateTime'>
   readonly items: Prisma.FieldRef<"Bundle", 'Json'>

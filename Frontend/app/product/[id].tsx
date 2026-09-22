@@ -70,6 +70,35 @@ export default function ProductDetailsScreen() {
   const [qty, setQty] = useState(1);
   const [alertDrop, setAlertDrop] = useState<{ previous: number } | null>(null);
   const alertChecked = useRef<string>('');
+  // Cross-device price watch (server PriceWatch row; the bell notifies on
+  // any future drop). null = loading, false = not watching.
+  const [watchState, setWatchState] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!postId) return;
+    setWatchState(null);
+    let alive = true;
+    void import('../../utils/serverApi').then(({ serverApi }) =>
+      serverApi.getWatches().then((res) => {
+        if (!alive) return;
+        const rows = Array.isArray(res.data?.watches) ? res.data.watches : null;
+        setWatchState(rows ? rows.some((w: { listingId?: unknown }) => String(w?.listingId ?? '') === postId) : false);
+      }).catch(() => { if (alive) setWatchState(false); })
+    ).catch(() => { if (alive) setWatchState(false); });
+    return () => { alive = false; };
+  }, [postId]);
+  const toggleWatch = () => {
+    if (!postId || watchState === null) return;
+    const next = !watchState;
+    setWatchState(next);
+    void import('../../utils/serverApi').then(({ serverApi }) => {
+      const call = next ? serverApi.watchPrice(postId) : serverApi.unwatchPrice(postId);
+      call.then((res) => {
+        // Pre-migration server answers localOnly: keep the optimistic toggle
+        // (device banner logic below still fires from saved searches).
+        if (!res.ok && !(res as { localOnly?: unknown }).localOnly) setWatchState(!next);
+      }).catch(() => {});
+    }).catch(() => {});
+  };
   const getBlockedKey = () => {
     const u = user?.username?.trim();
     return u ? `${BLOCKED_KEY_BASE}:${u}` : BLOCKED_KEY_BASE;
@@ -367,15 +396,25 @@ export default function ProductDetailsScreen() {
   const needsPick = trackedVariants && pickedCount === 0;
   const stepperCap = (() => {
     let cap: number | null = null;
+    let matchedGroup = false;
+    let pickedAny = false;
     for (const v of post?.variants ?? []) {
       const chosen = variantSelections[v.name];
       if (!chosen) continue;
+      pickedAny = true;
+      matchedGroup = true;
       const match = v.values.find((val) => String(val.label ?? '').trim().toLowerCase() === String(chosen).trim().toLowerCase());
       if (match && typeof match.stock === 'number' && match.stock >= 0) {
         cap = cap === null ? Math.floor(match.stock) : Math.min(cap, Math.floor(match.stock));
       }
     }
     if (cap !== null) return cap;
+    // Cart parity: a picked-but-untracked value caps at 1 (server 409s above);
+    // a pick matching no known group falls back to base (server backstops at
+    // add/checkout). Unpicked lines keep base-or-1 (needsPick gates +).
+    if (pickedAny) {
+      if (matchedGroup) return 1;
+    }
     return typeof post?.stockLeft === 'number' && post.stockLeft > 0 ? post.stockLeft : 1;
   })();
   // Per-SKU discount (Amazon parity): a +₹ premium variant is less off MRP
@@ -523,7 +562,8 @@ export default function ProductDetailsScreen() {
         list = [...list, { username: sellerUsername, name: sellerName }];
         await AsyncStorage.setItem(getBlockedKey(), JSON.stringify(list));
       }
-      Alert.alert('User blocked', `@${sellerUsername} is now hidden on this device.`);
+      void import('../../utils/blockedSellers').then(({ pushBlockRemote }) => pushBlockRemote(sellerUsername)).catch(() => {});
+      Alert.alert('User blocked', `@${sellerUsername} is blocked — hidden here and they can no longer message you.`);
     } catch {
       Alert.alert('Something went wrong', 'Please try again.');
     }
@@ -660,7 +700,7 @@ export default function ProductDetailsScreen() {
           if (past !== showCompactHeader) setShowCompactHeader(past);
         }}
       >
-        {/* Price alert banner */}
+        {/* Price alert banner (saved-search match, this device) */}
         {alertDrop ? (
           <View
             className="flex-row items-center mx-5 mt-4 px-4 py-3 rounded-figma-16"
@@ -672,6 +712,22 @@ export default function ProductDetailsScreen() {
             </Text>
           </View>
         ) : null}
+        {/* Cross-device price watch: the server notifies your bell on any
+          future drop (stays armed across devices; the banner above fires from
+          saved searches on this device only). */}
+        <TouchableOpacity
+          className="flex-row items-center mx-5 mt-3 px-4 py-2.5 rounded-figma-16"
+          style={{ backgroundColor: colors.surfaceContainerLow, opacity: watchState === null ? 0.6 : 1 }}
+          disabled={watchState === null}
+          onPress={toggleWatch}
+          accessibilityRole="button"
+          accessibilityLabel={watchState ? 'Stop watching price' : 'Watch price across devices'}
+        >
+          <BellIcon size={16} color={colors.primaryContainer} />
+          <Text className="flex-1 font-inter-500 ml-2.5" style={{ fontSize: 13, lineHeight: 18, color: colors.tertiary }}>
+            {watchState ? 'Watching price — we\'ll bell you on any drop' : watchState === false ? 'Watch this price on all my devices' : 'Loading watch…'}
+          </Text>
+        </TouchableOpacity>
         {/* Product Image */}
         <View className="w-full aspect-square bg-surfaceContainer relative">
           {gallery.length > 0 ? (
@@ -860,12 +916,20 @@ export default function ProductDetailsScreen() {
             </TouchableOpacity>
           )}
 
-          {/* Stock scarcity hint */}
-          {stockLeft != null && stockLeft <= 5 ? (
-            <Text className="font-inter-500 mb-3" style={{ fontSize: 12, lineHeight: 16, color: colors.tertiary }}>
-              Only {stockLeft} left in stock — order soon
-            </Text>
-          ) : null}
+          {/* Stock scarcity hint: per selected variant SKU on tracked
+            listings (base stockLeft is meaningless there — it showed urgency
+            for the wrong SKU or cried wolf on full shelves). Untracked lines
+            keep the base figure. */}
+          {(() => {
+            const scarcity = trackedVariants
+              ? (pickedCount > 0 ? stepperCap : null)
+              : stockLeft;
+            return scarcity != null && scarcity <= 5 ? (
+              <Text className="font-inter-500 mb-3" style={{ fontSize: 12, lineHeight: 16, color: colors.tertiary }}>
+                Only {scarcity} left in stock — order soon
+              </Text>
+            ) : null;
+          })()}
 
           {/* Delivery card (goods only — food shows ETA below, services book via calendar) */}
           {flow.archetype === 'goods' ? (

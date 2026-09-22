@@ -193,7 +193,7 @@ export default function ChatScreen() {
   useEffect(() => () => setImmersiveNav(false), []);
   const [threadMessages, setThreadMessages] = useState<ThreadMessage[]>([]);
   const [serverChats, setServerChats] = useState<ChatItem[]>([]);
-  const serverChatsLoaded = useRef<string | null>(null);
+  const threadsInFlight = useRef(false);
   const [composer, setComposer] = useState('');
   const [offerMode, setOfferMode] = useState(false);
   const [offerAmount, setOfferAmount] = useState('');
@@ -202,6 +202,10 @@ export default function ChatScreen() {
   // Double-tap guard: submitOffer is fire-and-forget, so a rapid second tap
   // used to mint a duplicate offer (two cards, two server rows, two prices).
   const [sendingOffer, setSendingOffer] = useState(false);
+  // Synchronous double-tap guard (wallet payout pattern): useState flips
+  // async, so two taps in one frame both passed the check and minted twin
+  // offer cards + twin server rows. The ref flips synchronously.
+  const sendingOfferRef = useRef(false);
   const [offerProduct, setOfferProduct] = useState<string | undefined>(undefined);
   const [offerListingId, setOfferListingId] = useState<string | undefined>(undefined);
   const [blockedUsers, setBlockedUsers] = useState<BlockedUser[]>([]);
@@ -264,22 +268,28 @@ export default function ChatScreen() {
     AsyncStorage.getItem(key)
       .then(async (raw) => {
         if (cancelled) return;
+        let list: BlockedUser[] = [];
         if (raw) {
           try {
             const parsed = JSON.parse(raw);
-            if (Array.isArray(parsed)) { setBlockedUsers(parsed as BlockedUser[]); setBlockedLoaded(true); return; }
+            if (Array.isArray(parsed)) list = parsed as BlockedUser[];
           } catch {}
         }
-        if (key !== BLOCKED_KEY_BASE) {
+        if (!list.length && key !== BLOCKED_KEY_BASE) {
           const legacy = await AsyncStorage.getItem(BLOCKED_KEY_BASE);
           if (!cancelled && legacy) {
             try {
               const p = JSON.parse(legacy);
-              if (Array.isArray(p)) { setBlockedUsers(p as BlockedUser[]); try { await AsyncStorage.setItem(key, legacy); } catch {} setBlockedLoaded(true); return; }
+              if (Array.isArray(p)) { list = p as BlockedUser[]; try { await AsyncStorage.setItem(key, legacy); } catch {} }
             } catch {}
           }
         }
-        if (!cancelled) { setBlockedUsers([]); setBlockedLoaded(true); }
+        // Server merge: blocks filed on other devices land in the inbox.
+        try {
+          const { pullServerBlocks } = await import('../../utils/blockedSellers');
+          list = await pullServerBlocks(key, list);
+        } catch {}
+        if (!cancelled) { setBlockedUsers(list); setBlockedLoaded(true); }
       })
       .catch(() => { if (!cancelled) { setBlockedUsers([]); setBlockedLoaded(true); } });
     return () => { cancelled = true; };
@@ -299,13 +309,12 @@ export default function ChatScreen() {
 
   // Server-backed threads: pull real multi-user conversations (silent offline fallback).
   // Refetches on EVERY tab focus (cheap idempotent GET) so threads appear as soon as
-  // the session/token is ready and stay live across devices. Ref is only a guard against
-  // duplicate in-flight fetches, not a one-shot latch.
+  // the session/token is ready and stay live across devices. The ref guards
+  // duplicate IN-FLIGHT fetches only — never a one-shot latch (the old
+  // identity-keyed latch starved refocuses for 8s+ on unchanged identity).
   const fetchServerThreads = () => {
-    if (!user?.username) return;
-    const guardKey = `${user.username}:${tokenSeq}`;
-    if (serverChatsLoaded.current === guardKey) return;
-    serverChatsLoaded.current = guardKey;
+    if (!user?.username || threadsInFlight.current) return;
+    threadsInFlight.current = true;
     serverApi
       .getThreads()
       .then((res) => {
@@ -329,7 +338,10 @@ export default function ChatScreen() {
         }));
         setServerChats(items);
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        threadsInFlight.current = false;
+      });
   };
 
   // Refetch whenever the tab regains focus (covers both login->tab and tunnel recovery)
@@ -337,14 +349,7 @@ export default function ChatScreen() {
   useFocusEffect(
     useCallback(() => {
       if (!user?.username) return;
-      // Keep the ref guard for identity changes, but release it after a failed fetch
-      // so the next focus retries (offline/tunnel-down windows don't permanently starve it).
       fetchServerThreads();
-      const retry = setTimeout(() => {
-        serverChatsLoaded.current = null;
-        fetchServerThreads();
-      }, 8000);
-      return () => clearTimeout(retry);
     }, [user?.username, tokenSeq])
   );
 
@@ -355,10 +360,10 @@ export default function ChatScreen() {
       return;
     }
     const username = activeChat.username;
-    // Device-local hide (cross-device enforcement needs a server block list
-    // that doesn't exist yet — the copy must not promise it). Abuse still
-    // reaches the platform through Support → report the conversation there.
-    Alert.alert(`Block ${activeChat.name}?`, "Their messages will be hidden on this device. To stop them everywhere, report the chat via Support.", [
+    // Device-local hide + server block (cross-device enforcement: the server
+    // 403s threads/messages across a block in either direction). Local stays
+    // on server failure. Abuse still reaches the platform through Support.
+    Alert.alert(`Block ${activeChat.name}?`, "Their messages will be hidden and they won't be able to message you. To stop them everywhere, report the chat via Support.", [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Block',
@@ -369,7 +374,8 @@ export default function ChatScreen() {
               ? prev
               : [...prev, { username, name: activeChat.name, at: Date.now() }]
           );
-          Alert.alert('Blocked on this device', 'Their messages are hidden here. Report via Support to stop them everywhere.');
+          void import('../../utils/blockedSellers').then(({ pushBlockRemote }) => pushBlockRemote(username)).catch(() => {});
+          Alert.alert('Blocked', 'Their messages are hidden and they can no longer message you. Report via Support to stop them everywhere.');
           setActiveChat(null);
         },
       },
@@ -717,6 +723,15 @@ export default function ChatScreen() {
   const sendMessage = () => {
     const text = composer.trim();
     if (!text) return;
+    // Blocked counterpart: refuse the send on this device (unblock first).
+    // Server-side block enforcement is still open (no user-block column —
+    // needs a schema build): a blocked user on ANOTHER device can still
+    // deliver until then. This guard stops this device from reaching them.
+    const peer = String(activeChat?.username ?? '').trim().toLowerCase();
+    if (peer && blockedSet.has(peer)) {
+      Alert.alert('Unblock to chat', 'You blocked this user. Unblock them from Profile > Blocked users to send messages.');
+      return;
+    }
     // Unique echo id (timestamp + random): same-ms double-sends used to mint
     // one id for two echoes, and the ack-swap then fused them into one row.
     const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -834,7 +849,15 @@ export default function ChatScreen() {
     // Offers are anchored to a REAL listing — no product attached, no negotiation.
     // Upper bound matches the server's order-placement clamp (absurd cards rejected).
     if (!offerProduct || !offerListingId) return;
-    if (!amount || amount <= 0 || amount > 10000000 || creatingOrder || sendingOffer) return;
+    if (!amount || amount <= 0 || amount > 10000000 || creatingOrder || sendingOffer || sendingOfferRef.current) return;
+    // Blocked counterpart: offers are messages with money attached — same
+    // send-guard as text (server-side block still needs the schema build).
+    const offerPeer = String(activeChat?.username ?? '').trim().toLowerCase();
+    if (offerPeer && blockedSet.has(offerPeer)) {
+      Alert.alert('Unblock to negotiate', 'You blocked this user. Unblock them from Profile > Blocked users to make offers.');
+      return;
+    }
+    sendingOfferRef.current = true;
     setSendingOffer(true);
     const now = Date.now();
     const offer: ThreadOffer = {
@@ -894,9 +917,10 @@ export default function ChatScreen() {
           }
         })
         .catch(() => {})
-        .finally(() => setSendingOffer(false));
-      setTimeout(() => setSendingOffer(false), 8000);
+        .finally(() => { sendingOfferRef.current = false; setSendingOffer(false); });
+      setTimeout(() => { sendingOfferRef.current = false; setSendingOffer(false); }, 8000);
     } else {
+      sendingOfferRef.current = false;
       setSendingOffer(false);
     }
     setOfferMode(false);

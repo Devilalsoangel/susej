@@ -251,13 +251,6 @@ export default function CategoryDetailScreen() {
           >
             <View className="w-full aspect-square bg-surfaceContainer">
               <Image source={resolveListingImage(item, item.id)} className="absolute inset-0 w-full h-full" resizeMode="cover" />
-              {!hasRealImage(item) && (
-                <View className="absolute inset-0 items-center justify-center">
-                  <Text className="text-figma-22 font-inter-700 text-secondary">
-                    {(item.title?.trim()?.[0] ?? item.description.trim()[0] ?? '?').toUpperCase()}
-                  </Text>
-                </View>
-              )}
             </View>
             <View className="p-2.5">
               <Text className="text-figma-12 font-inter-400 text-secondary mb-0.5">{item.category}</Text>

@@ -13,8 +13,10 @@ export interface BlockedEntry {
 
 /** Device-local block list (same key shape as /blocked, chat inbox, PDP,
  *  and seller profile — one reader so every surface filters identically).
- *  Server-side enforcement is still open (cross-device block needs an API);
- *  until then every listing surface hides blocked sellers locally. */
+ *  The server Block table enforces messaging cross-device; this list stays
+ *  as the offline mirror and the listing filter. Loads merge server truth
+ *  (union) whenever reachable; writes push fire-and-forget (local stays on
+ *  failure). */
 export async function loadBlockedUsernames(username: string | null): Promise<Set<string>> {
   try {
     const key = username ? `${BLOCKED_KEY_BASE}:${username}` : BLOCKED_KEY_BASE;
@@ -22,16 +24,91 @@ export async function loadBlockedUsernames(username: string | null): Promise<Set
     if (!data && key !== BLOCKED_KEY_BASE) {
       data = await AsyncStorage.getItem(BLOCKED_KEY_BASE);
     }
-    if (!data) return new Set();
-    const parsed = JSON.parse(data);
-    if (!Array.isArray(parsed)) return new Set();
-    return new Set(
-      (parsed as BlockedEntry[])
-        .filter((b) => b && typeof b.username === 'string' && b.username)
-        .map((b) => b.username.toLowerCase())
-    );
+    const local: BlockedEntry[] = [];
+    if (data) {
+      try {
+        const parsed = JSON.parse(data);
+        if (Array.isArray(parsed)) {
+          for (const b of parsed as BlockedEntry[]) {
+            if (b && typeof b.username === 'string' && b.username) local.push(b);
+          }
+        }
+      } catch {}
+    }
+    // Server merge (union by lowercase): cross-device blocks land here.
+    // Missing table / offline → local stands.
+    try {
+      const { serverApi } = await import('./serverApi');
+      const res = await serverApi.getBlocks().catch(() => null);
+      const remote = Array.isArray(res?.data?.blocked) ? res.data.blocked : null;
+      if (remote) {
+        const seen = new Set(local.map((b) => b.username.toLowerCase()));
+        let changed = false;
+        for (const u of remote) {
+          const name = String(u ?? '').trim();
+          if (name && !seen.has(name.toLowerCase())) {
+            local.push({ username: name, at: Date.now() });
+            seen.add(name.toLowerCase());
+            changed = true;
+          }
+        }
+        if (changed) {
+          await AsyncStorage.setItem(key, JSON.stringify(local)).catch(() => {});
+        }
+      }
+    } catch {}
+    return new Set(local.map((b) => b.username.toLowerCase()));
   } catch {
     return new Set();
+  }
+}
+
+/** Push a block to the server (fire-and-forget; local list is already updated). */
+export function pushBlockRemote(username: string): void {
+  const name = String(username ?? '').trim();
+  if (!name) return;
+  void import('./serverApi').then(({ serverApi }) =>
+    serverApi.blockUser(name).catch(() => {})
+  ).catch(() => {});
+}
+
+/** Push an unblock to the server (fire-and-forget). */
+export function pushUnblockRemote(username: string): void {
+  const name = String(username ?? '').trim();
+  if (!name) return;
+  void import('./serverApi').then(({ serverApi }) =>
+    serverApi.unblockUser(name).catch(() => {})
+  ).catch(() => {});
+}
+
+/**
+ * Pull server blocks into an arbitrary block-list key (chat inbox + /blocked
+ * screen keep their own loaders over the same key shape). Returns the merged
+ * list. Missing table / offline → local stands.
+ */
+export async function pullServerBlocks<T extends { username: string }>(key: string, local: T[]): Promise<T[]> {
+  try {
+    const { serverApi } = await import('./serverApi');
+    const res = await serverApi.getBlocks().catch(() => null);
+    const remote = Array.isArray(res?.data?.blocked) ? res.data.blocked : null;
+    if (!remote) return local;
+    const seen = new Set(local.map((b) => String(b.username ?? '').toLowerCase()));
+    let changed = false;
+    const next = [...local];
+    for (const u of remote) {
+      const name = String(u ?? '').trim();
+      if (name && !seen.has(name.toLowerCase())) {
+        next.push({ username: name, at: Date.now() } as unknown as T);
+        seen.add(name.toLowerCase());
+        changed = true;
+      }
+    }
+    if (changed) {
+      await AsyncStorage.setItem(key, JSON.stringify(next)).catch(() => {});
+    }
+    return next;
+  } catch {
+    return local;
   }
 }
 

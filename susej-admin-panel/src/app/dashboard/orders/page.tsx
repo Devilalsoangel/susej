@@ -96,12 +96,16 @@ const columns = [
     header: "Status",
     cell: (info) => {
       const s = info.getValue();
+      // Refund state lives on paymentStatus (machines write it) + the Refund
+      // rows — Order has no refundStatus column, so the old badge read a
+      // field that never exists and always rendered empty.
+      const pay = String(info.row.original.paymentStatus ?? "");
       return (
         <div className="flex items-center gap-1.5">
           <StatusBadge status={s} />
-          {info.row.original.refundStatus && (
-            <Badge variant={info.row.original.refundStatus === "refunded" ? "success" : "warning"} className="capitalize">
-              {info.row.original.refundStatus}
+          {(pay === "refunded" || pay === "partial_refund") && (
+            <Badge variant={pay === "refunded" ? "success" : "warning"} className="capitalize">
+              {pay === "refunded" ? "refunded" : "partial refund"}
             </Badge>
           )}
         </div>

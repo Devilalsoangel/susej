@@ -61,12 +61,22 @@ async function canonicalFarmCount(prisma: any, canonical: string): Promise<numbe
   const domain = canonical.split("@")[1] ?? "";
   const weekAgo = new Date(Date.now() - 7 * 24 * 3600 * 1000);
   try {
+    // Same eviction guard as the email lane: wider window (1000) + fail
+    // closed when the same-domain weekly population fills it.
+    const SCAN_TAKE = 1000;
     const rows = await prisma.user.findMany({
       where: { email: { endsWith: `@${domain}` } },
       select: { email: true, joinedAt: true },
       orderBy: { joinedAt: "desc" },
-      take: 100,
+      take: SCAN_TAKE + 1,
     });
+    if (rows.length > SCAN_TAKE) {
+      const weekPop = rows.filter(
+        (r: { email?: string | null; joinedAt?: Date | null }) =>
+          r.joinedAt instanceof Date && r.joinedAt >= weekAgo
+      ).length;
+      if (weekPop > SCAN_TAKE) return -1;
+    }
     return rows.filter(
       (r: { email?: string | null; joinedAt?: Date | null }) =>
         typeof r.email === "string" &&

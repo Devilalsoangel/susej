@@ -93,6 +93,10 @@ export default function BookServiceScreen() {
   const [listingGone, setListingGone] = useState(false);
   const [listingOwner, setListingOwner] = useState<string | null>(null);
   const [listingImage, setListingImage] = useState<string | null>(null);
+  // Locked listing type (service/food/product): the server derives the fee
+  // AND the order kind from it, exact-matching our deliveryFee. Guessing 0
+  // 400d every booking whose stored type isn't service.
+  const [listingType, setListingType] = useState<string | null>(null);
   const [placing, setPlacing] = useState(false);
   // Real seller rating (PDP parity: users-route aggregate of delivered-order
   // reviews). Silent on failure; zero-review sellers keep the honest empty
@@ -120,6 +124,8 @@ export default function BookServiceScreen() {
       } else {
         const owner = String((post as { authorUsername?: unknown })?.authorUsername ?? (post as { sellerUsername?: unknown })?.sellerUsername ?? '');
         if (owner) setListingOwner(owner);
+        const lt = typeof post?.type === 'string' && post.type ? String(post.type) : null;
+        if (lt) setListingType(lt);
         // Real listing photo (not stock art): the hero shows what is booked.
         const imgs = Array.isArray(post?.images) ? (post.images as unknown[]).filter((u): u is string => typeof u === 'string' && !!u) : [];
         const cover = typeof post?.image === 'string' && post.image ? post.image : imgs[0] ?? null;
@@ -144,7 +150,14 @@ export default function BookServiceScreen() {
   // server's seller binding as falsy — refuse instead of minting a stroker row.
   const bookingSeller = listingOwner || sellerUsernameParam || '';
   const ownerless = !!listingIdParam && !listingLoading && !listingGone && !bookingSeller;
-  const canBook = !!selectedDate && !!selectedTime && !placing && !listingLoading && !listingGone && !!listingIdParam && !!bookingSeller && !!selectedPackage;
+  // Fee mirrors the server rule exactly (service→0, food→30, else 12 — the
+  // server reads a missing stored type as product, so unknown ALSO means 12,
+  // never a guessed 0 that 400s). Placement exact-matches this.
+  const bookingFee = listingType === 'service' ? 0 : listingType === 'food' || listingType === 'food_item' ? 30 : 12;
+  // Type must be resolved before money moves: the fee (and order kind) derive
+  // from it, and booking blind sends the wrong rail.
+  const typeReady = !listingIdParam || !!listingType;
+  const canBook = !!selectedDate && !!selectedTime && !placing && !listingLoading && !listingGone && !!listingIdParam && !!bookingSeller && !!selectedPackage && typeReady;
 
   useEffect(() => {
     setSellerRating(null);
@@ -176,21 +189,23 @@ export default function BookServiceScreen() {
 
   const handleBook = async () => {
     const pkg = selectedPackage;
-    if (!selectedDate || !selectedTime || placing || !listingIdParam || listingGone || !bookingSeller || !pkg) return;
+    if (!selectedDate || !selectedTime || placing || !listingIdParam || listingGone || !bookingSeller || !pkg || !typeReady) return;
     if (slotInPast(selectedTime)) {
       Alert.alert('Slot passed', 'That time already passed today — pick a later slot.');
       return;
     }
-    // Wallet pre-check (checkout parity): bookings debit the wallet on the
-    // server, so a ₹0 wallet must hear "top up" BEFORE the confirm screen —
-    // not a live tracking page for a doomed order that later syncFails.
+    // Wallet pre-check (checkout parity): bookings debit price+FEE on the
+    // server, so a short wallet must hear "top up" BEFORE the confirm screen.
+    // Checking price alone waved through wallets that cover the ticket but
+    // not the delivery fee — then the server 400d after consent.
     const price = Math.round(pkg.price);
+    const dueNow = price + bookingFee;
     await syncWalletFromServer().catch(() => {});
     const wallet = await getWallet().catch(() => null);
-    if (wallet && wallet.balance < price) {
+    if (wallet && wallet.balance < dueNow) {
       Alert.alert(
         'Insufficient wallet balance',
-        `Your wallet has ${formatPrice(wallet.balance)} but this booking costs ${formatPrice(price)}. Add money in the Wallet tab first.`,
+        `Your wallet has ${formatPrice(wallet.balance)} but this booking costs ${formatPrice(dueNow)}. Add money in the Wallet tab first.`,
         [
           { text: 'Not now', style: 'cancel' },
           { text: 'Open Wallet', onPress: () => router.push('/wallet') },
@@ -203,11 +218,11 @@ export default function BookServiceScreen() {
     // + slot BEFORE anything moves.
     Alert.alert(
       'Confirm booking',
-      `${serviceTitle}\n${summaryLine}\n${formatPrice(Math.round(pkg.price))} · pays from Wallet`,
+      `${serviceTitle}\n${summaryLine}\n${formatPrice(Math.round(pkg.price))}${bookingFee > 0 ? ` + ${formatPrice(bookingFee)} delivery` : ''} · pays from Wallet`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: `Pay ${formatPrice(Math.round(pkg.price))}`,
+          text: `Pay ${formatPrice(Math.round(pkg.price) + bookingFee)}`,
           onPress: () => {
             setPlacing(true);
             try {
@@ -225,7 +240,7 @@ export default function BookServiceScreen() {
                 ],
                 undefined,
                 'wallet',
-                { bookingDate: toISODate(selectedDate), bookingTime: selectedTime, deliveryFee: 0 }
+                { bookingDate: toISODate(selectedDate), bookingTime: selectedTime, deliveryFee: bookingFee }
               );
               if (order) {
                 // Order detail (not live-track): the server ack lands async —

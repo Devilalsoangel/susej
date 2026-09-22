@@ -39,6 +39,8 @@ export type DisputeMinAggregateOutputType = {
   orderId: string | null
   buyerName: string | null
   sellerName: string | null
+  buyerUsername: string | null
+  sellerUsername: string | null
   reason: string | null
   amount: number | null
   status: string | null
@@ -53,6 +55,8 @@ export type DisputeMaxAggregateOutputType = {
   orderId: string | null
   buyerName: string | null
   sellerName: string | null
+  buyerUsername: string | null
+  sellerUsername: string | null
   reason: string | null
   amount: number | null
   status: string | null
@@ -67,6 +71,8 @@ export type DisputeCountAggregateOutputType = {
   orderId: number
   buyerName: number
   sellerName: number
+  buyerUsername: number
+  sellerUsername: number
   reason: number
   amount: number
   status: number
@@ -91,6 +97,8 @@ export type DisputeMinAggregateInputType = {
   orderId?: true
   buyerName?: true
   sellerName?: true
+  buyerUsername?: true
+  sellerUsername?: true
   reason?: true
   amount?: true
   status?: true
@@ -105,6 +113,8 @@ export type DisputeMaxAggregateInputType = {
   orderId?: true
   buyerName?: true
   sellerName?: true
+  buyerUsername?: true
+  sellerUsername?: true
   reason?: true
   amount?: true
   status?: true
@@ -119,6 +129,8 @@ export type DisputeCountAggregateInputType = {
   orderId?: true
   buyerName?: true
   sellerName?: true
+  buyerUsername?: true
+  sellerUsername?: true
   reason?: true
   amount?: true
   status?: true
@@ -220,6 +232,8 @@ export type DisputeGroupByOutputType = {
   orderId: string
   buyerName: string
   sellerName: string
+  buyerUsername: string | null
+  sellerUsername: string | null
   reason: string
   amount: number
   status: string
@@ -257,6 +271,8 @@ export type DisputeWhereInput = {
   orderId?: Prisma.StringFilter<"Dispute"> | string
   buyerName?: Prisma.StringFilter<"Dispute"> | string
   sellerName?: Prisma.StringFilter<"Dispute"> | string
+  buyerUsername?: Prisma.StringNullableFilter<"Dispute"> | string | null
+  sellerUsername?: Prisma.StringNullableFilter<"Dispute"> | string | null
   reason?: Prisma.StringFilter<"Dispute"> | string
   amount?: Prisma.FloatFilter<"Dispute"> | number
   status?: Prisma.StringFilter<"Dispute"> | string
@@ -271,6 +287,8 @@ export type DisputeOrderByWithRelationInput = {
   orderId?: Prisma.SortOrder
   buyerName?: Prisma.SortOrder
   sellerName?: Prisma.SortOrder
+  buyerUsername?: Prisma.SortOrderInput | Prisma.SortOrder
+  sellerUsername?: Prisma.SortOrderInput | Prisma.SortOrder
   reason?: Prisma.SortOrder
   amount?: Prisma.SortOrder
   status?: Prisma.SortOrder
@@ -288,6 +306,8 @@ export type DisputeWhereUniqueInput = Prisma.AtLeast<{
   orderId?: Prisma.StringFilter<"Dispute"> | string
   buyerName?: Prisma.StringFilter<"Dispute"> | string
   sellerName?: Prisma.StringFilter<"Dispute"> | string
+  buyerUsername?: Prisma.StringNullableFilter<"Dispute"> | string | null
+  sellerUsername?: Prisma.StringNullableFilter<"Dispute"> | string | null
   reason?: Prisma.StringFilter<"Dispute"> | string
   amount?: Prisma.FloatFilter<"Dispute"> | number
   status?: Prisma.StringFilter<"Dispute"> | string
@@ -302,6 +322,8 @@ export type DisputeOrderByWithAggregationInput = {
   orderId?: Prisma.SortOrder
   buyerName?: Prisma.SortOrder
   sellerName?: Prisma.SortOrder
+  buyerUsername?: Prisma.SortOrderInput | Prisma.SortOrder
+  sellerUsername?: Prisma.SortOrderInput | Prisma.SortOrder
   reason?: Prisma.SortOrder
   amount?: Prisma.SortOrder
   status?: Prisma.SortOrder
@@ -324,6 +346,8 @@ export type DisputeScalarWhereWithAggregatesInput = {
   orderId?: Prisma.StringWithAggregatesFilter<"Dispute"> | string
   buyerName?: Prisma.StringWithAggregatesFilter<"Dispute"> | string
   sellerName?: Prisma.StringWithAggregatesFilter<"Dispute"> | string
+  buyerUsername?: Prisma.StringNullableWithAggregatesFilter<"Dispute"> | string | null
+  sellerUsername?: Prisma.StringNullableWithAggregatesFilter<"Dispute"> | string | null
   reason?: Prisma.StringWithAggregatesFilter<"Dispute"> | string
   amount?: Prisma.FloatWithAggregatesFilter<"Dispute"> | number
   status?: Prisma.StringWithAggregatesFilter<"Dispute"> | string
@@ -338,6 +362,8 @@ export type DisputeCreateInput = {
   orderId: string
   buyerName: string
   sellerName: string
+  buyerUsername?: string | null
+  sellerUsername?: string | null
   reason: string
   amount: number
   status: string
@@ -352,6 +378,8 @@ export type DisputeUncheckedCreateInput = {
   orderId: string
   buyerName: string
   sellerName: string
+  buyerUsername?: string | null
+  sellerUsername?: string | null
   reason: string
   amount: number
   status: string
@@ -366,6 +394,8 @@ export type DisputeUpdateInput = {
   orderId?: Prisma.StringFieldUpdateOperationsInput | string
   buyerName?: Prisma.StringFieldUpdateOperationsInput | string
   sellerName?: Prisma.StringFieldUpdateOperationsInput | string
+  buyerUsername?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  sellerUsername?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   reason?: Prisma.StringFieldUpdateOperationsInput | string
   amount?: Prisma.FloatFieldUpdateOperationsInput | number
   status?: Prisma.StringFieldUpdateOperationsInput | string
@@ -380,6 +410,8 @@ export type DisputeUncheckedUpdateInput = {
   orderId?: Prisma.StringFieldUpdateOperationsInput | string
   buyerName?: Prisma.StringFieldUpdateOperationsInput | string
   sellerName?: Prisma.StringFieldUpdateOperationsInput | string
+  buyerUsername?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  sellerUsername?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   reason?: Prisma.StringFieldUpdateOperationsInput | string
   amount?: Prisma.FloatFieldUpdateOperationsInput | number
   status?: Prisma.StringFieldUpdateOperationsInput | string
@@ -394,6 +426,8 @@ export type DisputeCreateManyInput = {
   orderId: string
   buyerName: string
   sellerName: string
+  buyerUsername?: string | null
+  sellerUsername?: string | null
   reason: string
   amount: number
   status: string
@@ -408,6 +442,8 @@ export type DisputeUpdateManyMutationInput = {
   orderId?: Prisma.StringFieldUpdateOperationsInput | string
   buyerName?: Prisma.StringFieldUpdateOperationsInput | string
   sellerName?: Prisma.StringFieldUpdateOperationsInput | string
+  buyerUsername?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  sellerUsername?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   reason?: Prisma.StringFieldUpdateOperationsInput | string
   amount?: Prisma.FloatFieldUpdateOperationsInput | number
   status?: Prisma.StringFieldUpdateOperationsInput | string
@@ -422,6 +458,8 @@ export type DisputeUncheckedUpdateManyInput = {
   orderId?: Prisma.StringFieldUpdateOperationsInput | string
   buyerName?: Prisma.StringFieldUpdateOperationsInput | string
   sellerName?: Prisma.StringFieldUpdateOperationsInput | string
+  buyerUsername?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  sellerUsername?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   reason?: Prisma.StringFieldUpdateOperationsInput | string
   amount?: Prisma.FloatFieldUpdateOperationsInput | number
   status?: Prisma.StringFieldUpdateOperationsInput | string
@@ -436,6 +474,8 @@ export type DisputeCountOrderByAggregateInput = {
   orderId?: Prisma.SortOrder
   buyerName?: Prisma.SortOrder
   sellerName?: Prisma.SortOrder
+  buyerUsername?: Prisma.SortOrder
+  sellerUsername?: Prisma.SortOrder
   reason?: Prisma.SortOrder
   amount?: Prisma.SortOrder
   status?: Prisma.SortOrder
@@ -454,6 +494,8 @@ export type DisputeMaxOrderByAggregateInput = {
   orderId?: Prisma.SortOrder
   buyerName?: Prisma.SortOrder
   sellerName?: Prisma.SortOrder
+  buyerUsername?: Prisma.SortOrder
+  sellerUsername?: Prisma.SortOrder
   reason?: Prisma.SortOrder
   amount?: Prisma.SortOrder
   status?: Prisma.SortOrder
@@ -468,6 +510,8 @@ export type DisputeMinOrderByAggregateInput = {
   orderId?: Prisma.SortOrder
   buyerName?: Prisma.SortOrder
   sellerName?: Prisma.SortOrder
+  buyerUsername?: Prisma.SortOrder
+  sellerUsername?: Prisma.SortOrder
   reason?: Prisma.SortOrder
   amount?: Prisma.SortOrder
   status?: Prisma.SortOrder
@@ -488,6 +532,8 @@ export type DisputeSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs 
   orderId?: boolean
   buyerName?: boolean
   sellerName?: boolean
+  buyerUsername?: boolean
+  sellerUsername?: boolean
   reason?: boolean
   amount?: boolean
   status?: boolean
@@ -502,6 +548,8 @@ export type DisputeSelectCreateManyAndReturn<ExtArgs extends runtime.Types.Exten
   orderId?: boolean
   buyerName?: boolean
   sellerName?: boolean
+  buyerUsername?: boolean
+  sellerUsername?: boolean
   reason?: boolean
   amount?: boolean
   status?: boolean
@@ -516,6 +564,8 @@ export type DisputeSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.Exten
   orderId?: boolean
   buyerName?: boolean
   sellerName?: boolean
+  buyerUsername?: boolean
+  sellerUsername?: boolean
   reason?: boolean
   amount?: boolean
   status?: boolean
@@ -530,6 +580,8 @@ export type DisputeSelectScalar = {
   orderId?: boolean
   buyerName?: boolean
   sellerName?: boolean
+  buyerUsername?: boolean
+  sellerUsername?: boolean
   reason?: boolean
   amount?: boolean
   status?: boolean
@@ -539,7 +591,7 @@ export type DisputeSelectScalar = {
   resolvedAt?: boolean
 }
 
-export type DisputeOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "orderId" | "buyerName" | "sellerName" | "reason" | "amount" | "status" | "raisedAt" | "outcome" | "note" | "resolvedAt", ExtArgs["result"]["dispute"]>
+export type DisputeOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "orderId" | "buyerName" | "sellerName" | "buyerUsername" | "sellerUsername" | "reason" | "amount" | "status" | "raisedAt" | "outcome" | "note" | "resolvedAt", ExtArgs["result"]["dispute"]>
 
 export type $DisputePayload<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   name: "Dispute"
@@ -549,6 +601,8 @@ export type $DisputePayload<ExtArgs extends runtime.Types.Extensions.InternalArg
     orderId: string
     buyerName: string
     sellerName: string
+    buyerUsername: string | null
+    sellerUsername: string | null
     reason: string
     amount: number
     status: string
@@ -983,6 +1037,8 @@ export interface DisputeFieldRefs {
   readonly orderId: Prisma.FieldRef<"Dispute", 'String'>
   readonly buyerName: Prisma.FieldRef<"Dispute", 'String'>
   readonly sellerName: Prisma.FieldRef<"Dispute", 'String'>
+  readonly buyerUsername: Prisma.FieldRef<"Dispute", 'String'>
+  readonly sellerUsername: Prisma.FieldRef<"Dispute", 'String'>
   readonly reason: Prisma.FieldRef<"Dispute", 'String'>
   readonly amount: Prisma.FieldRef<"Dispute", 'Float'>
   readonly status: Prisma.FieldRef<"Dispute", 'String'>

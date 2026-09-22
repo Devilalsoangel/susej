@@ -127,8 +127,10 @@ function FeedContent() {
   const sectionOn = (k: string) => homeSections?.[k] !== false;
   // Server-degraded signal (/api/v1/home degraded:true or unreachable): the
   // rails below render saved/cached content — say so (IG offline parity)
-  // instead of silently passing stale rails as live.
+  // instead of silently passing stale rails as live. The WHY matters: a dead
+  // server with a live connection is not the user's offline.
   const [homeDegraded, setHomeDegraded] = useState(false);
+  const [homeDegradedWhy, setHomeDegradedWhy] = useState<'offline' | 'server'>('offline');
   // Featured-post rail (paid placements from /api/v1/home). Pinned rows float
   // to the spotlight; the rest interleave as boosted posts — every paid row
   // renders while its rail is ON, none renders while OFF.
@@ -152,6 +154,12 @@ function FeedContent() {
       serverApi.getHome().then(async (res) => {
         if (!active) return;
         if (active) setHomeDegraded(!res.ok || res.data?.degraded === true);
+        if (active) {
+          // Transport truth: our server down with network fine blames the
+          // server, never the user's connection.
+          const err = (res as { error?: unknown }).error;
+          setHomeDegradedWhy(!res.ok && err !== 'offline' ? 'server' : 'offline');
+        }
         const sections = res.ok ? (res.data?.sections ?? null) : null;
         if (active) setHomeSections(sections);
         const secOn = (k: string) => (sections as Record<string, boolean> | null)?.[k] !== false;
@@ -563,7 +571,9 @@ function FeedContent() {
             {homeDegraded && (
               <View className="mx-5 mb-2 px-4 py-2.5 rounded-figma-12" style={{ backgroundColor: colors.errorContainer }}>
                 <Text style={{ fontSize: 12, lineHeight: 16, color: colors.error }}>
-                  You&apos;re offline — home rails show saved content. Pull to retry.
+                  {homeDegradedWhy === 'server'
+                    ? `Our server isn't responding — home rails show saved content. Pull to retry.`
+                    : `You're offline — home rails show saved content. Pull to retry.`}
                 </Text>
               </View>
             )}

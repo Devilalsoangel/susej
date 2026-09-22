@@ -124,11 +124,44 @@ export async function PATCH(req: NextRequest) {
   } catch {
     return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
   }
-  if (body.action !== "view" || typeof body.id !== "string" || !body.id) {
-    return NextResponse.json({ error: "Expected { id, action: \"view\" }." }, { status: 400 });
+  if (body.action !== "view" && body.action !== "like" || typeof body.id !== "string" || !body.id) {
+    return NextResponse.json({ error: 'Expected { id, action: "view" | "like" }.' }, { status: 400 });
   }
   const prisma = await getPrisma();
   if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
+  if (body.action === "like") {
+    // Explicit-state like (idempotent): the client sends the DESIRED value,
+    // so a stale local toggle never inverts server truth. Toggle when omitted.
+    // Missing table (pre-migration) → client keeps its local animation.
+    try {
+      const me = auth.user.username!;
+      const want = typeof (body as { value?: unknown }).value === "boolean" ? (body as { value: boolean }).value : null;
+      const liked = await prisma.$transaction(async (tx: any) => {
+        const existing = await tx.reelLike.findUnique({
+          where: { reelId_username: { reelId: String(body.id), username: me } },
+        }).catch(() => null);
+        const shouldLike = want ?? !existing;
+        if (shouldLike && !existing) {
+          await tx.reelLike.create({ data: { reelId: String(body.id), username: me } });
+          await tx.reel.updateMany({ where: { id: String(body.id), status: "published" }, data: { likes: { increment: 1 } } });
+          return true;
+        }
+        if (!shouldLike && existing) {
+          await tx.reelLike.delete({ where: { id: existing.id } });
+          const cur = await tx.reel.findUnique({ where: { id: String(body.id) }, select: { likes: true } }).catch(() => null);
+          if (Number((cur as { likes?: unknown } | null)?.likes ?? 0) > 0) {
+            await tx.reel.updateMany({ where: { id: String(body.id) }, data: { likes: { decrement: 1 } } });
+          }
+          return false;
+        }
+        return !!existing;
+      });
+      const row = await prisma.reel.findUnique({ where: { id: String(body.id) }, select: { likes: true } }).catch(() => null);
+      return NextResponse.json({ ok: true, liked, likes: Math.max(0, Number((row as { likes?: unknown } | null)?.likes ?? 0)) });
+    } catch {
+      return NextResponse.json({ error: "Likes are not available yet" }, { status: 503 });
+    }
+  }
   const updated = await prisma.reel.updateMany({
     where: { id: String(body.id), status: "published" },
     data: { views: { increment: 1 } },

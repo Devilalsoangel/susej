@@ -69,6 +69,62 @@ export async function GET(req: NextRequest) {
 }
 
 /**
+ * PATCH /api/app/sellers/me — update my shop profile (tagline/hours/email/
+ * phone/address). Owner-only via findMine. tagline/hours are one-shot
+ * columns (missing pre-migration → honest localOnly so the app keeps its
+ * device copy instead of claiming cross-device truth).
+ */
+export async function PATCH(req: NextRequest) {
+  const auth = await getAppUser(req);
+  if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  const prisma = await getPrisma();
+  if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
+  const username = auth.user.username!;
+  const row = await findMine(prisma, username, (auth.user as { phone?: unknown }).phone as string | null, (auth.user as { email?: unknown }).email as string | null);
+  if (!row) return NextResponse.json({ error: "No seller application found" }, { status: 404 });
+  let body: Record<string, unknown>;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid body" }, { status: 400 });
+  }
+  const data: Record<string, unknown> = {};
+  if (body.tagline !== undefined) data.tagline = String(body.tagline ?? "").trim().slice(0, 140);
+  if (body.hours !== undefined) data.hours = String(body.hours ?? "").trim().slice(0, 140);
+  if (body.email !== undefined) {
+    const em = String(body.email ?? "").trim().toLowerCase().slice(0, 120);
+    if (em && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) {
+      return NextResponse.json({ error: "Enter a valid email address" }, { status: 400 });
+    }
+    if (em) data.email = em;
+  }
+  if (body.phone !== undefined) {
+    const digits = String(body.phone ?? "").replace(/\D/g, "").slice(0, 15);
+    if (digits && digits.length < 7) return NextResponse.json({ error: "Enter a valid phone number" }, { status: 400 });
+    if (digits) data.phone = digits;
+  }
+  if (body.address !== undefined) data.address = String(body.address ?? "").trim().slice(0, 300);
+  if (!Object.keys(data).length) return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
+  try {
+    const updated = await prisma.seller.update({ where: { id: row.id }, data });
+    return NextResponse.json({ ok: true, shop: { tagline: updated.tagline ?? "", hours: updated.hours ?? "" } });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/tagline|hours|column/i.test(msg)) {
+      // Pre-migration columns: update the legacy fields that exist, report
+      // localOnly for the new ones so the app keeps its device copy honestly.
+      const legacy: Record<string, unknown> = {};
+      for (const k of ["email", "phone", "address"]) if (data[k] !== undefined) legacy[k] = data[k];
+      if (Object.keys(legacy).length) {
+        await prisma.seller.update({ where: { id: row.id }, data: legacy }).catch(() => null);
+      }
+      return NextResponse.json({ ok: true, localOnly: true });
+    }
+    throw e;
+  }
+}
+
+/**
  * DELETE /api/app/sellers/me — withdraw my own PENDING application (owner
  * only). Approved sellers cannot self-delete (they hold live store data);
  * rejected applications are removed by re-applying (wizard upserts). The

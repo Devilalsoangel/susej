@@ -43,6 +43,23 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ user
     const items = Array.isArray(o.itemsList) ? (o.itemsList as { qty?: number; quantity?: number }[]) : [];
     for (const it of items) soldUnits += Number(it?.qty ?? it?.quantity ?? 1);
   }
+  // Shop profile (one-shot columns; missing pre-migration → omitted).
+  // Contact + hours are buyer-trust data the storefront renders cross-device.
+  let shop: { tagline: string; hours: string; email: string; phone: string; address: string } | undefined;
+  try {
+    const sellerRow = await prisma.seller.findUnique({ where: { id: `app_${username}` } }).catch(() => null) as {
+      tagline?: unknown; hours?: unknown; email?: unknown; phone?: unknown; address?: unknown; kycStatus?: unknown;
+    } | null;
+    if (sellerRow && String(sellerRow.kycStatus ?? "") === "approved") {
+      shop = {
+        tagline: String(sellerRow.tagline ?? ""),
+        hours: String(sellerRow.hours ?? ""),
+        email: String(sellerRow.email ?? ""),
+        phone: String(sellerRow.phone ?? ""),
+        address: String(sellerRow.address ?? ""),
+      };
+    }
+  } catch {}
 
   return NextResponse.json({
     user: {
@@ -62,6 +79,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ user
       avgRating,
       reviewCount,
       soldUnits,
+      ...(shop ? { shop } : {}),
     },
     posts: posts.map((p) => ({
       id: p.id,

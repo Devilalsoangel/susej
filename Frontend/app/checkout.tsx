@@ -24,10 +24,14 @@ export default function CheckoutScreen() {
   const offerParams = useLocalSearchParams<{
     offerListing?: string; offerPrice?: string; offerName?: string;
     offerThread?: string; offerMsg?: string; offerSeller?: string; offerSellerName?: string;
-    offerType?: string;
+    offerType?: string; offerQty?: string;
   }>();
   const strParam = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) ?? '';
   const offerPrice = Math.round(Number(strParam(offerParams.offerPrice)));
+  // Struck deal = LOT total (server prices the whole line at the struck
+  // figure, whatever the quantity). Qty rides for stock reservation.
+  const offerQtyParam = Math.min(999, Math.max(1, Math.round(Number(strParam(offerParams.offerQty)) || 1)));
+  const [offerQty, setOfferQty] = useState(offerQtyParam);
   const offerMode =
     !!strParam(offerParams.offerListing) &&
     Number.isFinite(offerPrice) && offerPrice > 0 && offerPrice <= 10000000 &&
@@ -41,7 +45,7 @@ export default function CheckoutScreen() {
         type: (['product', 'service', 'food_item'] as const).includes(strParam(offerParams.offerType) as 'product') ? (strParam(offerParams.offerType) as CartItem['type']) : 'product',
         name: strParam(offerParams.offerName) || 'Accepted offer',
         price: offerPrice,
-        quantity: 1,
+        quantity: offerQty,
         seller: strParam(offerParams.offerSellerName) || strParam(offerParams.offerSeller),
         sellerUsername: strParam(offerParams.offerSeller),
       }
@@ -757,8 +761,28 @@ export default function CheckoutScreen() {
             </View>
             {offerMode ? (
               <View className="px-3 py-2" style={{ borderRadius: 12, backgroundColor: colors.successBg, borderWidth: 1, borderColor: colors.success + '30' }}>
-                <Text className="text-[13px] font-inter-600" style={{ color: colors.success }}>✓ Accepted offer locked at {formatPrice(offerPrice)}</Text>
-                <Text className="font-inter-400 mt-0.5" style={{ fontSize: 11, color: colors.textSecondary }}>Struck deal — coupons can't combine. Verified with the seller at payment.</Text>
+                <Text className="text-[13px] font-inter-600" style={{ color: colors.success }}>✓ Accepted offer locked at {formatPrice(offerPrice)}{offerQty > 1 ? ` for ${offerQty} units` : ''}</Text>
+                <Text className="font-inter-400 mt-0.5" style={{ fontSize: 11, color: colors.textSecondary }}>Struck lot total — coupons can't combine. Verified with the seller at payment.</Text>
+                <View className="flex-row items-center mt-2" style={{ gap: 10 }}>
+                  <Text className="text-[12px] font-inter-500" style={{ color: colors.textSecondary }}>Qty</Text>
+                  <TouchableOpacity
+                    className="w-8 h-8 items-center justify-center rounded-full"
+                    style={{ backgroundColor: colors.surfaceContainerLowest }}
+                    accessibilityLabel="Decrease offer quantity"
+                    onPress={() => setOfferQty((q) => Math.max(1, q - 1))}
+                  >
+                    <Text className="font-inter-700" style={{ fontSize: 15, color: colors.textPrimary }}>−</Text>
+                  </TouchableOpacity>
+                  <Text className="font-inter-700" style={{ fontSize: 14, color: colors.textPrimary }}>{offerQty}</Text>
+                  <TouchableOpacity
+                    className="w-8 h-8 items-center justify-center rounded-full"
+                    style={{ backgroundColor: colors.surfaceContainerLowest }}
+                    accessibilityLabel="Increase offer quantity"
+                    onPress={() => setOfferQty((q) => Math.min(999, q + 1))}
+                  >
+                    <Text className="font-inter-700" style={{ fontSize: 15, color: colors.textPrimary }}>+</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
             ) : appliedPromo ? (
               <View className="flex-row items-center justify-between px-3 py-2" style={{ borderRadius: 12, backgroundColor: hasBundle ? colors.surfaceContainer : colors.successBg, borderWidth: 1, borderColor: hasBundle ? colors.outlineVariant : colors.success + '30' }}>

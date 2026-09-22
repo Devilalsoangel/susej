@@ -37,6 +37,14 @@ export default function GatewayLogsPage() {
   const { data: logs, loading: logsLoading } = useDbResource<GatewayLog>("gateway-logs");
   const [gatewayFilter, setGatewayFilter] = useState("all");
 
+  // Options derive from loaded rows (writers only emit wallet/bank/upi):
+  // static Stripe/M-Pesa/Razorpay/PayPal entries always filtered to an empty
+  // table that reads as "no traffic" instead of "no such integration".
+  const gatewayOptions = useMemo(() => {
+    const seen = [...new Set((logs ?? []).map((l) => String(l.gateway ?? "")).filter(Boolean))].sort();
+    return [{ label: "All Gateways", value: "all" }, ...seen.map((g) => ({ label: g, value: g }))];
+  }, [logs]);
+
   const filtered = useMemo(
     () => (logs ?? []).filter((l) => gatewayFilter === "all" || l.gateway === gatewayFilter),
     [logs, gatewayFilter]
@@ -67,14 +75,7 @@ export default function GatewayLogsPage() {
               className="w-44"
               value={gatewayFilter}
               onChange={(e) => setGatewayFilter(e.target.value)}
-              options={[
-                { label: "All Gateways", value: "all" },
-                { label: "Stripe", value: "Stripe" },
-                { label: "M-Pesa", value: "M-Pesa" },
-                { label: "Razorpay", value: "Razorpay" },
-                { label: "PayPal", value: "PayPal" },
-                { label: "Bank Transfer", value: "Bank Transfer" },
-              ]}
+              options={gatewayOptions}
             />
           </div>
         </CardHeader>

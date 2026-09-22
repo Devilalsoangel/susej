@@ -7,11 +7,12 @@ import { checkWriteRate } from "@/lib/rate-limit";
 const MAX_CONCURRENT_PINS = 3;
 
 /** POST /api/app/chat/threads/[id]/pin
- *  Pinned-chat VAS (OLX Elite pattern): a SELLER pays (wallet debit happens
- *  app-side BEFORE this call) to pin an existing thread at the top of the
- *  OTHER participant's inbox for `days`. The server records the entitlement:
- *  requester must be a real thread participant, days clamp 1..30, and each
- *  seller can hold at most MAX_CONCURRENT_PINS active pins. */
+ *  Pinned-chat VAS (OLX Elite pattern): a SELLER pays via the SERVER-ATOMIC
+ *  wallet debit inside this route's transaction to pin an existing thread at
+ *  the top of the OTHER participant's inbox for `days`. The client must NEVER
+ *  pre-debit (that would double-charge). Requester must be a real thread
+ *  participant, days clamp 1..30, and each seller can hold at most
+ *  MAX_CONCURRENT_PINS active pins. */
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   if (!checkWriteRate(`pin:${getClientIp(req)}`, 20)) {
     return NextResponse.json({ error: "Too many requests — slow down" }, { status: 429 });
@@ -20,6 +21,11 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   const prisma = await getPrisma();
   if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
+  // Shared per-account enforcement (one-shot).
+  const { checkSharedWriteRate: checkSharedPin } = await import("@/lib/rate-limit");
+  if (!(await checkSharedPin(prisma, `pin-user:${String(auth.user.username ?? "").toLowerCase()}`, 20))) {
+    return NextResponse.json({ error: "Too many requests — slow down" }, { status: 429 });
+  }
 
   const username = auth.user.username!;
   const { id } = await ctx.params;
@@ -115,6 +121,16 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
         if (res.count === 0) throw new Error("BALANCE");
         await tx.walletTransaction.create({
           data: { username, title: priceTitle, detail: `Pinned chat ${thread.id} · ${days}d`, amount: -pinPrice },
+        });
+        // Ledger mirror (one-shot): pin spend was WalletTransaction-only.
+        // Type-distinct pin legs, same tx.
+        const pinAt = new Date();
+        const pinOrderId = `pin:${thread.id}:${priceTitle}`.slice(0, 120);
+        await tx.ledgerEntry.createMany({
+          data: [
+            { partyName: username, partyRole: "seller", direction: "out", type: "pin", amount: pinPrice, method: "wallet", status: "success", orderId: pinOrderId, createdAt: pinAt },
+            { partyName: "susej", partyRole: "platform", direction: "in", type: "pin", amount: pinPrice, method: "wallet", status: "success", orderId: pinOrderId, createdAt: pinAt },
+          ],
         });
         const pinnedUntil = new Date(now.getTime() + days * 864e5);
         await tx.chatThread.update({ where: { id: thread.id }, data: { pinnedUntil, pinnedBy: username } });

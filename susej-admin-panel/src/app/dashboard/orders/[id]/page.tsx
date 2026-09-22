@@ -12,7 +12,7 @@ import { useDbResource } from "@/hooks/use-db-resource";
 import { formatDate, formatCurrency } from "@/lib/utils";
 import {
   ArrowLeft, Package, Truck, CheckCircle2, XCircle, MapPin, CreditCard,
-  ShoppingBag, User, Store, Calendar, Hash, AlertTriangle, RotateCcw,
+  ShoppingBag, User, Store, Calendar, Hash, AlertTriangle,
 } from "lucide-react";
 import Link from "next/link";
 import type { Order } from "@/types";
@@ -30,11 +30,6 @@ const FLOW: { status: Order["status"]; deliveryStatus: Order["deliveryStatus"]; 
   { status: "out_for_delivery", deliveryStatus: "out_for_delivery", label: "Out for Delivery", icon: Truck },
   { status: "delivered", deliveryStatus: "delivered", label: "Delivered", icon: CheckCircle2 },
 ];
-
-const REFUND_ACTIONS: Record<string, { label: string; next: Order["refundStatus"] }> = {
-  requested: { label: "Approve Refund", next: "approved" },
-  approved: { label: "Mark Refund Issued", next: "refunded" },
-};
 
 export default function OrderDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -124,10 +119,6 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const nextStep = currentIdx >= 0 && currentIdx < FLOW.length - 1 ? FLOW[currentIdx + 1] : null;
   const terminal = ["delivered", "cancelled"].includes(order.status);
 
-  function rejectRefund() {
-    patchOrder({ refundStatus: "rejected" });
-  }
-
   // Unattributed-order repair: legacy rows with no sellerUsername are invisible
   // to seller settlements. Binds ONE seller username (server validates seller
   // status + resolves the display name, audit carries the reason). Moves no money.
@@ -165,8 +156,6 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       })
       .finally(() => setRepairBusy(false));
   }
-
-  const refundAction = order.refundStatus ? REFUND_ACTIONS[order.refundStatus] : undefined;
 
   // Human SJ- tracking ref primary (what buyers quote on support calls);
   // raw cuid secondary for copy-paste. Same rule as the orders table.
@@ -311,38 +300,33 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
             </Card>
           )}
 
-          {/* Refund panel — mirrors the app refund lifecycle (requested -> approved/rejected -> refunded) */}
-          {order.refundStatus && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Refund Request</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <p className="text-sm text-gray-500">{order.refundReason ?? "No reason given"}</p>
-                    <p className="mt-0.5 text-xs text-gray-400">Refund status: {order.refundStatus}</p>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-3">
-                    {order.refundStatus === "requested" && (
-                      <Button variant="danger" onClick={rejectRefund}>
-                        <XCircle className="h-4 w-4" /> Reject
-                      </Button>
-                    )}
-                    {refundAction && (
-                      <Button
-                        variant="primary"
-                        onClick={() => patchOrder({ refundStatus: refundAction.next })}
-                      >
-                        <RotateCcw className="h-4 w-4" />
-                        {refundAction.label}
-                      </Button>
-                    )}
-                  </div>
+          {/* Refund decisions live in the Refunds queue (the machine settles
+            the linked Refund row + wallet legs there). The old inline panel
+            read Order.refundStatus/refundReason — columns that don't exist —
+            so it never rendered, and its PATCH 503d after money moved. */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Refund</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm text-gray-500">
+                    {String(order.paymentStatus ?? "") === "refunded"
+                      ? "This order was refunded."
+                      : String(order.paymentStatus ?? "") === "partial_refund"
+                        ? "This order was partially refunded (dispute split)."
+                        : "No refund recorded on this order."}
+                  </p>
                 </div>
-              </CardContent>
-            </Card>
-          )}
+                <Link href="/dashboard/refunds">
+                  <Button variant="secondary">
+                    Open Refunds Queue
+                  </Button>
+                </Link>
+              </div>
+            </CardContent>
+          </Card>
         </div>
 
         {/* Right: details */}

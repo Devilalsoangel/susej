@@ -116,7 +116,7 @@ export default function ForYouScreen() {
     fromFollowing.forEach(({ post }) => shown.add(post.id));
 
     const matchesSearches = recentSearches.length
-      ? scored.filter(({ post, score }) => canSee(post) && !shown.has(post.id) && score >= 12).slice(0, 8)
+      ? scored.filter(({ post, score }) => canSee(post) && !shown.has(post.id) && score >= 12).sort((a, b) => b.score - a.score).slice(0, 8)
       : [];
     matchesSearches.forEach(({ post }) => shown.add(post.id));
 

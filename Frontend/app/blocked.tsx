@@ -52,7 +52,14 @@ export default function BlockedScreen() {
             const real = (parsed as BlockedUser[]).filter(
               (b) => b && b.username
             );
-            setBlocked(real);
+            // Server merge: blocks filed on other devices land here.
+            try {
+              const { pullServerBlocks } = await import('../utils/blockedSellers');
+              const merged = await pullServerBlocks(blockedKey, real);
+              if (active) setBlocked(merged);
+            } catch {
+              if (active) setBlocked(real);
+            }
           }
         }
       } catch {
@@ -71,13 +78,16 @@ export default function BlockedScreen() {
   const unblock = (user: BlockedUser) => {
     Alert.alert(
       `Unblock @${user.username}?`,
-      'Their chats will reappear in your inbox on this device.',
+      'Their chats will reappear in your inbox and they can message you again.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Unblock',
           style: 'destructive',
-          onPress: () => setBlocked((prev) => prev.filter((b) => b.username !== user.username)),
+          onPress: () => {
+            setBlocked((prev) => prev.filter((b) => b.username !== user.username));
+            void import('../utils/blockedSellers').then(({ pushUnblockRemote }) => pushUnblockRemote(user.username)).catch(() => {});
+          },
         },
       ]
     );
@@ -111,15 +121,15 @@ export default function BlockedScreen() {
             No blocked users
           </Text>
           <Text className="font-inter-400 text-textSecondary mt-1 text-center" style={{ fontSize: 13, lineHeight: 18 }}>
-            Users you block are hidden on this device — their chats disappear
-            from your inbox and you won't see their messages.
+            Blocked users can't message you — their chats disappear from every
+            inbox you log into.
           </Text>
         </View>
       ) : (
         <ScrollView className="flex-1" contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 128 + insets.bottom }}>
           <Text className="font-inter-400 text-textSecondary mb-4" style={{ fontSize: 13, lineHeight: 18 }}>
-            Blocked users are hidden on this device — chats and messages from
-            them won't show up here.
+            Blocked users can't message you on any device — chats from
+            them won't show up anywhere you log in.
           </Text>
           {blocked.map((user) => (
             <View

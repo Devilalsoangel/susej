@@ -95,6 +95,11 @@ export const ModelName = {
   PaymentMethod: 'PaymentMethod',
   LiveStream: 'LiveStream',
   Reel: 'Reel',
+  Block: 'Block',
+  ReelLike: 'ReelLike',
+  PriceWatch: 'PriceWatch',
+  Poll: 'Poll',
+  PollVote: 'PollVote',
   Story: 'Story',
   Hashtag: 'Hashtag',
   Bundle: 'Bundle',
@@ -190,6 +195,7 @@ export const UserScalarFieldEnum = {
   walletBalance: 'walletBalance',
   passwordHash: 'passwordHash',
   loyaltyPoints: 'loyaltyPoints',
+  googleSub: 'googleSub',
   updatedAt: 'updatedAt'
 } as const
 
@@ -218,6 +224,8 @@ export const SellerScalarFieldEnum = {
   selfieUrl: 'selfieUrl',
   kycStatus: 'kycStatus',
   gstStatus: 'gstStatus',
+  tagline: 'tagline',
+  hours: 'hours',
   score: 'score',
   productsCount: 'productsCount',
   totalSales: 'totalSales',
@@ -318,7 +326,13 @@ export const OrderScalarFieldEnum = {
   rating: 'rating',
   reviewComment: 'reviewComment',
   placedAt: 'placedAt',
-  updatedAt: 'updatedAt'
+  updatedAt: 'updatedAt',
+  kind: 'kind',
+  bookingDate: 'bookingDate',
+  bookingTime: 'bookingTime',
+  deliveryFee: 'deliveryFee',
+  discount: 'discount',
+  promoCode: 'promoCode'
 } as const
 
 export type OrderScalarFieldEnum = (typeof OrderScalarFieldEnum)[keyof typeof OrderScalarFieldEnum]
@@ -886,6 +900,60 @@ export const ReelScalarFieldEnum = {
 export type ReelScalarFieldEnum = (typeof ReelScalarFieldEnum)[keyof typeof ReelScalarFieldEnum]
 
 
+export const BlockScalarFieldEnum = {
+  id: 'id',
+  blockerUsername: 'blockerUsername',
+  blockedUsername: 'blockedUsername',
+  createdAt: 'createdAt'
+} as const
+
+export type BlockScalarFieldEnum = (typeof BlockScalarFieldEnum)[keyof typeof BlockScalarFieldEnum]
+
+
+export const ReelLikeScalarFieldEnum = {
+  id: 'id',
+  reelId: 'reelId',
+  username: 'username',
+  createdAt: 'createdAt'
+} as const
+
+export type ReelLikeScalarFieldEnum = (typeof ReelLikeScalarFieldEnum)[keyof typeof ReelLikeScalarFieldEnum]
+
+
+export const PriceWatchScalarFieldEnum = {
+  id: 'id',
+  username: 'username',
+  listingId: 'listingId',
+  priceAtWatch: 'priceAtWatch',
+  createdAt: 'createdAt'
+} as const
+
+export type PriceWatchScalarFieldEnum = (typeof PriceWatchScalarFieldEnum)[keyof typeof PriceWatchScalarFieldEnum]
+
+
+export const PollScalarFieldEnum = {
+  id: 'id',
+  communityId: 'communityId',
+  question: 'question',
+  options: 'options',
+  createdBy: 'createdBy',
+  createdAt: 'createdAt'
+} as const
+
+export type PollScalarFieldEnum = (typeof PollScalarFieldEnum)[keyof typeof PollScalarFieldEnum]
+
+
+export const PollVoteScalarFieldEnum = {
+  id: 'id',
+  pollId: 'pollId',
+  username: 'username',
+  optionId: 'optionId',
+  createdAt: 'createdAt'
+} as const
+
+export type PollVoteScalarFieldEnum = (typeof PollVoteScalarFieldEnum)[keyof typeof PollVoteScalarFieldEnum]
+
+
 export const StoryScalarFieldEnum = {
   id: 'id',
   username: 'username',
@@ -923,6 +991,7 @@ export const BundleScalarFieldEnum = {
   price: 'price',
   discount: 'discount',
   sellerName: 'sellerName',
+  sellerUsername: 'sellerUsername',
   status: 'status',
   createdAt: 'createdAt',
   items: 'items'
@@ -988,6 +1057,8 @@ export const DisputeScalarFieldEnum = {
   orderId: 'orderId',
   buyerName: 'buyerName',
   sellerName: 'sellerName',
+  buyerUsername: 'buyerUsername',
+  sellerUsername: 'sellerUsername',
   reason: 'reason',
   amount: 'amount',
   status: 'status',
@@ -1037,6 +1108,7 @@ export const WithdrawalScalarFieldEnum = {
   userName: 'userName',
   method: 'method',
   amount: 'amount',
+  fee: 'fee',
   status: 'status',
   requestedAt: 'requestedAt',
   respondedAt: 'respondedAt'
@@ -1071,6 +1143,8 @@ export type MessageScalarFieldEnum = (typeof MessageScalarFieldEnum)[keyof typeo
 export const AppSessionScalarFieldEnum = {
   id: 'id',
   token: 'token',
+  tokenHash: 'tokenHash',
+  last4: 'last4',
   userId: 'userId',
   username: 'username',
   createdAt: 'createdAt',

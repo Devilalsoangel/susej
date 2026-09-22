@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { View, Text, FlatList, TouchableOpacity, ScrollView, Dimensions, Image } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { resolveAvatar } from '../utils/productImages';
@@ -6,7 +6,6 @@ import { router } from 'expo-router';
 import { BackIcon, ArrowRightIcon } from '../utils/icons';
 import { CommunityPostCard } from '../components/cards/CommunityPostCard';
 import { colors, formatCount, CATEGORIES } from '../utils/theme';
-import { usePosts } from '../contexts/PostContext';
 import { useCommunities } from '../contexts/CommunityContext';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -16,8 +15,7 @@ const discoveryCategories = ['For You', 'Technology', 'Fashion', 'Art', 'Wellnes
 
 export default function CommunitiesScreen() {
   const insets = useSafeAreaInsets();
-  const { posts } = usePosts();
-  const { communities, joinedCommunities, join } = useCommunities();
+  const { communities, joinedCommunities, join, messagesFor, refreshMessages } = useCommunities();
   const [activeCategory, setActiveCategory] = useState('For You');
   const [showAll, setShowAll] = useState(false);
   const discoverCommunities = useMemo(() => {
@@ -26,17 +24,34 @@ export default function CommunitiesScreen() {
     const needle = activeCategory.toLowerCase();
     return unjoined.filter((c) => (c.category || '').toLowerCase().includes(needle));
   }, [communities, activeCategory]);
+  // Community Feed = REAL member messages from joined communities (latest
+  // first), never marketplace product posts — listings masquerading as
+  // discussion leaked sellers' descriptions as community speech and tapped
+  // through to product pages. Empty until joined + talking (honest).
+  const joinedIds = joinedCommunities.map((c) => c.id).join(',');
+  useEffect(() => {
+    for (const c of joinedCommunities) refreshMessages(c.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [joinedIds]);
   const feedPosts = useMemo(() => {
-    const source = showAll ? posts : posts.slice(0, 6);
-    return source.map((p) => ({
-      id: p.id,
-      author: p.sellerName,
-      content: p.description,
-      likes: p.likes,
-      comments: p.comments,
-      large: p.likes > 30,
+    const byCommunity = new Map(communities.map((c) => [c.id, c.name]));
+    const all: Array<{ id: string; author: string; content: string; communityId: string; communityName: string; createdAt: number }> = [];
+    for (const c of joinedCommunities) {
+      for (const m of messagesFor(c.id)) {
+        all.push({ id: m.id, author: m.author || 'Member', content: m.text, communityId: c.id, communityName: byCommunity.get(c.id) ?? '', createdAt: m.createdAt });
+      }
+    }
+    all.sort((a, b) => b.createdAt - a.createdAt);
+    return (showAll ? all : all.slice(0, 6)).map((m) => ({
+      id: m.id,
+      author: m.communityName ? `${m.author} · ${m.communityName}` : m.author,
+      content: m.content,
+      likes: 0,
+      comments: 0,
+      large: false,
+      communityId: m.communityId,
     }));
-  }, [posts, showAll]);
+  }, [joinedCommunities, communities, showAll, messagesFor]);
   return (
     <View className="flex-1 bg-white">
       <FlatList
@@ -244,10 +259,19 @@ export default function CommunitiesScreen() {
               likeCount={item.likes}
               commentCount={item.comments}
               isLarge={item.large}
-              onPress={() => router.push(`/product/${item.id}`)}
+              onPress={() => router.push(`/community/${item.communityId}`)}
             />
           </View>
         )}
+        ListEmptyComponent={
+          <View className="mx-5 mb-4 px-4 py-6 items-center">
+            <Text className="text-figma-14 font-inter-500 text-textSecondary text-center">
+              {joinedCommunities.length === 0
+                ? 'Join a community above — member conversations show up here.'
+                : 'No conversations yet. Say hello inside your communities.'}
+            </Text>
+          </View>
+        }
       />
     </View>
   );

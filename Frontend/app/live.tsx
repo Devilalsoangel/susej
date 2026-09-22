@@ -94,7 +94,7 @@ export default function LiveScreen() {
             </Text>
           )}
           {streams.filter((s) => s.status === 'live').map((s) => {
-            const mine = user?.username && s.hostUsername === user.username;
+            const mine = user?.username && String(s.hostUsername ?? '').trim().toLowerCase() === String(user.username).trim().toLowerCase();
             return (
               <TouchableOpacity
                 key={s.id}
@@ -114,7 +114,7 @@ export default function LiveScreen() {
                     {s.title}
                   </Text>
                   <Text className="font-inter-400 text-secondary mt-0.5" style={{ fontSize: 12, lineHeight: 16 }} numberOfLines={1}>
-                    {s.hostName} · {minutesLabel(s.startedAt)}
+                    {s.hostName} · {minutesLabel(s.startedAt)}{Number.isFinite(Number(s.viewers)) && Number(s.viewers) > 0 ? ` · ${Number(s.viewers)} watching` : ''}
                   </Text>
                 </View>
                 {mine ? (

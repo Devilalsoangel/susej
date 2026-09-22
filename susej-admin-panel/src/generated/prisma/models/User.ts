@@ -56,6 +56,7 @@ export type UserMinAggregateOutputType = {
   walletBalance: number | null
   passwordHash: string | null
   loyaltyPoints: number | null
+  googleSub: string | null
   updatedAt: Date | null
 }
 
@@ -79,6 +80,7 @@ export type UserMaxAggregateOutputType = {
   walletBalance: number | null
   passwordHash: string | null
   loyaltyPoints: number | null
+  googleSub: string | null
   updatedAt: Date | null
 }
 
@@ -103,6 +105,7 @@ export type UserCountAggregateOutputType = {
   walletBalance: number
   passwordHash: number
   loyaltyPoints: number
+  googleSub: number
   updatedAt: number
   _all: number
 }
@@ -138,6 +141,7 @@ export type UserMinAggregateInputType = {
   walletBalance?: true
   passwordHash?: true
   loyaltyPoints?: true
+  googleSub?: true
   updatedAt?: true
 }
 
@@ -161,6 +165,7 @@ export type UserMaxAggregateInputType = {
   walletBalance?: true
   passwordHash?: true
   loyaltyPoints?: true
+  googleSub?: true
   updatedAt?: true
 }
 
@@ -185,6 +190,7 @@ export type UserCountAggregateInputType = {
   walletBalance?: true
   passwordHash?: true
   loyaltyPoints?: true
+  googleSub?: true
   updatedAt?: true
   _all?: true
 }
@@ -296,6 +302,7 @@ export type UserGroupByOutputType = {
   walletBalance: number
   passwordHash: string | null
   loyaltyPoints: number
+  googleSub: string | null
   updatedAt: Date
   _count: UserCountAggregateOutputType | null
   _avg: UserAvgAggregateOutputType | null
@@ -343,6 +350,7 @@ export type UserWhereInput = {
   walletBalance?: Prisma.IntFilter<"User"> | number
   passwordHash?: Prisma.StringNullableFilter<"User"> | string | null
   loyaltyPoints?: Prisma.IntFilter<"User"> | number
+  googleSub?: Prisma.StringNullableFilter<"User"> | string | null
   updatedAt?: Prisma.DateTimeFilter<"User"> | Date | string
   sessions?: Prisma.AppSessionListRelationFilter
 }
@@ -368,6 +376,7 @@ export type UserOrderByWithRelationInput = {
   walletBalance?: Prisma.SortOrder
   passwordHash?: Prisma.SortOrderInput | Prisma.SortOrder
   loyaltyPoints?: Prisma.SortOrder
+  googleSub?: Prisma.SortOrderInput | Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
   sessions?: Prisma.AppSessionOrderByRelationAggregateInput
 }
@@ -377,6 +386,7 @@ export type UserWhereUniqueInput = Prisma.AtLeast<{
   email?: string
   phone?: string
   username?: string
+  googleSub?: string
   AND?: Prisma.UserWhereInput | Prisma.UserWhereInput[]
   OR?: Prisma.UserWhereInput[]
   NOT?: Prisma.UserWhereInput | Prisma.UserWhereInput[]
@@ -398,7 +408,7 @@ export type UserWhereUniqueInput = Prisma.AtLeast<{
   loyaltyPoints?: Prisma.IntFilter<"User"> | number
   updatedAt?: Prisma.DateTimeFilter<"User"> | Date | string
   sessions?: Prisma.AppSessionListRelationFilter
-}, "id" | "email" | "phone" | "username">
+}, "id" | "email" | "phone" | "username" | "googleSub">
 
 export type UserOrderByWithAggregationInput = {
   id?: Prisma.SortOrder
@@ -421,6 +431,7 @@ export type UserOrderByWithAggregationInput = {
   walletBalance?: Prisma.SortOrder
   passwordHash?: Prisma.SortOrderInput | Prisma.SortOrder
   loyaltyPoints?: Prisma.SortOrder
+  googleSub?: Prisma.SortOrderInput | Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
   _count?: Prisma.UserCountOrderByAggregateInput
   _avg?: Prisma.UserAvgOrderByAggregateInput
@@ -453,6 +464,7 @@ export type UserScalarWhereWithAggregatesInput = {
   walletBalance?: Prisma.IntWithAggregatesFilter<"User"> | number
   passwordHash?: Prisma.StringNullableWithAggregatesFilter<"User"> | string | null
   loyaltyPoints?: Prisma.IntWithAggregatesFilter<"User"> | number
+  googleSub?: Prisma.StringNullableWithAggregatesFilter<"User"> | string | null
   updatedAt?: Prisma.DateTimeWithAggregatesFilter<"User"> | Date | string
 }
 
@@ -477,6 +489,7 @@ export type UserCreateInput = {
   walletBalance?: number
   passwordHash?: string | null
   loyaltyPoints?: number
+  googleSub?: string | null
   updatedAt?: Date | string
   sessions?: Prisma.AppSessionCreateNestedManyWithoutUserInput
 }
@@ -502,6 +515,7 @@ export type UserUncheckedCreateInput = {
   walletBalance?: number
   passwordHash?: string | null
   loyaltyPoints?: number
+  googleSub?: string | null
   updatedAt?: Date | string
   sessions?: Prisma.AppSessionUncheckedCreateNestedManyWithoutUserInput
 }
@@ -527,6 +541,7 @@ export type UserUpdateInput = {
   walletBalance?: Prisma.IntFieldUpdateOperationsInput | number
   passwordHash?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   loyaltyPoints?: Prisma.IntFieldUpdateOperationsInput | number
+  googleSub?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   sessions?: Prisma.AppSessionUpdateManyWithoutUserNestedInput
 }
@@ -552,6 +567,7 @@ export type UserUncheckedUpdateInput = {
   walletBalance?: Prisma.IntFieldUpdateOperationsInput | number
   passwordHash?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   loyaltyPoints?: Prisma.IntFieldUpdateOperationsInput | number
+  googleSub?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   sessions?: Prisma.AppSessionUncheckedUpdateManyWithoutUserNestedInput
 }
@@ -577,6 +593,7 @@ export type UserCreateManyInput = {
   walletBalance?: number
   passwordHash?: string | null
   loyaltyPoints?: number
+  googleSub?: string | null
   updatedAt?: Date | string
 }
 
@@ -601,6 +618,7 @@ export type UserUpdateManyMutationInput = {
   walletBalance?: Prisma.IntFieldUpdateOperationsInput | number
   passwordHash?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   loyaltyPoints?: Prisma.IntFieldUpdateOperationsInput | number
+  googleSub?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
 }
 
@@ -625,6 +643,7 @@ export type UserUncheckedUpdateManyInput = {
   walletBalance?: Prisma.IntFieldUpdateOperationsInput | number
   passwordHash?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   loyaltyPoints?: Prisma.IntFieldUpdateOperationsInput | number
+  googleSub?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
 }
 
@@ -649,6 +668,7 @@ export type UserCountOrderByAggregateInput = {
   walletBalance?: Prisma.SortOrder
   passwordHash?: Prisma.SortOrder
   loyaltyPoints?: Prisma.SortOrder
+  googleSub?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
 }
 
@@ -677,6 +697,7 @@ export type UserMaxOrderByAggregateInput = {
   walletBalance?: Prisma.SortOrder
   passwordHash?: Prisma.SortOrder
   loyaltyPoints?: Prisma.SortOrder
+  googleSub?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
 }
 
@@ -700,6 +721,7 @@ export type UserMinOrderByAggregateInput = {
   walletBalance?: Prisma.SortOrder
   passwordHash?: Prisma.SortOrder
   loyaltyPoints?: Prisma.SortOrder
+  googleSub?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
 }
 
@@ -748,6 +770,7 @@ export type UserCreateWithoutSessionsInput = {
   walletBalance?: number
   passwordHash?: string | null
   loyaltyPoints?: number
+  googleSub?: string | null
   updatedAt?: Date | string
 }
 
@@ -772,6 +795,7 @@ export type UserUncheckedCreateWithoutSessionsInput = {
   walletBalance?: number
   passwordHash?: string | null
   loyaltyPoints?: number
+  googleSub?: string | null
   updatedAt?: Date | string
 }
 
@@ -812,6 +836,7 @@ export type UserUpdateWithoutSessionsInput = {
   walletBalance?: Prisma.IntFieldUpdateOperationsInput | number
   passwordHash?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   loyaltyPoints?: Prisma.IntFieldUpdateOperationsInput | number
+  googleSub?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
 }
 
@@ -836,6 +861,7 @@ export type UserUncheckedUpdateWithoutSessionsInput = {
   walletBalance?: Prisma.IntFieldUpdateOperationsInput | number
   passwordHash?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   loyaltyPoints?: Prisma.IntFieldUpdateOperationsInput | number
+  googleSub?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
 }
 
@@ -891,6 +917,7 @@ export type UserSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs = r
   walletBalance?: boolean
   passwordHash?: boolean
   loyaltyPoints?: boolean
+  googleSub?: boolean
   updatedAt?: boolean
   sessions?: boolean | Prisma.User$sessionsArgs<ExtArgs>
   _count?: boolean | Prisma.UserCountOutputTypeDefaultArgs<ExtArgs>
@@ -917,6 +944,7 @@ export type UserSelectCreateManyAndReturn<ExtArgs extends runtime.Types.Extensio
   walletBalance?: boolean
   passwordHash?: boolean
   loyaltyPoints?: boolean
+  googleSub?: boolean
   updatedAt?: boolean
 }, ExtArgs["result"]["user"]>
 
@@ -941,6 +969,7 @@ export type UserSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.Extensio
   walletBalance?: boolean
   passwordHash?: boolean
   loyaltyPoints?: boolean
+  googleSub?: boolean
   updatedAt?: boolean
 }, ExtArgs["result"]["user"]>
 
@@ -965,10 +994,11 @@ export type UserSelectScalar = {
   walletBalance?: boolean
   passwordHash?: boolean
   loyaltyPoints?: boolean
+  googleSub?: boolean
   updatedAt?: boolean
 }
 
-export type UserOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "name" | "email" | "avatar" | "role" | "status" | "joinedAt" | "verified" | "phone" | "username" | "bio" | "location" | "interests" | "isSeller" | "businessName" | "category" | "verification" | "walletBalance" | "passwordHash" | "loyaltyPoints" | "updatedAt", ExtArgs["result"]["user"]>
+export type UserOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "name" | "email" | "avatar" | "role" | "status" | "joinedAt" | "verified" | "phone" | "username" | "bio" | "location" | "interests" | "isSeller" | "businessName" | "category" | "verification" | "walletBalance" | "passwordHash" | "loyaltyPoints" | "googleSub" | "updatedAt", ExtArgs["result"]["user"]>
 export type UserInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   sessions?: boolean | Prisma.User$sessionsArgs<ExtArgs>
   _count?: boolean | Prisma.UserCountOutputTypeDefaultArgs<ExtArgs>
@@ -1002,6 +1032,7 @@ export type $UserPayload<ExtArgs extends runtime.Types.Extensions.InternalArgs =
     walletBalance: number
     passwordHash: string | null
     loyaltyPoints: number
+    googleSub: string | null
     updatedAt: Date
   }, ExtArgs["result"]["user"]>
   composites: {}
@@ -1447,6 +1478,7 @@ export interface UserFieldRefs {
   readonly walletBalance: Prisma.FieldRef<"User", 'Int'>
   readonly passwordHash: Prisma.FieldRef<"User", 'String'>
   readonly loyaltyPoints: Prisma.FieldRef<"User", 'Int'>
+  readonly googleSub: Prisma.FieldRef<"User", 'String'>
   readonly updatedAt: Prisma.FieldRef<"User", 'DateTime'>
 }
     

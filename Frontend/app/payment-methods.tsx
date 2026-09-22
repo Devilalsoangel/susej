@@ -125,7 +125,13 @@ export default function PaymentMethodsScreen() {
       Alert.alert('Empty wallet', 'Add money in the Wallet tab before paying with wallet.');
       return;
     }
-    void Promise.resolve(paymentKeyFor(sessionUsername)).then((k) => AsyncStorage.setItem(k, JSON.stringify(method)).catch(() => {}));
+    // Persist the selection WITHOUT the balance snapshot: the row detail
+    // carries a point-in-time figure ("Balance RsX (offline?)") that later
+    // readers could charge/display as current money. Balance always renders
+    // from the live sync above; checkout keys on payment.id only.
+    const { detail: _staleDetail, ...persistable } = method;
+    void _staleDetail;
+    void Promise.resolve(paymentKeyFor(sessionUsername)).then((k) => AsyncStorage.setItem(k, JSON.stringify(persistable)).catch(() => {}));
     router.back();
   }, [walletBalance, balanceStale, sessionUsername]);
 

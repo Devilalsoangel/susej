@@ -419,22 +419,43 @@ export default function OrderDetailsScreen() {
             Payment Summary
           </Text>
           <View style={{ rowGap: 10 }}>
-            <View className="flex-row justify-between">
-              <Text className="text-[14px] font-inter-400 text-textSecondary" style={{ lineHeight: 20 }}>Items Total</Text>
-              <Text className="text-[14px] font-inter-500 text-textPrimary" style={{ lineHeight: 20 }}>{formatPrice(order.total)}</Text>
-            </View>
-            {(order.deliveryFee ?? 0) > 0 && (
-              <View className="flex-row justify-between">
-                <Text className="text-[14px] font-inter-400 text-textSecondary" style={{ lineHeight: 20 }}>Delivery</Text>
-                <Text className="text-[14px] font-inter-500 text-textPrimary" style={{ lineHeight: 20 }}>{formatPrice(order.deliveryFee ?? 0)}</Text>
-              </View>
-            )}
-            {Math.max(0, Math.round(order.total + (order.deliveryFee ?? 0) - (order.chargedTotal ?? order.total))) > 0 && (
-              <View className="flex-row justify-between">
-                <Text className="text-[14px] font-inter-400 text-textSecondary" style={{ lineHeight: 20 }}>Coupon savings{order.promoCode ? ` (${order.promoCode})` : ''}</Text>
-                <Text className="text-[14px] font-inter-500 text-success" style={{ lineHeight: 20 }}>-{formatPrice(Math.max(0, Math.round(order.total + (order.deliveryFee ?? 0) - (order.chargedTotal ?? order.total))))}</Text>
-              </View>
-            )}
+            {(() => {
+              // Settled discount wins when the server sent it (stamped at
+              // placement, adopted on ack/pull): re-deriving savings as
+              // total+fee−charged double-counts the fee now that total is
+              // served pre-discount. Without a served fee there is nothing to
+              // double-count, so legacy rows keep the old derivation.
+              const d = Number(order.discount);
+              const fee = Number(order.deliveryFee);
+              const feeServed = Number.isFinite(fee) && fee >= 0;
+              const hasDiscount = Number.isFinite(d) && d > 0;
+              const itemsLine = feeServed ? Math.max(0, Math.round(order.total - fee)) : order.total;
+              const savings = hasDiscount
+                ? Math.round(d)
+                : feeServed
+                  ? 0
+                  : Math.max(0, Math.round(order.total + (order.deliveryFee ?? 0) - (order.chargedTotal ?? order.total)));
+              return (
+                <>
+                  <View className="flex-row justify-between">
+                    <Text className="text-[14px] font-inter-400 text-textSecondary" style={{ lineHeight: 20 }}>Items Total</Text>
+                    <Text className="text-[14px] font-inter-500 text-textPrimary" style={{ lineHeight: 20 }}>{formatPrice(itemsLine)}</Text>
+                  </View>
+                  {(order.deliveryFee ?? 0) > 0 && (
+                    <View className="flex-row justify-between">
+                      <Text className="text-[14px] font-inter-400 text-textSecondary" style={{ lineHeight: 20 }}>Delivery</Text>
+                      <Text className="text-[14px] font-inter-500 text-textPrimary" style={{ lineHeight: 20 }}>{formatPrice(order.deliveryFee ?? 0)}</Text>
+                    </View>
+                  )}
+                  {savings > 0 && (
+                    <View className="flex-row justify-between">
+                      <Text className="text-[14px] font-inter-400 text-textSecondary" style={{ lineHeight: 20 }}>Coupon savings{order.promoCode ? ` (${order.promoCode})` : ''}</Text>
+                      <Text className="text-[14px] font-inter-500 text-success" style={{ lineHeight: 20 }}>-{formatPrice(savings)}</Text>
+                    </View>
+                  )}
+                </>
+              );
+            })()}
             <View className="h-[1px]" style={{ backgroundColor: colors.surfaceContainerLow }} />
             <View className="flex-row justify-between">
               <Text className="text-[15px] font-inter-700 text-textPrimary" style={{ lineHeight: 22 }}>{/cash|cod/i.test(order.paymentMethod ?? '') ? 'Order Total (due on delivery)' : 'Total Paid'}</Text>

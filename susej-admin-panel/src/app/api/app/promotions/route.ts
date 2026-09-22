@@ -93,6 +93,11 @@ export async function POST(req: NextRequest) {
   if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   const prisma = await getPrisma();
   if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
+  // Shared per-account enforcement (one-shot).
+  const { checkSharedWriteRate: checkSharedPost } = await import("@/lib/rate-limit");
+  if (!(await checkSharedPost(prisma, `promos-post-user:${String(auth.user.username ?? "").toLowerCase()}`, 20))) {
+    return NextResponse.json({ error: "Too many requests — slow down" }, { status: 429 });
+  }
 
   let body: { packageId?: string; postId?: string; checkoutRef?: string; discountedPrice?: unknown };
   try {
@@ -242,6 +247,17 @@ export async function POST(req: NextRequest) {
             amount: -amount,
           },
         });
+        // Ledger mirror (one-shot): promo spend was WalletTransaction-only.
+        // Buyer-out promo leg + platform-in promo leg, same tx. Type-distinct
+        // (settlement/fee joins ignore them).
+        const legAt = new Date();
+        const legOrderId = `promo:${checkoutRef}`.slice(0, 120);
+        await tx.ledgerEntry.createMany({
+          data: [
+            { partyName: username, partyRole: "seller", direction: "out", type: "promo", amount, method: "wallet", status: "success", orderId: legOrderId, createdAt: legAt },
+            { partyName: "susej", partyRole: "platform", direction: "in", type: "promo", amount, method: "wallet", status: "success", orderId: legOrderId, createdAt: legAt },
+          ],
+        });
       }
       return tx.promotionPurchase.create({
         data: {
@@ -352,6 +368,11 @@ export async function PATCH(req: NextRequest) {
   if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   const prisma = await getPrisma();
   if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
+  // Shared per-account enforcement (one-shot).
+  const { checkSharedWriteRate: checkSharedPatch } = await import("@/lib/rate-limit");
+  if (!(await checkSharedPatch(prisma, `promos-patch-user:${String(auth.user.username ?? "").toLowerCase()}`, 20))) {
+    return NextResponse.json({ error: "Too many requests — slow down" }, { status: 429 });
+  }
 
   let body: { id?: unknown; postId?: unknown };
   try {
@@ -366,16 +387,26 @@ export async function PATCH(req: NextRequest) {
   if (!caller) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
 
   // The app's local mirror uses PRM- ids; the server row is matched by its
-  // own id, or — for mirror rows — by owned postId. Try id first, then fall
-  // back to the postId match (a local id otherwise 404s into a rollback
-  // loop where End-early can never succeed).
+  // own id, or — for mirror rows — by owned postId. Id match ends EXACTLY
+  // that purchase (never the postId set). The postId fallback ends one row
+  // only when exactly one active campaign exists on the listing — stacked
+  // campaigns need an explicit choice (409), otherwise one tap forfeits
+  // every campaign on the post with zero refund.
   let rows = id
     ? await prisma.promotionPurchase.findMany({ where: { id } })
     : [];
+  if (id && rows.length > 1) rows = rows.slice(0, 1);
   if (!rows.length && postId) {
-    rows = await prisma.promotionPurchase.findMany({
+    const owned = await prisma.promotionPurchase.findMany({
       where: { postId, sellerId: caller, status: "active" },
     });
+    if (owned.length > 1) {
+      return NextResponse.json(
+        { error: "Several active campaigns run on this listing — end the exact one from its card.", campaigns: owned.length },
+        { status: 409 }
+      );
+    }
+    rows = owned;
   }
   const row = rows[0];
   if (!row) return NextResponse.json({ error: "Campaign not found" }, { status: 404 });

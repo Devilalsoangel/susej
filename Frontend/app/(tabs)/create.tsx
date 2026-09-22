@@ -407,7 +407,6 @@ export default function CreateScreen() {
   const handlePost = async () => {
     if (!canPost || posting) return;
     setPosting(true);
-    await new Promise((r) => setTimeout(r, 700));
     const parsedTags = Array.from(
       new Set(extractHashtags(description))
     );

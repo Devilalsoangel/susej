@@ -88,10 +88,20 @@ export async function POST(req: NextRequest) {
 
   const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
   const now = Date.now();
+  // Hourly send cap per phone (brute-force bound): each code allows 5 verify
+  // attempts, and resends reset the counter — uncapped resends mean unbounded
+  // guesses. Cap 5 codes/hour/phone (Json row, no migration); the 6th send
+  // inside the window 429s. Legit users never hit 5/hour.
+  const prevVal = (existing?.value ?? null) as { sent?: number; firstSent?: number } | null;
+  const windowStart = typeof prevVal?.firstSent === "number" ? prevVal.firstSent : now;
+  const sentInWindow = now - windowStart < 3600 * 1000 ? Number(prevVal?.sent ?? 0) : 0;
+  if (sentInWindow >= 5) {
+    return NextResponse.json({ error: "Too many codes requested — try again in an hour" }, { status: 429 });
+  }
   await prisma.appSetting.upsert({
     where: { key: `otp:${phone}` },
-    create: { key: `otp:${phone}`, value: { hash: hashCode(phone, code), exp: now + OTP_TTL_MS, attempts: 0, issuedAt: now } },
-    update: { value: { hash: hashCode(phone, code), exp: now + OTP_TTL_MS, attempts: 0, issuedAt: now } },
+    create: { key: `otp:${phone}`, value: { hash: hashCode(phone, code), exp: now + OTP_TTL_MS, attempts: 0, issuedAt: now, sent: 1, firstSent: now } },
+    update: { value: { hash: hashCode(phone, code), exp: now + OTP_TTL_MS, attempts: 0, issuedAt: now, sent: sentInWindow + 1, firstSent: sentInWindow > 0 ? windowStart : now } },
   });
 
   const delivered = await sendViaSmsProvider(phone, code);

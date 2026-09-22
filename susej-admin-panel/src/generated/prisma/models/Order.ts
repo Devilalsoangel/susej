@@ -30,12 +30,16 @@ export type OrderAvgAggregateOutputType = {
   amount: number | null
   items: number | null
   rating: number | null
+  deliveryFee: number | null
+  discount: number | null
 }
 
 export type OrderSumAggregateOutputType = {
   amount: number | null
   items: number | null
   rating: number | null
+  deliveryFee: number | null
+  discount: number | null
 }
 
 export type OrderMinAggregateOutputType = {
@@ -62,6 +66,12 @@ export type OrderMinAggregateOutputType = {
   reviewComment: string | null
   placedAt: Date | null
   updatedAt: Date | null
+  kind: string | null
+  bookingDate: string | null
+  bookingTime: string | null
+  deliveryFee: number | null
+  discount: number | null
+  promoCode: string | null
 }
 
 export type OrderMaxAggregateOutputType = {
@@ -88,6 +98,12 @@ export type OrderMaxAggregateOutputType = {
   reviewComment: string | null
   placedAt: Date | null
   updatedAt: Date | null
+  kind: string | null
+  bookingDate: string | null
+  bookingTime: string | null
+  deliveryFee: number | null
+  discount: number | null
+  promoCode: string | null
 }
 
 export type OrderCountAggregateOutputType = {
@@ -116,6 +132,12 @@ export type OrderCountAggregateOutputType = {
   reviewComment: number
   placedAt: number
   updatedAt: number
+  kind: number
+  bookingDate: number
+  bookingTime: number
+  deliveryFee: number
+  discount: number
+  promoCode: number
   _all: number
 }
 
@@ -124,12 +146,16 @@ export type OrderAvgAggregateInputType = {
   amount?: true
   items?: true
   rating?: true
+  deliveryFee?: true
+  discount?: true
 }
 
 export type OrderSumAggregateInputType = {
   amount?: true
   items?: true
   rating?: true
+  deliveryFee?: true
+  discount?: true
 }
 
 export type OrderMinAggregateInputType = {
@@ -156,6 +182,12 @@ export type OrderMinAggregateInputType = {
   reviewComment?: true
   placedAt?: true
   updatedAt?: true
+  kind?: true
+  bookingDate?: true
+  bookingTime?: true
+  deliveryFee?: true
+  discount?: true
+  promoCode?: true
 }
 
 export type OrderMaxAggregateInputType = {
@@ -182,6 +214,12 @@ export type OrderMaxAggregateInputType = {
   reviewComment?: true
   placedAt?: true
   updatedAt?: true
+  kind?: true
+  bookingDate?: true
+  bookingTime?: true
+  deliveryFee?: true
+  discount?: true
+  promoCode?: true
 }
 
 export type OrderCountAggregateInputType = {
@@ -210,6 +248,12 @@ export type OrderCountAggregateInputType = {
   reviewComment?: true
   placedAt?: true
   updatedAt?: true
+  kind?: true
+  bookingDate?: true
+  bookingTime?: true
+  deliveryFee?: true
+  discount?: true
+  promoCode?: true
   _all?: true
 }
 
@@ -325,6 +369,12 @@ export type OrderGroupByOutputType = {
   reviewComment: string | null
   placedAt: Date
   updatedAt: Date
+  kind: string
+  bookingDate: string
+  bookingTime: string
+  deliveryFee: number
+  discount: number
+  promoCode: string
   _count: OrderCountAggregateOutputType | null
   _avg: OrderAvgAggregateOutputType | null
   _sum: OrderSumAggregateOutputType | null
@@ -376,6 +426,12 @@ export type OrderWhereInput = {
   reviewComment?: Prisma.StringNullableFilter<"Order"> | string | null
   placedAt?: Prisma.DateTimeFilter<"Order"> | Date | string
   updatedAt?: Prisma.DateTimeFilter<"Order"> | Date | string
+  kind?: Prisma.StringFilter<"Order"> | string
+  bookingDate?: Prisma.StringFilter<"Order"> | string
+  bookingTime?: Prisma.StringFilter<"Order"> | string
+  deliveryFee?: Prisma.FloatFilter<"Order"> | number
+  discount?: Prisma.FloatFilter<"Order"> | number
+  promoCode?: Prisma.StringFilter<"Order"> | string
 }
 
 export type OrderOrderByWithRelationInput = {
@@ -404,6 +460,12 @@ export type OrderOrderByWithRelationInput = {
   reviewComment?: Prisma.SortOrderInput | Prisma.SortOrder
   placedAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
+  kind?: Prisma.SortOrder
+  bookingDate?: Prisma.SortOrder
+  bookingTime?: Prisma.SortOrder
+  deliveryFee?: Prisma.SortOrder
+  discount?: Prisma.SortOrder
+  promoCode?: Prisma.SortOrder
 }
 
 export type OrderWhereUniqueInput = Prisma.AtLeast<{
@@ -435,6 +497,12 @@ export type OrderWhereUniqueInput = Prisma.AtLeast<{
   reviewComment?: Prisma.StringNullableFilter<"Order"> | string | null
   placedAt?: Prisma.DateTimeFilter<"Order"> | Date | string
   updatedAt?: Prisma.DateTimeFilter<"Order"> | Date | string
+  kind?: Prisma.StringFilter<"Order"> | string
+  bookingDate?: Prisma.StringFilter<"Order"> | string
+  bookingTime?: Prisma.StringFilter<"Order"> | string
+  deliveryFee?: Prisma.FloatFilter<"Order"> | number
+  discount?: Prisma.FloatFilter<"Order"> | number
+  promoCode?: Prisma.StringFilter<"Order"> | string
 }, "id" | "trackingNumber">
 
 export type OrderOrderByWithAggregationInput = {
@@ -463,6 +531,12 @@ export type OrderOrderByWithAggregationInput = {
   reviewComment?: Prisma.SortOrderInput | Prisma.SortOrder
   placedAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
+  kind?: Prisma.SortOrder
+  bookingDate?: Prisma.SortOrder
+  bookingTime?: Prisma.SortOrder
+  deliveryFee?: Prisma.SortOrder
+  discount?: Prisma.SortOrder
+  promoCode?: Prisma.SortOrder
   _count?: Prisma.OrderCountOrderByAggregateInput
   _avg?: Prisma.OrderAvgOrderByAggregateInput
   _max?: Prisma.OrderMaxOrderByAggregateInput
@@ -499,6 +573,12 @@ export type OrderScalarWhereWithAggregatesInput = {
   reviewComment?: Prisma.StringNullableWithAggregatesFilter<"Order"> | string | null
   placedAt?: Prisma.DateTimeWithAggregatesFilter<"Order"> | Date | string
   updatedAt?: Prisma.DateTimeWithAggregatesFilter<"Order"> | Date | string
+  kind?: Prisma.StringWithAggregatesFilter<"Order"> | string
+  bookingDate?: Prisma.StringWithAggregatesFilter<"Order"> | string
+  bookingTime?: Prisma.StringWithAggregatesFilter<"Order"> | string
+  deliveryFee?: Prisma.FloatWithAggregatesFilter<"Order"> | number
+  discount?: Prisma.FloatWithAggregatesFilter<"Order"> | number
+  promoCode?: Prisma.StringWithAggregatesFilter<"Order"> | string
 }
 
 export type OrderCreateInput = {
@@ -527,6 +607,12 @@ export type OrderCreateInput = {
   reviewComment?: string | null
   placedAt?: Date | string
   updatedAt?: Date | string
+  kind?: string
+  bookingDate?: string
+  bookingTime?: string
+  deliveryFee?: number
+  discount?: number
+  promoCode?: string
 }
 
 export type OrderUncheckedCreateInput = {
@@ -555,6 +641,12 @@ export type OrderUncheckedCreateInput = {
   reviewComment?: string | null
   placedAt?: Date | string
   updatedAt?: Date | string
+  kind?: string
+  bookingDate?: string
+  bookingTime?: string
+  deliveryFee?: number
+  discount?: number
+  promoCode?: string
 }
 
 export type OrderUpdateInput = {
@@ -583,6 +675,12 @@ export type OrderUpdateInput = {
   reviewComment?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   placedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  kind?: Prisma.StringFieldUpdateOperationsInput | string
+  bookingDate?: Prisma.StringFieldUpdateOperationsInput | string
+  bookingTime?: Prisma.StringFieldUpdateOperationsInput | string
+  deliveryFee?: Prisma.FloatFieldUpdateOperationsInput | number
+  discount?: Prisma.FloatFieldUpdateOperationsInput | number
+  promoCode?: Prisma.StringFieldUpdateOperationsInput | string
 }
 
 export type OrderUncheckedUpdateInput = {
@@ -611,6 +709,12 @@ export type OrderUncheckedUpdateInput = {
   reviewComment?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   placedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  kind?: Prisma.StringFieldUpdateOperationsInput | string
+  bookingDate?: Prisma.StringFieldUpdateOperationsInput | string
+  bookingTime?: Prisma.StringFieldUpdateOperationsInput | string
+  deliveryFee?: Prisma.FloatFieldUpdateOperationsInput | number
+  discount?: Prisma.FloatFieldUpdateOperationsInput | number
+  promoCode?: Prisma.StringFieldUpdateOperationsInput | string
 }
 
 export type OrderCreateManyInput = {
@@ -639,6 +743,12 @@ export type OrderCreateManyInput = {
   reviewComment?: string | null
   placedAt?: Date | string
   updatedAt?: Date | string
+  kind?: string
+  bookingDate?: string
+  bookingTime?: string
+  deliveryFee?: number
+  discount?: number
+  promoCode?: string
 }
 
 export type OrderUpdateManyMutationInput = {
@@ -667,6 +777,12 @@ export type OrderUpdateManyMutationInput = {
   reviewComment?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   placedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  kind?: Prisma.StringFieldUpdateOperationsInput | string
+  bookingDate?: Prisma.StringFieldUpdateOperationsInput | string
+  bookingTime?: Prisma.StringFieldUpdateOperationsInput | string
+  deliveryFee?: Prisma.FloatFieldUpdateOperationsInput | number
+  discount?: Prisma.FloatFieldUpdateOperationsInput | number
+  promoCode?: Prisma.StringFieldUpdateOperationsInput | string
 }
 
 export type OrderUncheckedUpdateManyInput = {
@@ -695,6 +811,12 @@ export type OrderUncheckedUpdateManyInput = {
   reviewComment?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   placedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  kind?: Prisma.StringFieldUpdateOperationsInput | string
+  bookingDate?: Prisma.StringFieldUpdateOperationsInput | string
+  bookingTime?: Prisma.StringFieldUpdateOperationsInput | string
+  deliveryFee?: Prisma.FloatFieldUpdateOperationsInput | number
+  discount?: Prisma.FloatFieldUpdateOperationsInput | number
+  promoCode?: Prisma.StringFieldUpdateOperationsInput | string
 }
 
 export type OrderCountOrderByAggregateInput = {
@@ -723,12 +845,20 @@ export type OrderCountOrderByAggregateInput = {
   reviewComment?: Prisma.SortOrder
   placedAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
+  kind?: Prisma.SortOrder
+  bookingDate?: Prisma.SortOrder
+  bookingTime?: Prisma.SortOrder
+  deliveryFee?: Prisma.SortOrder
+  discount?: Prisma.SortOrder
+  promoCode?: Prisma.SortOrder
 }
 
 export type OrderAvgOrderByAggregateInput = {
   amount?: Prisma.SortOrder
   items?: Prisma.SortOrder
   rating?: Prisma.SortOrder
+  deliveryFee?: Prisma.SortOrder
+  discount?: Prisma.SortOrder
 }
 
 export type OrderMaxOrderByAggregateInput = {
@@ -755,6 +885,12 @@ export type OrderMaxOrderByAggregateInput = {
   reviewComment?: Prisma.SortOrder
   placedAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
+  kind?: Prisma.SortOrder
+  bookingDate?: Prisma.SortOrder
+  bookingTime?: Prisma.SortOrder
+  deliveryFee?: Prisma.SortOrder
+  discount?: Prisma.SortOrder
+  promoCode?: Prisma.SortOrder
 }
 
 export type OrderMinOrderByAggregateInput = {
@@ -781,12 +917,20 @@ export type OrderMinOrderByAggregateInput = {
   reviewComment?: Prisma.SortOrder
   placedAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
+  kind?: Prisma.SortOrder
+  bookingDate?: Prisma.SortOrder
+  bookingTime?: Prisma.SortOrder
+  deliveryFee?: Prisma.SortOrder
+  discount?: Prisma.SortOrder
+  promoCode?: Prisma.SortOrder
 }
 
 export type OrderSumOrderByAggregateInput = {
   amount?: Prisma.SortOrder
   items?: Prisma.SortOrder
   rating?: Prisma.SortOrder
+  deliveryFee?: Prisma.SortOrder
+  discount?: Prisma.SortOrder
 }
 
 export type NullableIntFieldUpdateOperationsInput = {
@@ -825,6 +969,12 @@ export type OrderSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs = 
   reviewComment?: boolean
   placedAt?: boolean
   updatedAt?: boolean
+  kind?: boolean
+  bookingDate?: boolean
+  bookingTime?: boolean
+  deliveryFee?: boolean
+  discount?: boolean
+  promoCode?: boolean
 }, ExtArgs["result"]["order"]>
 
 export type OrderSelectCreateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetSelect<{
@@ -853,6 +1003,12 @@ export type OrderSelectCreateManyAndReturn<ExtArgs extends runtime.Types.Extensi
   reviewComment?: boolean
   placedAt?: boolean
   updatedAt?: boolean
+  kind?: boolean
+  bookingDate?: boolean
+  bookingTime?: boolean
+  deliveryFee?: boolean
+  discount?: boolean
+  promoCode?: boolean
 }, ExtArgs["result"]["order"]>
 
 export type OrderSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetSelect<{
@@ -881,6 +1037,12 @@ export type OrderSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.Extensi
   reviewComment?: boolean
   placedAt?: boolean
   updatedAt?: boolean
+  kind?: boolean
+  bookingDate?: boolean
+  bookingTime?: boolean
+  deliveryFee?: boolean
+  discount?: boolean
+  promoCode?: boolean
 }, ExtArgs["result"]["order"]>
 
 export type OrderSelectScalar = {
@@ -909,9 +1071,15 @@ export type OrderSelectScalar = {
   reviewComment?: boolean
   placedAt?: boolean
   updatedAt?: boolean
+  kind?: boolean
+  bookingDate?: boolean
+  bookingTime?: boolean
+  deliveryFee?: boolean
+  discount?: boolean
+  promoCode?: boolean
 }
 
-export type OrderOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "buyerName" | "sellerName" | "amount" | "status" | "deliveryStatus" | "items" | "itemsList" | "shippingCarrier" | "trackingNumber" | "estimatedDelivery" | "actualDelivery" | "shippingAddress" | "paymentMethod" | "paymentStatus" | "createdAt" | "deliveryLog" | "orderNumber" | "buyerUsername" | "sellerUsername" | "reviewed" | "rating" | "reviewComment" | "placedAt" | "updatedAt", ExtArgs["result"]["order"]>
+export type OrderOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "buyerName" | "sellerName" | "amount" | "status" | "deliveryStatus" | "items" | "itemsList" | "shippingCarrier" | "trackingNumber" | "estimatedDelivery" | "actualDelivery" | "shippingAddress" | "paymentMethod" | "paymentStatus" | "createdAt" | "deliveryLog" | "orderNumber" | "buyerUsername" | "sellerUsername" | "reviewed" | "rating" | "reviewComment" | "placedAt" | "updatedAt" | "kind" | "bookingDate" | "bookingTime" | "deliveryFee" | "discount" | "promoCode", ExtArgs["result"]["order"]>
 
 export type $OrderPayload<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   name: "Order"
@@ -942,6 +1110,12 @@ export type $OrderPayload<ExtArgs extends runtime.Types.Extensions.InternalArgs 
     reviewComment: string | null
     placedAt: Date
     updatedAt: Date
+    kind: string
+    bookingDate: string
+    bookingTime: string
+    deliveryFee: number
+    discount: number
+    promoCode: string
   }, ExtArgs["result"]["order"]>
   composites: {}
 }
@@ -1390,6 +1564,12 @@ export interface OrderFieldRefs {
   readonly reviewComment: Prisma.FieldRef<"Order", 'String'>
   readonly placedAt: Prisma.FieldRef<"Order", 'DateTime'>
   readonly updatedAt: Prisma.FieldRef<"Order", 'DateTime'>
+  readonly kind: Prisma.FieldRef<"Order", 'String'>
+  readonly bookingDate: Prisma.FieldRef<"Order", 'String'>
+  readonly bookingTime: Prisma.FieldRef<"Order", 'String'>
+  readonly deliveryFee: Prisma.FieldRef<"Order", 'Float'>
+  readonly discount: Prisma.FieldRef<"Order", 'Float'>
+  readonly promoCode: Prisma.FieldRef<"Order", 'String'>
 }
     
 

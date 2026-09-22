@@ -124,20 +124,32 @@ const tabs = [
 export default function SellersPage() {
   const router = useRouter();
   const { data: sellers, loading: sellersLoading, total: sellersTotal, refresh } = useDbResource<Seller>("sellers", { take: 100 });
-  // Pending queue pages the SERVER (?status=pending → kycStatus): the
-  // in-memory filter over the first 100 hid pendings at row 101+.
+  // Every queue pages the SERVER (?status → kycStatus): in-memory filters
+  // over the first 100 hid rows at 101+ on every tab, not just pending.
   const [pendingSkip, setPendingSkip] = useState(0);
   const { data: pendingRows, loading: pendingRowsLoading, total: pendingTotal } = useDbResource<Seller>("sellers", {
     take: 100,
     status: "pending",
     ...(pendingSkip > 0 ? { skip: pendingSkip } : {}),
   });
+  const [verifiedSkip, setVerifiedSkip] = useState(0);
+  const { data: verifiedRows, loading: verifiedLoading, total: verifiedTotal } = useDbResource<Seller>("sellers", {
+    take: 100,
+    status: "approved",
+    ...(verifiedSkip > 0 ? { skip: verifiedSkip } : {}),
+  });
+  const [rejectedSkip, setRejectedSkip] = useState(0);
+  const { data: rejectedRows, loading: rejectedLoading, total: rejectedTotal } = useDbResource<Seller>("sellers", {
+    take: 100,
+    status: "rejected",
+    ...(rejectedSkip > 0 ? { skip: rejectedSkip } : {}),
+  });
   const allSellers = sellers ?? [];
   const pendingCount = typeof pendingTotal === "number" ? pendingTotal : allSellers.filter((s) => s.kycStatus === "pending").length;
-  const verifiedCount = allSellers.filter((s) => s.kycStatus === "approved").length;
-  const rejectedCount = allSellers.filter((s) => s.kycStatus === "rejected").length;
-  // Window qualifier for the in-memory tabs (the pending queue pages the
-  // server; verified/rejected filter the loaded window).
+  const verifiedCount = typeof verifiedTotal === "number" ? verifiedTotal : allSellers.filter((s) => s.kycStatus === "approved").length;
+  const rejectedCount = typeof rejectedTotal === "number" ? rejectedTotal : allSellers.filter((s) => s.kycStatus === "rejected").length;
+  // Window qualifier for the unfiltered All view only — every status tab now
+  // pages the server.
   const win = typeof sellersTotal === "number" && sellersTotal > allSellers.length ? " · first 100" : "";
 
   return (
@@ -228,32 +240,80 @@ export default function SellersPage() {
             {active === "verified" && (
               <Card>
                 <CardHeader>
-                  <CardTitle>Verified Sellers ({verifiedCount}{win})</CardTitle>
+                  <CardTitle>Verified Sellers ({verifiedCount})</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <DataTable loading={sellersLoading}
+                  <DataTable loading={verifiedLoading}
                     columns={baseColumns}
-                    data={allSellers.filter((s) => s.kycStatus === "approved")}
+                    data={verifiedRows ?? []}
+                    totalCount={verifiedTotal ?? (verifiedRows ?? []).length}
                     searchable
                     searchKey="businessName"
                     onRowClick={(row) => router.push(`/dashboard/sellers/${row.id}`)}
                   />
+                  {typeof verifiedTotal === "number" && verifiedTotal > (verifiedRows ?? []).length && (
+                    <div className="mt-3 flex items-center gap-2">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={verifiedSkip === 0}
+                        onClick={() => setVerifiedSkip(Math.max(0, verifiedSkip - 100))}
+                      >
+                        Prev 100
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={verifiedSkip + (verifiedRows ?? []).length >= verifiedTotal}
+                        onClick={() => setVerifiedSkip(verifiedSkip + 100)}
+                      >
+                        Next 100
+                      </Button>
+                      <span className="text-[12px] text-[#71717A]">
+                        Showing {verifiedSkip + 1}–{verifiedSkip + (verifiedRows ?? []).length} of {verifiedTotal}
+                      </span>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             )}
             {active === "rejected" && (
               <Card>
                 <CardHeader>
-                  <CardTitle>Rejected Sellers ({rejectedCount}{win})</CardTitle>
+                  <CardTitle>Rejected Sellers ({rejectedCount})</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <DataTable loading={sellersLoading}
+                  <DataTable loading={rejectedLoading}
                     columns={baseColumns}
-                    data={allSellers.filter((s) => s.kycStatus === "rejected")}
+                    data={rejectedRows ?? []}
+                    totalCount={rejectedTotal ?? (rejectedRows ?? []).length}
                     searchable
                     searchKey="businessName"
                     onRowClick={(row) => router.push(`/dashboard/sellers/${row.id}`)}
                   />
+                  {typeof rejectedTotal === "number" && rejectedTotal > (rejectedRows ?? []).length && (
+                    <div className="mt-3 flex items-center gap-2">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={rejectedSkip === 0}
+                        onClick={() => setRejectedSkip(Math.max(0, rejectedSkip - 100))}
+                      >
+                        Prev 100
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={rejectedSkip + (rejectedRows ?? []).length >= rejectedTotal}
+                        onClick={() => setRejectedSkip(rejectedSkip + 100)}
+                      >
+                        Next 100
+                      </Button>
+                      <span className="text-[12px] text-[#71717A]">
+                        Showing {rejectedSkip + 1}–{rejectedSkip + (rejectedRows ?? []).length} of {rejectedTotal}
+                      </span>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             )}

@@ -9,11 +9,22 @@ export async function GET(req: NextRequest) {
   if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
 
   const username = auth.user.username!;
-  const threads = await prisma.chatThread.findMany({
+  let threads = await prisma.chatThread.findMany({
     where: { OR: [{ participantA: username }, { participantB: username }] },
     orderBy: { lastAt: "desc" },
     take: 100,
   });
+  // Cross-device block hide (either direction). Missing table = no filter.
+  try {
+    const { blockedBy, blockedMe } = await import("@/lib/blocks");
+    const [byMe, ofMe] = await Promise.all([blockedBy(prisma, username), blockedMe(prisma, username)]);
+    if (byMe.size > 0 || ofMe.size > 0) {
+      threads = threads.filter((t) => {
+        const other = (t.participantA === username ? t.participantB : t.participantA).toLowerCase();
+        return !byMe.has(other) && !ofMe.has(other);
+      });
+    }
+  } catch {}
 
   const unreadRows = await prisma.chatMessage.findMany({
     where: {
@@ -79,6 +90,14 @@ export async function POST(req: NextRequest) {
   if (!other || other === username) return NextResponse.json({ error: "Invalid participant" }, { status: 400 });
   const target = await prisma.user.findUnique({ where: { username: other } });
   if (!target) return NextResponse.json({ error: "User not found" }, { status: 404 });
+  // Server-side block enforcement (either direction): a thread must never
+  // open across a block. Same message both ways (no direction oracle).
+  try {
+    const { blockBetween } = await import("@/lib/blocks");
+    if (await blockBetween(prisma, username, other)) {
+      return NextResponse.json({ error: "You can't message this user." }, { status: 403 });
+    }
+  } catch {}
 
   let thread = await prisma.chatThread.findFirst({
     where: {

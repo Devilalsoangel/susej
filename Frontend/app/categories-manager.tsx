@@ -116,23 +116,28 @@ export default function CategoriesManagerScreen() {
         <Text className="font-inter-600 text-textPrimary mb-3" style={{ fontSize: 13, lineHeight: 18 }}>
           Main category
         </Text>
+        {/* Read-only: every viewer here is an approved seller and mains lock
+          at approval (change-requests go through support). Tappable chips
+          only ever fired a 'locked' alert — theater, not a control. */}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }} style={{ marginHorizontal: -20 }}>
           {CATEGORY_TREE.map((c) => {
             const active = c.id === main;
             return (
-              <TouchableOpacity
+              <View
                 key={c.id}
-                onPress={() => handleMainChange(c.id)}
                 className="h-9 px-4 items-center justify-center"
-                style={{ borderRadius: 9999, backgroundColor: active ? colors.primaryContainer : colors.surfaceContainerLow }}
+                style={{ borderRadius: 9999, backgroundColor: active ? colors.primaryContainer : colors.surfaceContainerLow, opacity: active ? 1 : 0.55 }}
               >
                 <Text className={active ? 'font-inter-600' : 'font-inter-500'} style={{ fontSize: 13, lineHeight: 18, color: active ? colors.onPrimary : colors.textPrimary }}>
-                  {c.label}
+                  {c.label}{active ? ' · locked' : ''}
                 </Text>
-              </TouchableOpacity>
+              </View>
             );
           })}
         </ScrollView>
+        <Text className="font-inter-400 mt-2" style={{ fontSize: 12, lineHeight: 17, color: colors.textSecondary }}>
+          Locked after approval — contact support to change it. Sub-category chips below preview on this device only until the storefront sync lands (buyers see the standard taxonomy).
+        </Text>
 
         {/* Subcategory picker */}
         <View className="mt-6">

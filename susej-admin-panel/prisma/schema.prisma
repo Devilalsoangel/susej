@@ -93,6 +93,10 @@ model Seller {
   selfieUrl     String?
   kycStatus     String
   gstStatus     String
+  // Buyer-trust shop profile (cross-device truth; previously device-local
+  // only in the app). Nullable: unknown for legacy rows.
+  tagline       String?
+  hours         String?
   score         Int
   productsCount Int
   totalSales    Int               @default(0)
@@ -185,6 +189,15 @@ model Order {
   reviewComment    String?
   placedAt         DateTime @default(now())
   updatedAt        DateTime @default(now()) @updatedAt
+  // Durable order facts (stamped at placement; served on every pull).
+  // Defaults keep the migration non-destructive; legacy rows fall back to
+  // the settled-lines Json provenance. Added Sep21 one-shot.
+  kind             String   @default("order")
+  bookingDate      String   @default("")
+  bookingTime      String   @default("")
+  deliveryFee      Float    @default(0)
+  discount         Float    @default(0)
+  promoCode        String   @default("")
 
   @@index([status])
   @@index([buyerUsername])
@@ -672,6 +685,63 @@ model Reel {
   createdAt       DateTime
 }
 
+model Block {
+  id               String   @id @default(cuid())
+  blockerUsername  String
+  blockedUsername  String
+  createdAt        DateTime @default(now())
+
+  @@unique([blockerUsername, blockedUsername])
+  @@index([blockedUsername])
+}
+
+model ReelLike {
+  id        String   @id @default(cuid())
+  reelId    String
+  username  String
+  createdAt DateTime @default(now())
+
+  @@unique([reelId, username])
+  @@index([reelId])
+}
+
+// Price-drop watch (buyer subscribes; posts PATCH notifies on drops).
+// New table: all access is missing-table tolerant until migration lands.
+model PriceWatch {
+  id           String   @id @default(cuid())
+  username     String
+  listingId    String
+  priceAtWatch Float
+  createdAt    DateTime @default(now())
+
+  @@unique([username, listingId])
+  @@index([listingId])
+}
+
+// Community polls (shared vote truth; one vote per user per poll).
+// New tables: missing-table tolerant until migration lands.
+model Poll {
+  id          String   @id @default(cuid())
+  communityId String
+  question    String
+  options     Json
+  createdBy   String
+  createdAt   DateTime @default(now())
+
+  @@index([communityId])
+}
+
+model PollVote {
+  id        String   @id @default(cuid())
+  pollId    String
+  username  String
+  optionId  String
+  createdAt DateTime @default(now())
+
+  @@unique([pollId, username])
+  @@index([pollId])
+}
+
 model Story {
   id          String   @id @default(cuid())
   username    String
@@ -703,6 +773,8 @@ model Bundle {
   price      Float
   discount   Int
   sellerName String
+  // Stable owner identity (display names rename; composer + guards key here).
+  sellerUsername String?
   status     String
   createdAt  DateTime
   // Bundle contents: [{ listingId, name, price }] — drives one-tap add-to-cart
@@ -755,6 +827,10 @@ model Dispute {
   orderId    String
   buyerName  String
   sellerName String
+  // Stable identity (usernames never rename; display names do). Stamped on
+  // create; party reads match these first, display names as legacy fallback.
+  buyerUsername  String?
+  sellerUsername String?
   reason     String
   amount     Float
   status     String
@@ -799,11 +875,14 @@ model Refund {
 }
 
 model Withdrawal {
-  id          String    @id @default(cuid())
-  userName    String
-  method      String
-  amount      Float
-  status      String
+  id        String   @id @default(cuid())
+  userName  String
+  method    String
+  amount    Float
+  // Actual fee debited at request time. -1 = unknown (legacy rows parsed
+  // from detail text with historic-max fallback). New rows stamp exactly.
+  fee       Float    @default(-1)
+  status    String
   requestedAt DateTime
   respondedAt DateTime?
 
@@ -834,6 +913,10 @@ model Message {
 model AppSession {
   id        String   @id @default(cuid())
   token     String   @unique
+  // Hash-at-rest (sha256) + last4 for support. New sessions write both;
+  // reads try tokenHash first, falling back to token until rotation lands.
+  tokenHash String?  @unique
+  last4     String   @default("")
   userId    String
   username  String
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)

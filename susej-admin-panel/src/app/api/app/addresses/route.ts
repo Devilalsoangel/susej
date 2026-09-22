@@ -65,6 +65,12 @@ export async function POST(req: NextRequest) {
   if (!address || !city || phone.length < 7) {
     return NextResponse.json({ error: "street, city and a valid phone are required" }, { status: 400 });
   }
+  // India-only product: every shippable address carries a 6-digit PIN inside
+  // the city line (checkout gates on it too). Direct API callers used to
+  // plant unroutable PIN-less rows the seller could never ship to.
+  if (!/(^|\D)\d{6}(\D|$)/.test(city)) {
+    return NextResponse.json({ error: "city must include a 6-digit PIN code (e.g. Pune 411001)" }, { status: 400 });
+  }
 
   const count = await prisma.addressBookEntry.count({ where: { userName: username } });
   if (count >= 20) return NextResponse.json({ error: "Address book full (max 20)" }, { status: 400 });
@@ -124,6 +130,9 @@ export async function PATCH(req: NextRequest) {
   if (body.city !== undefined) {
     const c = clean(body.city, 100);
     if (!c) return NextResponse.json({ error: "city cannot be empty" }, { status: 400 });
+    if (!/(^|\D)\d{6}(\D|$)/.test(c)) {
+      return NextResponse.json({ error: "city must include a 6-digit PIN code (e.g. Pune 411001)" }, { status: 400 });
+    }
     data.city = c;
   }
   if (body.phone !== undefined) {

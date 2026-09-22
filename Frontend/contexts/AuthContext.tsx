@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { sessionStorage } from '../utils/sessionStorage';
-import { serverApi } from '../utils/serverApi';
+import { serverApi, onSessionExpired } from '../utils/serverApi';
 
 const ONBOARDED_KEY = '@susej_has_onboarded';
 const ONBOARDED_PREFIX = '@susej_has_onboarded:';
@@ -395,6 +395,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     },
     [user]
   );
+
+  // Dead-Bearer kill-switch: any non-auth lane proving a 401 means the token
+  // is revoked/rotated server-side. Wipe LOCAL state only (no revoke call —
+  // nothing to revoke) + drop cached money/chat rows so stale cache never
+  // renders as live truth. The login screen picks it up via isLoggedIn.
+  useEffect(() => {
+    onSessionExpired(() => {
+      setUser(null);
+      setIsLoggedIn(false);
+      setSessionSeq((n) => n + 1);
+      setTokenSeq((n) => n + 1);
+      void clearMoneyCache();
+    });
+  }, [clearMoneyCache]);
 
   return (
     <AuthContext.Provider
