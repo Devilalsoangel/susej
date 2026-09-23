@@ -139,8 +139,83 @@ function FeedContent() {
   const [homeTopSellers, setHomeTopSellers] = useState<Array<{ sellerId: string; sellerUsername?: string | null; sellerName: string; sellerLogo?: string | null; totalSales?: number; rating?: number; reviewCount?: number; position?: number; isPinned?: boolean | null }>>([]);
   const [homeHotDeals, setHomeHotDeals] = useState<Array<{ productId: string; postId?: string | null; productName: string; productImage?: string | null; originalPrice?: number; discountedPrice?: number; discountPercentage?: number; priority?: number }>>([]);
 
-  // Home rails fetch — the SINGLE source used by focus AND pull-to-refresh.
-  // A retry MUST refetch the failed lane (previously refresh never touched
+    // Cross-restart rails cache (stale-while-revalidate): a cold start paints
+  // last-good rails INSTANTLY while the network revalidates underneath.
+  // Without this every reopen paid the full cold fetch before showing rails.
+  type HomePayload = NonNullable<Awaited<ReturnType<typeof serverApi.getHome>>['data']>;
+  const HOME_RAILS_CACHE_KEY = '@susej_home_rails_cache';
+  const HOME_RAILS_CACHE_TTL = 24 * 60 * 60 * 1000;
+  const applyHomePayload = useCallback(async (data: HomePayload, isActive: () => boolean) => {
+    const sections = data.sections ?? null;
+    if (isActive()) setHomeSections(sections);
+    const secOn = (k: string) => (sections as Record<string, boolean> | null)?.[k] !== false;
+    if (secOn('spotlight')) setHomeSpotlightPostId(data.spotlight?.postId ?? null);
+    else if (isActive()) setHomeSpotlightPostId(null);
+    if (secOn('featured-posts') && data.featuredPosts?.length) {
+      const pinned: string[] = [];
+      const boosted: string[] = [];
+      for (const f of data.featuredPosts) {
+        if (!f?.postId) continue;
+        if (f.isPinned) pinned.push(f.postId);
+        else boosted.push(f.postId);
+      }
+      setHomeFeaturedPinned(pinned);
+      setHomeFeaturedBoosted(boosted);
+    } else if (isActive()) {
+      setHomeFeaturedPinned([]);
+      setHomeFeaturedBoosted([]);
+    }
+    if (secOn('top-sellers') && data.topSellers?.length) {
+      setHomeTopSellers(data.topSellers.filter((t) => t?.sellerUsername));
+    } else if (isActive()) {
+      setHomeTopSellers([]);
+    }
+    if (secOn('hot-deals') && data.hotDeals?.length) {
+      setHomeHotDeals(data.hotDeals.filter((d) => d?.postId));
+    } else if (isActive()) {
+      setHomeHotDeals([]);
+    }
+    if (secOn('storefront-banners') && data.marketingBanners?.length) {
+      const first = data.marketingBanners.find((b) => b.imageUrl) || null;
+      if (first && first.imageUrl) {
+        const base = await getAdminUrl();
+        if (!isActive()) return;
+        setHero({
+          sellerUsername: first.sellerUsername,
+          sellerName: first.sellerName,
+          title: first.title,
+          subtitle: first.subtitle,
+          ctaLabel: first.ctaLabel,
+          imageUrl: first.imageUrl.startsWith('http') ? first.imageUrl : `${base}${first.imageUrl}`,
+          size: first.size,
+        });
+      } else if (isActive()) {
+        setHero(null);
+      }
+    } else if (isActive()) {
+      setHero(null);
+    }
+  }, []);
+
+  // Paint cache on mount (before the network answers), then let focus fetch
+  // revalidate. Degraded/empty payloads never overwrite the cache.
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      try {
+        const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
+        const raw = await AsyncStorage.getItem(HOME_RAILS_CACHE_KEY);
+        if (!raw || !live) return;
+        const parsed = JSON.parse(raw) as { at?: number; data?: HomePayload };
+        if (!parsed || typeof parsed.at !== 'number' || Date.now() - parsed.at > HOME_RAILS_CACHE_TTL) return;
+        if (!parsed.data || (parsed.data as { degraded?: boolean }).degraded === true) return;
+        await applyHomePayload(parsed.data, () => live);
+      } catch {}
+    })();
+    return () => { live = false; };
+  }, [applyHomePayload]);
+
+  // Home rails fetch — the SINGLE source used by focus AND pull-to-refresh.  // A retry MUST refetch the failed lane (previously refresh never touched
   // getHome, so the degraded banner could never clear and users pulled
   // forever). Failure KEEPS last-good rails (stale-while-revalidate within
   // the session) instead of wiping them; only success mutates rail state,
@@ -168,6 +243,16 @@ function FeedContent() {
     }
     setHomeDegraded(data.degraded === true);
     if (data.degraded === true) setHomeDegradedWhy('server');
+    await applyHomePayload(data, isActive);
+    // Persist last-good (never degraded/empty) for instant cold-start paint.
+    if (!data.degraded) {
+      try {
+        const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
+        await AsyncStorage.setItem(HOME_RAILS_CACHE_KEY, JSON.stringify({ at: Date.now(), data }));
+      } catch {}
+    }
+    // Idempotent re-apply of the same payload (same values, one extra paint):
+    // kept while applyHomePayload above is the single applier both paths share.
     const sections = data.sections ?? null;
     if (isActive()) setHomeSections(sections);
     const secOn = (k: string) => (sections as Record<string, boolean> | null)?.[k] !== false;
