@@ -44,36 +44,50 @@ interface Auction {
   bids: AuctionBid[];
 }
 
-function normalizeAuction(a: any): Auction {
+function toFiniteNumber(value: unknown, fallback: number): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) return Number(value);
+  return fallback;
+}
+
+function normalizeAuction(a: Record<string, unknown>): Auction {
+  const bidsRaw: unknown = a.bids;
+  const startsLabelRaw: unknown = a.startsLabel;
   return {
-    id: String(a.id),
-    title: a.title ?? 'Untitled auction',
-    seller: a.seller ?? 'susej seller',
+    id: String(a.id ?? ''),
+    title: typeof a.title === 'string' ? a.title : 'Untitled auction',
+    seller: typeof a.seller === 'string' ? a.seller : 'susej seller',
     sellerUsername: typeof a.sellerUsername === 'string' ? a.sellerUsername : undefined,
-    verified: !!a.verified,
-    startPrice: Number(a.startPrice) || 0,
-    currentBid: Number(a.currentBid) || 0,
-    endTime: Number(a.endTime) || 0,
-    bidsCount: Number(a.bidsCount) || 0,
+    verified: Boolean(a.verified),
+    startPrice: toFiniteNumber(a.startPrice, 0) || 0,
+    currentBid: toFiniteNumber(a.currentBid, 0) || 0,
+    endTime: toFiniteNumber(a.endTime, 0) || 0,
+    bidsCount: toFiniteNumber(a.bidsCount, 0) || 0,
     status: a.status === 'ended' ? 'ended' : a.status === 'upcoming' ? 'upcoming' : 'live',
-    imageKey: a.imageKey ?? String(a.id),
+    imageKey: typeof a.imageKey === 'string' ? a.imageKey : String(a.id ?? ''),
     imageUrl: typeof a.imageUrl === 'string' && a.imageUrl ? a.imageUrl : undefined,
-    startsLabel: a.startsLabel,
-    reminder: !!a.reminder,
+    startsLabel: typeof startsLabelRaw === 'string' ? startsLabelRaw : undefined,
+    reminder: Boolean(a.reminder),
     localOnly: a.localOnly === true ? true : undefined,
-    bids: Array.isArray(a.bids) ? a.bids : [],
+    bids: Array.isArray(bidsRaw) ? (bidsRaw as AuctionBid[]) : [],
   };
 }
 
 function findAuction(data: string | null, auctionId: string): Auction | null {
   if (data) {
     try {
-      const parsed = JSON.parse(data);
+      const parsed: unknown = JSON.parse(data);
       if (Array.isArray(parsed)) {
         // Real auctions only — legacy demo seeds (auc_001..004) are ignored.
-        const hit = parsed.find(
-          (a: any) => a && a.id === auctionId && !/^auc_00[1-4]$/.test(String(a.id))
-        );
+        let hit: Record<string, unknown> | undefined;
+        for (const item of parsed) {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+          const rec = item as Record<string, unknown>;
+          if (rec.id === auctionId && !/^auc_00[1-4]$/.test(String(rec.id))) {
+            hit = rec;
+            break;
+          }
+        }
         if (hit) return normalizeAuction(hit);
       }
     } catch {
@@ -161,48 +175,95 @@ export default function AuctionDetailScreen() {
 
   // Server truth on every focus (price/outbid/ended/winner refresh): local
   // cache is the offline fallback, never money truth. Local bid thread
-  // preserved. The detail lane additionally resolves the cross-device top
-  // bid — without it a rival phone's winning bid never appears here.
-  const fetchDetail = useCallback(async () => {
+  // preserved. The detail lane resolves the single row plus the cross-device
+  // top bid — without it a rival phone's winning bid never appears here.
+  // Returns true when the single-row call refreshed the screen.
+  const fetchDetail = useCallback(async (): Promise<boolean> => {
     try {
       const res = await serverApi.getAuction(auctionId);
-      const a = (res as { ok?: boolean; data?: { auction?: any } })?.data?.auction;
-      if (!res.ok || !a) return;
-      if (a.topBid && typeof a.topBid.amount === 'number') {
-        setServerTop({ bidder: String(a.topBid.bidder ?? ''), amount: Number(a.topBid.amount), iAmWinning: a.iAmWinning === true });
+      const raw: unknown = res.data?.auction;
+      if (!res.ok || !raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+      const a = raw as Record<string, unknown>;
+      const topRaw: unknown = a.topBid;
+      if (topRaw && typeof topRaw === 'object' && !Array.isArray(topRaw)) {
+        const top = topRaw as Record<string, unknown>;
+        if (typeof top.amount === 'number') {
+          const bidderRaw: unknown = top.bidder;
+          setServerTop({
+            bidder: typeof bidderRaw === 'string' ? bidderRaw : '',
+            amount: top.amount,
+            iAmWinning: a.iAmWinning === true,
+          });
+        }
       }
       setAuction((prev) => {
         if (!prev) return prev;
+        const statusRaw: unknown = a.status;
+        const status: Auction['status'] =
+          statusRaw === 'live' || statusRaw === 'upcoming' || statusRaw === 'ended'
+            ? statusRaw
+            : prev.status;
         return {
           ...prev,
-          currentBid: Number(a.currentBid ?? prev.currentBid),
-          status: (a.status === 'live' || a.status === 'upcoming' || a.status === 'ended' ? a.status : prev.status) as typeof prev.status,
-          bidsCount: Number(a.bidsCount ?? prev.bidsCount),
+          currentBid: toFiniteNumber(a.currentBid, prev.currentBid),
+          status,
+          bidsCount: toFiniteNumber(a.bidsCount, prev.bidsCount),
           endTime: typeof a.endTime === 'number' ? a.endTime : prev.endTime,
           imageUrl: typeof a.imageUrl === 'string' && a.imageUrl ? a.imageUrl : prev.imageUrl,
         };
       });
-    } catch {}
+      return true;
+    } catch {
+      return false;
+    }
   }, [auctionId]);
+  // Single-row primary, list+find fallback once (covers id-alias rows the
+  // single-row lane misses). Full-list scan never runs when single-row hits.
   useFocusEffect(
     useCallback(() => {
       let active = true;
-      serverApi.getAuctions().then((res) => {
-        if (!active || !res.ok || !res.data?.auctions) return;
-        const row = (res.data.auctions as any[]).find((a: any) => a && String(a.id) === auctionId);
-        if (!row) return;
-        setAuction((prev) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            currentBid: Number(row.currentBid ?? prev.currentBid),
-            status: (row.status === 'live' || row.status === 'upcoming' || row.status === 'ended' ? row.status : prev.status) as typeof prev.status,
-            bidsCount: Number(row.bidsCount ?? row.bids ?? prev.bidsCount),
-            endTime: typeof row.endTime === 'string' ? Date.parse(row.endTime) : Number(row.endTime ?? prev.endTime),
-          };
-        });
-      }).catch(() => {});
-      if (active) void fetchDetail();
+      const run = async (): Promise<void> => {
+        const ok = await fetchDetail();
+        if (!active || ok) return;
+        try {
+          const listRes = await serverApi.getAuctions();
+          if (!active || !listRes.ok || !listRes.data?.auctions) return;
+          const rows: unknown[] = listRes.data.auctions;
+          let row: Record<string, unknown> | undefined;
+          for (const item of rows) {
+            if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+            const rec = item as Record<string, unknown>;
+            if (rec.id !== undefined && String(rec.id) === auctionId) {
+              row = rec;
+              break;
+            }
+          }
+          if (!row) return;
+          const rowData: Record<string, unknown> = row;
+          setAuction((prev) => {
+            if (!prev) return prev;
+            const statusRaw: unknown = rowData.status;
+            const status: Auction['status'] =
+              statusRaw === 'live' || statusRaw === 'upcoming' || statusRaw === 'ended'
+                ? statusRaw
+                : prev.status;
+            const endTimeRaw: unknown = rowData.endTime;
+            return {
+              ...prev,
+              currentBid: toFiniteNumber(rowData.currentBid, prev.currentBid),
+              status,
+              bidsCount: toFiniteNumber(rowData.bidsCount ?? rowData.bids, prev.bidsCount),
+              endTime:
+                typeof endTimeRaw === 'string'
+                  ? Date.parse(endTimeRaw)
+                  : toFiniteNumber(endTimeRaw, prev.endTime),
+            };
+          });
+        } catch {
+          // offline — cache stays truth
+        }
+      };
+      void run();
       return () => { active = false; };
     }, [auctionId, fetchDetail])
   );
@@ -493,7 +554,7 @@ export default function AuctionDetailScreen() {
               seller gets it back with one tap instead of a stranded Hidden row.
               Offered whenever the linked row isn't provably live (hidden OR
               cold cache), never for sold rows. Server vocab is published. */}
-          {ended && isOwnAuction && !(listingPost as any)?.isSold && (listingPost as any)?.status !== 'published' ? (
+          {ended && isOwnAuction && !listingPost?.isSold && listingPost?.status !== 'published' ? (
             <View className="mx-5 mt-3 px-4 py-3 rounded-figma-12" style={{ backgroundColor: colors.surfaceContainer }}>
               <Text className="font-inter-500 text-textSecondary" style={{ fontSize: 12, lineHeight: 16 }}>
                 The linked listing is still hidden from direct sale after the hammer. Relist it to sell normally again.
@@ -505,7 +566,7 @@ export default function AuctionDetailScreen() {
                 onPress={() => {
                   if (!auction || relisting) return;
                   setRelisting(true);
-                  updatePost(auction.imageKey, { status: 'published' } as any)
+                  updatePost(auction.imageKey, { status: 'published' })
                     .then((ok) => {
                       if (ok === false) Alert.alert('Could not relist', 'The server refused — try again from Listings.');
                       else Alert.alert('Relisted', 'Your listing is visible for direct sale again.');

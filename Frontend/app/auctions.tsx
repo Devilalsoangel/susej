@@ -39,27 +39,37 @@ export interface Auction {
   reminder?: boolean;
   /** Device-only row (offline save / server refusal): never live elsewhere. */
   localOnly?: boolean;
+  /** Server-known winner label (list keeps it; detail resolves topBid). */
+  winner?: string;
   bids: AuctionBid[];
 }
 
-function normalizeAuction(a: any): Auction {
+function toFiniteNumber(value: unknown, fallback: number): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) return Number(value);
+  return fallback;
+}
+
+function normalizeAuction(a: Record<string, unknown>): Auction {
+  const bidsRaw: unknown = a.bids;
+  const startsLabelRaw: unknown = a.startsLabel;
   return {
-    id: String(a.id),
-    title: a.title ?? 'Untitled auction',
-    seller: a.seller ?? 'susej seller',
-    verified: !!a.verified,
-    startPrice: Number(a.startPrice) || 0,
-    currentBid: Number(a.currentBid) || 0,
-    endTime: Number(a.endTime) || 0,
-    bidsCount: Number(a.bidsCount) || 0,
+    id: String(a.id ?? ''),
+    title: typeof a.title === 'string' ? a.title : 'Untitled auction',
+    seller: typeof a.seller === 'string' ? a.seller : 'susej seller',
+    verified: Boolean(a.verified),
+    startPrice: toFiniteNumber(a.startPrice, 0) || 0,
+    currentBid: toFiniteNumber(a.currentBid, 0) || 0,
+    endTime: toFiniteNumber(a.endTime, 0) || 0,
+    bidsCount: toFiniteNumber(a.bidsCount, 0) || 0,
     status: a.status === 'ended' ? 'ended' : a.status === 'upcoming' ? 'upcoming' : 'live',
-    imageKey: a.imageKey ?? String(a.id),
+    imageKey: typeof a.imageKey === 'string' ? a.imageKey : String(a.id ?? ''),
     imageUrl: typeof a.imageUrl === 'string' && a.imageUrl ? a.imageUrl : undefined,
-    startsLabel: a.startsLabel,
-    reminder: !!a.reminder,
+    startsLabel: typeof startsLabelRaw === 'string' ? startsLabelRaw : undefined,
+    reminder: Boolean(a.reminder),
     sellerUsername: typeof a.sellerUsername === 'string' ? a.sellerUsername : undefined,
     localOnly: a.localOnly === true ? true : undefined,
-    bids: Array.isArray(a.bids) ? a.bids : [],
+    bids: Array.isArray(bidsRaw) ? (bidsRaw as AuctionBid[]) : [],
   };
 }
 
@@ -102,19 +112,26 @@ export default function AuctionsScreen() {
     return post && hasRealImage(post) ? resolveListingImage(post, post.id) : auctionImage(a.imageKey);
   }, [posts]);
 
+  // Single fetch path per focus: cache first (offline truth), then one server
+  // refresh (price/outbid/end-time). Server rows win on id; local-only rows
+  // (bid thread, reminder flag) are preserved, never overwritten.
   const loadAuctions = useCallback(() => {
+    let cancelled = false;
     AsyncStorage.getItem(AUCTIONS_KEY)
       .then((data) => {
         let merged: Auction[] = [];
         if (data) {
           try {
-            const parsed = JSON.parse(data);
+            const parsed: unknown = JSON.parse(data);
             if (Array.isArray(parsed)) {
               const byId = new Map<string, Auction>();
-              parsed.forEach((a: any) => {
+              parsed.forEach((item: unknown) => {
                 // Real auctions only — drop legacy demo seeds (auc_001..004).
-                if (a && typeof a.id === 'string' && !/^auc_00[1-4]$/.test(a.id)) {
-                  byId.set(a.id, normalizeAuction(a));
+                if (item && typeof item === 'object' && !Array.isArray(item)) {
+                  const rec = item as Record<string, unknown>;
+                  if (typeof rec.id === 'string' && !/^auc_00[1-4]$/.test(rec.id)) {
+                    byId.set(rec.id, normalizeAuction(rec));
+                  }
                 }
               });
               merged = [...byId.values()];
@@ -123,81 +140,97 @@ export default function AuctionsScreen() {
             // corrupted cache — start empty; server sync repopulates
           }
         }
+        if (cancelled) return;
         setAuctions(merged);
         setLoaded(true);
       })
       .catch(() => {
+        if (cancelled) return;
         setAuctions([]);
         setLoaded(true);
       });
+    serverApi.getAuctions().then((res) => {
+      if (cancelled || !res.ok || !res.data?.auctions?.length) return;
+      const rows: unknown[] = res.data.auctions;
+      const serverRows: Auction[] = [];
+      for (const item of rows) {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+        const rec = item as Record<string, unknown>;
+        if (rec.id === undefined || rec.id === null || rec.id === '') continue;
+        const statusRaw: unknown = rec.status;
+        const status: Auction['status'] =
+          statusRaw === 'ended' ? 'ended' : statusRaw === 'upcoming' ? 'upcoming' : 'live';
+        const endTimeRaw: unknown = rec.endTime;
+        const sellerRaw: unknown = rec.seller ?? rec.sellerName ?? rec.sellerUsername;
+        const sellerUsernameRaw: unknown = rec.sellerUsername;
+        serverRows.push({
+          id: String(rec.id),
+          title: typeof rec.title === 'string' ? rec.title : 'Auction',
+          seller: typeof sellerRaw === 'string' ? sellerRaw : '',
+          sellerUsername: typeof sellerUsernameRaw === 'string' ? sellerUsernameRaw : '',
+          currentBid: toFiniteNumber(rec.currentBid ?? rec.startingBid, 0),
+          startPrice: toFiniteNumber(rec.startPrice ?? rec.startingBid, 0),
+          status,
+          imageKey: typeof rec.imageKey === 'string' ? rec.imageKey : '',
+          imageUrl: typeof rec.imageUrl === 'string' && rec.imageUrl ? rec.imageUrl : undefined,
+          bidsCount: toFiniteNumber(rec.bidsCount ?? rec.bids, 0),
+          endTime:
+            typeof endTimeRaw === 'string'
+              ? Date.parse(endTimeRaw)
+              : toFiniteNumber(endTimeRaw, Date.now() + 3600000),
+          verified: false,
+          bids: [],
+          ...(typeof rec.winner === 'string' && rec.winner ? { winner: rec.winner } : {}),
+        });
+      }
+      if (!serverRows.length) return;
+      setAuctions((prev) => {
+        // Server rows win on id (price/outbid/end-time refresh); local-only
+        // rows (bids thread, reminder flag) are preserved, never overwritten.
+        const serverById = new Map(serverRows.map((sa) => [sa.id, sa] as const));
+        // Late adopt: a kill between local persist and server-id adopt forks
+        // the row (auc_ twin + server cuid coexist forever). Match orphans
+        // by (title+startPrice+seller) and adopt the server id, keeping the
+        // local bid thread.
+        const claimedServerIds = new Set<string>();
+        const next = prev.map((p) => {
+          const s = serverById.get(p.id);
+          if (s) {
+            const { bids: _b, reminder: _r, ...serverFields } = s;
+            void _b;
+            void _r;
+            return { ...p, ...serverFields };
+          }
+          if (p.id.startsWith('auc_')) {
+            const twin = serverRows.find(
+              (sa) =>
+                !claimedServerIds.has(sa.id) &&
+                !prev.some((q) => q.id === sa.id) &&
+                sa.title === p.title &&
+                Number(sa.startPrice) === Number(p.startPrice) &&
+                (sa.sellerUsername || sa.seller) === (p.sellerUsername || p.seller)
+            );
+            if (twin) {
+              claimedServerIds.add(twin.id);
+              const { bids: _b2, reminder: _r2, ...twinFields } = twin;
+              void _b2;
+              void _r2;
+              return { ...p, ...twinFields, id: twin.id };
+            }
+          }
+          return p;
+        });
+        const known = new Set(next.map((p) => p.id));
+        const fresh = serverRows.filter((sa) => !known.has(sa.id));
+        return fresh.length ? [...fresh, ...next] : next;
+      });
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useFocusEffect(loadAuctions);
-
-  // Merge the shared backend's live auctions (real multi-user bids) into the
-  // list once per focus — server rows win on id, local seeds fill the rest.
-  useFocusEffect(
-    useCallback(() => {
-      serverApi.getAuctions().then((res) => {
-        if (!res.ok || !res.data?.auctions?.length) return;
-        const serverRows = res.data.auctions
-          .filter((a: any) => a && a.id)
-          .map((a: any) => ({
-            id: String(a.id),
-            title: String(a.title ?? 'Auction'),
-            seller: String(a.seller ?? a.sellerName ?? a.sellerUsername ?? ''),
-            sellerUsername: String(a.sellerUsername ?? ''),
-            currentBid: Number(a.currentBid ?? a.startingBid ?? 0),
-            startPrice: Number(a.startPrice ?? a.startingBid ?? 0),
-            status: (a.status === 'live' || a.status === 'upcoming' || a.status === 'ended' ? a.status : 'live') as Auction['status'],
-            imageKey: String(a.imageKey ?? ''),
-            bidsCount: Number(a.bidsCount ?? a.bids ?? 0),
-            endTime: typeof a.endTime === 'string' ? Date.parse(a.endTime) : Number(a.endTime ?? Date.now() + 3600000),
-            verified: false,
-            bids: [],
-            winner: a.winner ? String(a.winner) : undefined,
-          }));
-        setAuctions((prev) => {
-          // Server rows win on id (price/outbid/end-time refresh); local-only
-          // rows (bids thread, reminder flag) are preserved, never overwritten.
-          const serverById = new Map(serverRows.map((sa) => [sa.id, sa]));
-          // Late adopt: a kill between local persist and server-id adopt forks
-          // the row (auc_ twin + server cuid coexist forever). Match orphans
-          // by (title+startPrice+seller) and adopt the server id, keeping the
-          // local bid thread.
-          const claimedServerIds = new Set<string>();
-          const next = prev.map((p) => {
-            const s = serverById.get(p.id);
-            if (s) {
-              const { bids: _b, reminder: _r, ...serverFields } = s as Record<string, unknown>;
-              void _b; void _r;
-              return { ...p, ...serverFields };
-            }
-            if (p.id.startsWith('auc_')) {
-              const twin = serverRows.find(
-                (sa) =>
-                  !claimedServerIds.has(sa.id) &&
-                  !prev.some((q) => q.id === sa.id) &&
-                  sa.title === p.title &&
-                  Number(sa.startPrice) === Number(p.startPrice) &&
-                  (sa.sellerUsername || sa.seller) === (p.sellerUsername || p.seller)
-              );
-              if (twin) {
-                claimedServerIds.add(twin.id);
-                const { bids: _b2, reminder: _r2, ...twinFields } = twin as unknown as Record<string, unknown>;
-                void _b2; void _r2;
-                return { ...p, ...twinFields, id: twin.id };
-              }
-            }
-            return p;
-          });
-          const known = new Set(next.map((p) => p.id));
-          const fresh = serverRows.filter((sa) => !known.has(sa.id));
-          return fresh.length ? [...fresh, ...next] : next;
-        });
-      });
-    }, [])
-  );
 
   useEffect(() => {
     if (!loaded) return;
