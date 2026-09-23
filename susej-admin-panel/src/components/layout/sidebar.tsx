@@ -18,7 +18,7 @@ export function Sidebar() {
   const logout = useAuthStore((s) => s.logout);
   const [logoutOpen, setLogoutOpen] = useState(false);
 
-  const isItemActive = (href: string) => pathname === href || pathname.startsWith(href + "/");
+  const isItemActive = (href: string) => href === "/dashboard" ? pathname === href : pathname === href || pathname.startsWith(href + "/");
   const activeModule = MODULES.find((m) => m.items.some((i) => isItemActive(i.href)));
 
   const handleModuleClick = (module: NavModule) => {
