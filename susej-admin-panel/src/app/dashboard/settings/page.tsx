@@ -110,6 +110,7 @@ const tabs = [
   { label: "Storage", value: "storage" },
   { label: "API Keys", value: "api-keys" },
   { label: "Maintenance", value: "maintenance" },
+  { label: "Danger Zone", value: "danger" },
 ];
 
 function GeneralSettings() {
@@ -711,6 +712,193 @@ function MaintenanceSettings() {
   );
 }
 
+interface DangerModelResult {
+  model: string;
+  deleted?: number;
+  error?: string;
+  skipped?: boolean;
+}
+
+const DANGER_AREAS: { area: string; label: string; blurb: string; phrase: string }[] = [
+  { area: "orders", label: "Orders", blurb: "Orders, shipments, refunds, disputes, bookings, auctions + bids.", phrase: "DELETE ORDERS" },
+  { area: "catalog", label: "Catalog", blurb: "Products, posts, likes, comments, reviews, bundles, food items.", phrase: "DELETE CATALOG" },
+  { area: "promotions", label: "Promotions", blurb: "Top sellers, hot deals, featured posts, spotlights, promo purchases, banners.", phrase: "DELETE PROMOTIONS" },
+  { area: "community", label: "Community", blurb: "Communities, messages, polls + votes, broadcasts, streams, reels + likes, stories, hashtags, chats, blocks.", phrase: "DELETE COMMUNITY" },
+  { area: "sellers", label: "Sellers", blurb: "Seller rows + their documents and audit logs (documents first).", phrase: "DELETE SELLERS" },
+  { area: "users", label: "Users", blurb: "Every User row + addresses, payment methods, follows, notifications, tickets, reports. Admins are separate rows — no self-delete.", phrase: "DELETE USERS FOREVER" },
+  { area: "sessions", label: "Sessions", blurb: "Every AppSession (forces ALL devices to re-login) + otp: settings keys.", phrase: "DELETE SESSIONS" },
+  { area: "media", label: "Media", blurb: "Cloudinary susej/ + susej-probe/ assets only — no database rows.", phrase: "DELETE MEDIA" },
+  { area: "full", label: "Everything", blurb: "All areas above, in order. Pre-launch demo reset.", phrase: "DELETE EVERYTHING FOREVER" },
+];
+
+function DangerZoneSettings() {
+  const [counts, setCounts] = useState<Record<string, number> | null>(null);
+  const [isSuper, setIsSuper] = useState<boolean | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [confirmArea, setConfirmArea] = useState<string | null>(null);
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [postError, setPostError] = useState<string | null>(null);
+  const [result, setResult] = useState<{ area: string; results: DangerModelResult[]; totalDeleted: number } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/admin/danger", { cache: "no-store", credentials: "include" })
+      .then(async (res) => {
+        const body = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(body?.error ?? `Load failed (${res.status})`);
+        return body as { counts: Record<string, number>; isSuper: boolean };
+      })
+      .then((body) => {
+        if (cancelled) return;
+        setCounts(body.counts);
+        setIsSuper(body.isSuper);
+      })
+      .catch((e) => {
+        if (!cancelled) setLoadError(e instanceof Error ? e.message : "Load failed.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (isSuper === null && !loadError) {
+    return <p className="text-sm text-gray-500">Loading danger zone…</p>;
+  }
+  if (loadError) {
+    return <p className="text-sm text-[#DC2626]">{loadError}</p>;
+  }
+  if (!isSuper) {
+    return (
+      <div className="rounded-2xl border border-[#E4E4E7] bg-[#FAFAFA] p-6 text-center">
+        <p className="text-sm font-semibold text-[#18181B]">Super Admin only</p>
+        <p className="mt-1 text-xs text-gray-500">Data purges need a Super Admin session. Your role can view settings but cannot wipe demo data.</p>
+      </div>
+    );
+  }
+
+  function openConfirm(area: string) {
+    setConfirmArea(area);
+    setTyped("");
+    setPostError(null);
+    setResult(null);
+  }
+
+  async function runPurge() {
+    const def = DANGER_AREAS.find((a) => a.area === confirmArea);
+    if (!def || busy) return;
+    // Client checks equality before POST — the server re-checks and 400s anyway.
+    if (typed !== def.phrase) {
+      setPostError(`Type ${def.phrase} exactly to confirm.`);
+      return;
+    }
+    setBusy(true);
+    setPostError(null);
+    try {
+      const res = await fetch("/api/admin/danger", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ area: def.area, phrase: typed }),
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(body?.error ?? `Purge failed (${res.status})`);
+      setResult({
+        area: def.area,
+        results: (body.results ?? []) as DangerModelResult[],
+        totalDeleted: Number(body.totalDeleted ?? 0),
+      });
+      setConfirmArea(null);
+      setTyped("");
+      // Refresh counts after the wipe.
+      const fresh = await fetch("/api/admin/danger", { cache: "no-store", credentials: "include" })
+        .then((r) => r.json())
+        .catch(() => null);
+      if (fresh?.counts) setCounts(fresh.counts as Record<string, number>);
+    } catch (e) {
+      setPostError(e instanceof Error ? e.message : "Purge failed — nothing confirmed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="rounded-2xl border-2 border-[#DC2626] bg-[#FEF2F2] p-5">
+        <h3 className="text-[15px] font-bold text-[#991B1B]">Danger Zone — pre-launch demo cleanup</h3>
+        <p className="mt-1 text-xs text-[#991B1B]">
+          No undo without a Neon snapshot — snapshot first. Admins, settings, audit trail, categories, coupons and money books are never touched.
+        </p>
+      </div>
+      <div className="space-y-3">
+        {DANGER_AREAS.map((def) => (
+          <div key={def.area} className="rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-[#18181B]">
+                  {def.label}
+                  <span className="ml-2 rounded-full bg-[#F4F4F5] px-2 py-0.5 text-xs font-medium text-gray-500">
+                    {counts?.[def.area] ?? "…"} rows
+                  </span>
+                </p>
+                <p className="mt-0.5 text-xs text-gray-500">{def.blurb}</p>
+              </div>
+              <Button variant="danger" size="sm" onClick={() => openConfirm(def.area)}>
+                Wipe {def.label}
+              </Button>
+            </div>
+            {confirmArea === def.area && (
+              <div className="mt-3 rounded-xl border border-[#FCA5A5] bg-[#FEF2F2] p-4">
+                <p className="text-xs font-semibold text-[#991B1B]">
+                  Type <code className="rounded bg-white px-1.5 py-0.5 font-mono">{def.phrase}</code> to wipe {def.label}. No undo without a snapshot.
+                </p>
+                <div className="mt-2 flex items-center gap-2">
+                  <Input
+                    value={typed}
+                    onChange={(e) => setTyped(e.target.value)}
+                    placeholder={def.phrase}
+                  />
+                </div>
+                {postError && <p className="mt-2 text-xs text-[#DC2626]">{postError}</p>}
+                <div className="mt-3 flex justify-end gap-2">
+                  <Button variant="secondary" size="sm" onClick={() => { setConfirmArea(null); setTyped(""); setPostError(null); }}>
+                    Cancel
+                  </Button>
+                  <Button variant="danger" size="sm" onClick={runPurge} disabled={busy || typed !== def.phrase}>
+                    {busy ? "Wiping…" : `Confirm wipe ${def.label}`}
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+      <Separator />
+      {result && (
+        <div className="rounded-2xl border border-[#E4E4E7] bg-white p-4">
+          <p className="text-sm font-semibold text-[#18181B]">
+            {result.area} wiped — {result.totalDeleted} rows deleted
+          </p>
+          <ul className="mt-2 space-y-1">
+            {result.results.map((r, i) => (
+              <li key={i} className="text-xs text-gray-600">
+                {r.model}:{" "}
+                {typeof r.deleted === "number" ? (
+                  <span className="font-medium text-[#16A34A]">{r.deleted} deleted</span>
+                ) : r.skipped ? (
+                  <span className="font-medium text-gray-400">skipped{r.error ? ` — ${r.error}` : ""}</span>
+                ) : (
+                  <span className="font-medium text-[#DC2626]">failed{r.error ? ` — ${r.error}` : ""}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   return (
     <div className="space-y-6">
@@ -732,6 +920,7 @@ export default function SettingsPage() {
                 {active === "storage" && <StorageSettings />}
                 {active === "api-keys" && <ApiKeysSettings />}
                 {active === "maintenance" && <MaintenanceSettings />}
+                {active === "danger" && <DangerZoneSettings />}
               </>
             )}
           </Tabs>
