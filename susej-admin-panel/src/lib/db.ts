@@ -13,7 +13,18 @@ function createAdapter(): unknown {
       "[db] DATABASE_URL is missing or not a postgres:// connection string. Configure PostgreSQL (see .env) before starting the server."
     );
   }
-  return new PrismaPg({ connectionString: url });
+  // Serverless-tuned pool (Vercel + Neon pooler): a small ceiling (function
+  // instances fan out, the pooler multiplexes), a LONG connect timeout so a
+  // suspended Neon compute can wake instead of instantly failing, and short
+  // idle eviction (frozen instances leave dead sockets behind).
+  return new PrismaPg(
+    { connectionString: url },
+    {
+      max: 5,
+      connectionTimeoutMillis: 15000,
+      idleTimeoutMillis: 20000,
+    } as never
+  );
 }
 
 // Live DB mode (migrate deploy + seed applied Aug 14). Probe re-runs on module recompile.

@@ -77,6 +77,15 @@ export default function RootLayout() {
     }
   }, [loaded, error]);
 
+  // First-paint insurance: slow webfonts must never hold the splash for
+  // seconds on cold start — fall back to system fonts after 2.5s.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      SplashScreen.hideAsync().catch(() => {});
+    }, 2500);
+    return () => clearTimeout(t);
+  }, []);
+
   if (!loaded && !error) {
     return null;
   }

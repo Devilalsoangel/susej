@@ -247,6 +247,10 @@ function FeedContent() {
     }).catch(() => setRefreshFailed(true)).finally(() => setRefreshing(false));
   }, [refreshPosts, fetchHomeRails]);
 
+  // Focus throttle (industry stale-while-revalidate): a focus within 90s
+  // reuses the rails on screen — no 4-lane refetch storm on every tab
+  // switch. Pull-to-refresh bypasses the TTL and always refetches.
+  const lastHomeFetch = useRef(0);
   // Reload the user's own uploaded story whenever the feed regains focus
   // (so a story posted from /create-story shows up in the tray immediately).
   // Rails come from fetchHomeRails (single source with pull-to-refresh).
@@ -256,7 +260,11 @@ function FeedContent() {
       loadMyStory().then((s) => {
         if (active) setMyStory(s);
       });
-      fetchHomeRails(() => active);
+      if (Date.now() - lastHomeFetch.current > 90_000) {
+        fetchHomeRails(() => active).then((ok) => {
+          if (ok) lastHomeFetch.current = Date.now();
+        });
+      }
       return () => {
         active = false;
       };

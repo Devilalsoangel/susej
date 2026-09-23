@@ -5,9 +5,20 @@ import { lazySweep } from "@/lib/promotions/activate";
 
 const ACTIVE = "active";
 
+// Warm-instance memo (30s): this route costs ~21 queries cold; Vercel
+// reuses instances for seconds-minutes, so repeated hits within the window
+// serve instantly with zero DB load. Cold instances recompute.
+let homeMemo: { at: number; body: unknown } | null = null;
+
 export async function GET(request: NextRequest) {
   if (!await checkAppKeyAsync(request)) return unauthorized();
 
+  const memoNow = Date.now();
+  if (homeMemo && memoNow - homeMemo.at < 30_000) {
+    const memoRes = NextResponse.json(homeMemo.body);
+    memoRes.headers.set("Cache-Control", "private, max-age=30, stale-while-revalidate=60");
+    return memoRes;
+  }
   await lazySweep();
   const prisma = await getPrisma();
   // FAIL HONEST: DB unreachable → empty payload + degraded flag. No mock data.
@@ -308,7 +319,7 @@ export async function GET(request: NextRequest) {
   // edge keys are URL-only, so s-maxage served cached 200s to keyless
   // callers (fail-closed bypass) or cached 401s to legit ones. Payload is
   // non-personal, so per-client caching is the safe shape.
-  const response = NextResponse.json({
+  const payload = {
     sections: {
       "top-sellers": !sectionOff.has("top-sellers"),
       "hot-deals": !sectionOff.has("hot-deals"),
@@ -413,7 +424,9 @@ export async function GET(request: NextRequest) {
           title: s.title,
           imageUrl: s.imageUrl,
         })),
-  });
+  };
+  homeMemo = { at: Date.now(), body: payload };
+  const response = NextResponse.json(payload);
   response.headers.set("Cache-Control", "private, max-age=30, stale-while-revalidate=60");
   return response;
 }
