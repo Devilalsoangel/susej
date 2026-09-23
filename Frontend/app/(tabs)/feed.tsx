@@ -89,13 +89,8 @@ function FeedContent() {
   // (IG parity) instead of passing as "no new posts".
   const [refreshing, setRefreshing] = useState(false);
   const [refreshFailed, setRefreshFailed] = useState(false);
-  const onRefresh = useCallback(() => {
-    setRefreshing(true);
-    setRefreshFailed(false);
-    Promise.resolve(refreshPosts ? refreshPosts() : true).then((ok) => {
-      if (!ok) setRefreshFailed(true);
-    }).catch(() => setRefreshFailed(true)).finally(() => setRefreshing(false));
-  }, [refreshPosts]);
+  // onRefresh lives below (next to fetchHomeRails): it must be declared
+  // AFTER the rail states + fetcher, never before (TDZ).
   const { isFollowing, toggleFollow, followerCounts } = useFollow();
   const { user: authUser, isLoading: authLoading } = useAuth();
   const { followedHashtags } = useHashtags();
@@ -130,7 +125,9 @@ function FeedContent() {
   // instead of silently passing stale rails as live. The WHY matters: a dead
   // server with a live connection is not the user's offline.
   const [homeDegraded, setHomeDegraded] = useState(false);
-  const [homeDegradedWhy, setHomeDegradedWhy] = useState<'offline' | 'server'>('offline');
+  // WHY the rails are stale: offline (user's connection), server (our hop),
+  // or key (app-key/config outage — never retry-promised, never scary).
+  const [homeDegradedWhy, setHomeDegradedWhy] = useState<'offline' | 'server' | 'key'>('offline');
   // Featured-post rail (paid placements from /api/v1/home). Pinned rows float
   // to the spotlight; the rest interleave as boosted posts — every paid row
   // renders while its rail is ON, none renders while OFF.
@@ -142,69 +139,75 @@ function FeedContent() {
   const [homeTopSellers, setHomeTopSellers] = useState<Array<{ sellerId: string; sellerUsername?: string | null; sellerName: string; sellerLogo?: string | null; totalSales?: number; rating?: number; reviewCount?: number; position?: number; isPinned?: boolean | null }>>([]);
   const [homeHotDeals, setHomeHotDeals] = useState<Array<{ productId: string; postId?: string | null; productName: string; productImage?: string | null; originalPrice?: number; discountedPrice?: number; discountPercentage?: number; priority?: number }>>([]);
 
-  // Reload the user's own uploaded story whenever the feed regains focus
-  // (so a story posted from /create-story shows up in the tray immediately)
-  // and refresh admin-curated content (hero + categories) + real stories/promos.
-  useFocusEffect(
-    useCallback(() => {
-      let active = true;
-      loadMyStory().then((s) => {
-        if (active) setMyStory(s);
-      });
-      serverApi.getHome().then(async (res) => {
-        if (!active) return;
-        if (active) setHomeDegraded(!res.ok || res.data?.degraded === true);
-        if (active) {
-          // Transport truth: our server down with network fine blames the
-          // server, never the user's connection.
-          const err = (res as { error?: unknown }).error;
-          setHomeDegradedWhy(!res.ok && err !== 'offline' ? 'server' : 'offline');
-        }
-        const sections = res.ok ? (res.data?.sections ?? null) : null;
-        if (active) setHomeSections(sections);
-        const secOn = (k: string) => (sections as Record<string, boolean> | null)?.[k] !== false;
-        if (res.ok && secOn('spotlight')) setHomeSpotlightPostId(res.data?.spotlight?.postId ?? null);
-        else if (active) setHomeSpotlightPostId(null);
-        // Featured rail merges into the paid boost sets (pinned floats top).
-        if (res.ok && secOn('featured-posts') && res.data?.featuredPosts?.length) {
-          const pinned: string[] = [];
-          const boosted: string[] = [];
-          for (const f of res.data.featuredPosts) {
-            if (!f?.postId) continue;
-            if (f.isPinned) pinned.push(f.postId);
-            else boosted.push(f.postId);
-          }
-          if (active) {
-            setHomeFeaturedPinned(pinned);
-            setHomeFeaturedBoosted(boosted);
-          }
-        } else if (active) {
-          setHomeFeaturedPinned([]);
-          setHomeFeaturedBoosted([]);
-        }
-        // Server rails: curated top sellers (username-resolved) + paid hot
-        // deals (postId-resolved). Rows without a resolvable key are dropped —
-        // a dead chip is worse than a shorter rail; organic fills the gap.
-        if (res.ok && secOn('top-sellers') && res.data?.topSellers?.length) {
-          if (active) setHomeTopSellers(res.data.topSellers.filter((t) => t?.sellerUsername));
-        } else if (active) {
-          setHomeTopSellers([]);
-        }
-        if (res.ok && secOn('hot-deals') && res.data?.hotDeals?.length) {
-          if (active) setHomeHotDeals(res.data.hotDeals.filter((d) => d?.postId));
-        } else if (active) {
-          setHomeHotDeals([]);
-        }
-        const list = res.ok && secOn('storefront-banners') && res.data?.marketingBanners?.length ? res.data.marketingBanners : [];
-        // Only banners with a REAL uploaded image can be a hero — a text-only
-        // row would render an empty box.
-        const first = list.find((b) => b.imageUrl) || null;
-        if (!first || !first.imageUrl) {
-          setHero(null);
-          return;
-        }
+  // Home rails fetch — the SINGLE source used by focus AND pull-to-refresh.
+  // A retry MUST refetch the failed lane (previously refresh never touched
+  // getHome, so the degraded banner could never clear and users pulled
+  // forever). Failure KEEPS last-good rails (stale-while-revalidate within
+  // the session) instead of wiping them; only success mutates rail state,
+  // and success always clears the degraded flag. 401-key is its own honest,
+  // non-scary state (config outage, not a dying server).
+  const fetchHomeRails = useCallback(async (isActive: () => boolean) => {
+    const [homeRes, catsRes, storiesRes, promosRes] = await Promise.all([
+      serverApi.getHome(),
+      serverApi.getCategories(),
+      serverApi.getStories(),
+      serverApi.getPromotions(),
+    ]);
+    if (!isActive()) return false;
+    if (!homeRes.ok) {
+      const err = (homeRes as { error?: unknown }).error;
+      setHomeDegraded(true);
+      setHomeDegradedWhy(err === 'offline' ? 'offline' : err === 'Unauthorized' || err === 'HTTP 401' ? 'key' : 'server');
+      return false;
+    }
+    const data = homeRes.data;
+    if (!data) {
+      setHomeDegraded(true);
+      setHomeDegradedWhy('server');
+      return false;
+    }
+    setHomeDegraded(data.degraded === true);
+    if (data.degraded === true) setHomeDegradedWhy('server');
+    const sections = data.sections ?? null;
+    if (isActive()) setHomeSections(sections);
+    const secOn = (k: string) => (sections as Record<string, boolean> | null)?.[k] !== false;
+    if (secOn('spotlight')) setHomeSpotlightPostId(data.spotlight?.postId ?? null);
+    else if (isActive()) setHomeSpotlightPostId(null);
+    // Featured rail merges into the paid boost sets (pinned floats top).
+    if (secOn('featured-posts') && data.featuredPosts?.length) {
+      const pinned: string[] = [];
+      const boosted: string[] = [];
+      for (const f of data.featuredPosts) {
+        if (!f?.postId) continue;
+        if (f.isPinned) pinned.push(f.postId);
+        else boosted.push(f.postId);
+      }
+      setHomeFeaturedPinned(pinned);
+      setHomeFeaturedBoosted(boosted);
+    } else if (isActive()) {
+      setHomeFeaturedPinned([]);
+      setHomeFeaturedBoosted([]);
+    }
+    // Server rails: curated top sellers (username-resolved) + paid hot
+    // deals (postId-resolved). Rows without a resolvable key are dropped —
+    // a dead chip is worse than a shorter rail; organic fills the gap.
+    if (secOn('top-sellers') && data.topSellers?.length) {
+      setHomeTopSellers(data.topSellers.filter((t) => t?.sellerUsername));
+    } else if (isActive()) {
+      setHomeTopSellers([]);
+    }
+    if (secOn('hot-deals') && data.hotDeals?.length) {
+      setHomeHotDeals(data.hotDeals.filter((d) => d?.postId));
+    } else if (isActive()) {
+      setHomeHotDeals([]);
+    }
+    if (secOn('storefront-banners') && data.marketingBanners?.length) {
+      // Only banners with a REAL uploaded image can be a hero — a text-only
+      // row would render an empty box.
+      const first = data.marketingBanners.find((b) => b.imageUrl) || null;
+      if (first && first.imageUrl) {
         const base = await getAdminUrl();
-        if (!active) return;
+        if (!isActive()) return true;
         setHero({
           sellerUsername: first.sellerUsername,
           sellerName: first.sellerName,
@@ -214,24 +217,50 @@ function FeedContent() {
           imageUrl: first.imageUrl.startsWith('http') ? first.imageUrl : `${base}${first.imageUrl}`,
           size: first.size,
         });
+      } else if (isActive()) {
+        setHero(null);
+      }
+    } else if (isActive()) {
+      setHero(null);
+    }
+    if (catsRes.ok && isActive()) {
+      const cats = catsRes.data?.categories?.length ? catsRes.data.categories : [];
+      setWorldCats(cats.slice(0, 6).map((c) => ({ name: c.name, slug: c.slug, bannerImage: c.bannerImage ?? null })));
+    }
+    if (storiesRes.ok && isActive()) {
+      setServerStories(storiesRes.data?.stories ? (storiesRes.data.stories as AppStory[]) : []);
+    }
+    if (promosRes.ok && isActive()) {
+      setServerPromos(promosRes.data?.promotions ? (promosRes.data.promotions as any[]) : []);
+    }
+    return true;
+  }, []);
+
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    setRefreshFailed(false);
+    Promise.all([
+      Promise.resolve(refreshPosts ? refreshPosts() : true),
+      fetchHomeRails(() => true),
+    ]).then(([postsOk, homeOk]) => {
+      if (!postsOk || !homeOk) setRefreshFailed(true);
+    }).catch(() => setRefreshFailed(true)).finally(() => setRefreshing(false));
+  }, [refreshPosts, fetchHomeRails]);
+
+  // Reload the user's own uploaded story whenever the feed regains focus
+  // (so a story posted from /create-story shows up in the tray immediately).
+  // Rails come from fetchHomeRails (single source with pull-to-refresh).
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      loadMyStory().then((s) => {
+        if (active) setMyStory(s);
       });
-      serverApi.getCategories().then((res) => {
-        if (!active) return;
-        const cats = res.ok && res.data?.categories?.length ? res.data.categories : [];
-        setWorldCats(cats.slice(0, 6).map((c) => ({ name: c.name, slug: c.slug, bannerImage: c.bannerImage ?? null })));
-      });
-      serverApi.getStories().then((res) => {
-        if (!active) return;
-        setServerStories(res.ok && res.data?.stories ? (res.data.stories as AppStory[]) : []);
-      });
-      serverApi.getPromotions().then((res) => {
-        if (!active) return;
-        setServerPromos(res.ok && res.data?.promotions ? res.data.promotions : []);
-      });
+      fetchHomeRails(() => active);
       return () => {
         active = false;
       };
-    }, [])
+    }, [fetchHomeRails])
   );
 
   // Industry double-press-to-exit (Instagram/WhatsApp): at the feed root the
@@ -593,9 +622,11 @@ function FeedContent() {
             {homeDegraded && (
               <View className="mx-5 mb-2 px-4 py-2.5 rounded-figma-12" style={{ backgroundColor: colors.errorContainer }}>
                 <Text style={{ fontSize: 12, lineHeight: 16, color: colors.error }}>
-                  {homeDegradedWhy === 'server'
-                    ? `Our server isn't responding — home rails show saved content. Pull to retry.`
-                    : `You're offline — home rails show saved content. Pull to retry.`}
+                  {homeDegradedWhy === 'key'
+                    ? `Curated rails unavailable right now.`
+                    : homeDegradedWhy === 'server'
+                      ? `Our server isn't responding — showing saved rails. Pull to retry.`
+                      : `You're offline — showing saved rails. Pull to retry.`}
                 </Text>
               </View>
             )}

@@ -26,7 +26,18 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const [topSellers, hotDeals, marketingBanners, featuredPosts, spotlight, sections] = await Promise.all([
+  // A mid-read DB blip must degrade to partial rails, never a bare 500
+  // (the app shows "HTTP 500" with zero rails otherwise). Model types stay
+  // exact via ReturnType (no any-cast drift).
+  let topSellers: Awaited<ReturnType<typeof prisma.topSeller.findMany>> = [];
+  let hotDeals: Awaited<ReturnType<typeof prisma.hotDeal.findMany>> = [];
+  let marketingBanners: Awaited<ReturnType<typeof prisma.storefrontBanner.findMany>> = [];
+  let featuredPosts: Awaited<ReturnType<typeof prisma.featuredPost.findMany>> = [];
+  let spotlight: Awaited<ReturnType<typeof prisma.spotlight.findMany>> = [];
+  let sections: { name: string; isEnabled: boolean }[] = [];
+  let degraded = false;
+  try {
+    [topSellers, hotDeals, marketingBanners, featuredPosts, spotlight, sections] = await Promise.all([
     // Rails serve at most 3 rows (the app + desk contract): extra active rows
     // wait their turn and expire naturally — the rail never overflows no
     // matter how many campaigns the engine sells.
@@ -65,6 +76,9 @@ export async function GET(request: NextRequest) {
     // = ON (fresh prod renders), explicit isEnabled=false hides the rail.
     prisma.homeSection.findMany().catch(() => [] as { name: string; isEnabled: boolean }[]),
   ]);
+  } catch {
+    degraded = true;
+  }
   const sectionOff = new Set(
     (sections as { name: string; isEnabled: boolean }[]).filter((s) => !s.isEnabled).map((s) => s.name)
   );
@@ -325,7 +339,8 @@ export async function GET(request: NextRequest) {
         (k) => !sectionOff.has(k)
       );
     })(),
-    topSellers: (sectionOff.has("top-sellers") ? [] : topSellers).map((t) => {
+    degraded,
+    topSellers: (sectionOff.has("top-sellers") || degraded ? [] : topSellers).map((t) => {
       const username = sellerIdToUsername.get(t.sellerId) ?? null;
       const live = username ? liveStats.get(username) : undefined;
       return {

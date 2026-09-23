@@ -165,7 +165,7 @@ async function request<T>(path: string, options: { method?: string; body?: unkno
 // App-key request against the admin /api/v1/* surface (platform-curated home
 // content). Carries BOTH x-app-key AND a Bearer token so the server's
 // parseWriteSession can resolve the real user identity.
-async function requestWithAppKey<T>(path: string, options: { method?: string; body?: unknown; timeoutMs?: number } = {}): Promise<ApiResult<T>> {
+async function requestWithAppKey<T>(path: string, options: { method?: string; body?: unknown; timeoutMs?: number; retry?: boolean } = {}, attempt = 0): Promise<ApiResult<T>> {
   try {
     const [base, key, token] = await Promise.all([getAdminUrl(), getAppKey(), getToken()]);
     const controller = new AbortController();
@@ -210,7 +210,14 @@ async function requestWithAppKey<T>(path: string, options: { method?: string; bo
     }
     return { ok: true, data: json };
   } catch {
-    return { ok: false, data: null, error: await classifyTransportError() };
+    const err = await classifyTransportError();
+    // Same safe-lane retry as request(): GETs only (address POSTs, payout
+    // PUTs and banner syncs must never double-apply).
+    if (err === 'server-unreachable' && options.retry !== false && (options.method ?? 'GET') === 'GET' && attempt < 1) {
+      await new Promise((r) => setTimeout(r, 800));
+      return requestWithAppKey<T>(path, options, attempt + 1);
+    }
+    return { ok: false, data: null, error: err };
   }
 }
 
@@ -526,7 +533,9 @@ export const serverApi = {
       // the server defaults every rail on; OFF hides the rail client-side.
       sections?: Record<string, boolean>;
       degraded?: boolean;
-    }>('/api/v1/home'),
+      // Highest fan-out route (serve-time reads): 15s budget + safe GET
+      // retry so one cold hop doesn't poison the feed banner.
+    }>('/api/v1/home', { timeoutMs: 15000 }),
 
   // ── Address book (server truth, cross-device; device cache is offline mirror)
   getAddresses: () =>
