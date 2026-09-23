@@ -77,6 +77,9 @@ export async function POST(req: NextRequest) {
   // a later update would orphan (TOCTOU).
   const me = auth.user.username!;
   try {
+    // 21 locked reads on a cold Neon hop outlast Prisma's 5s interactive
+    // default (P2028 → 500 → app shows "server unreachable"). 20s budget;
+    // the work itself is read-cheap, the hop is not.
     const updated = await prisma.$transaction(async (tx) => {
       await tx.$queryRawUnsafe(`SELECT id FROM "User" WHERE id = $1 FOR UPDATE`, auth.user.id);
       const footprint = await Promise.all([
@@ -109,7 +112,7 @@ export async function POST(req: NextRequest) {
         where: { id: auth.user.id },
         data: { username: handle },
       });
-    });
+    }, { timeout: 20000 });
     return NextResponse.json({ user: toAppUser(updated) });
   } catch (e: unknown) {
     if (e instanceof UsernameFrozen) {
@@ -120,6 +123,10 @@ export async function POST(req: NextRequest) {
     }
     const code = (e as { code?: string })?.code;
     if (code === "P2002") return NextResponse.json({ error: "Username already taken" }, { status: 409 });
-    throw e;
+    // Slow-hop expiry and any other throw answer JSON, never a 500 page.
+    if (code === "P2028") {
+      return NextResponse.json({ error: "Server is slow right now. Try again in a moment." }, { status: 503 });
+    }
+    return NextResponse.json({ error: "Server hiccup. Please try again." }, { status: 500 });
   }
 }

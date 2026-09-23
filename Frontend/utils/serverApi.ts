@@ -104,12 +104,13 @@ export function onSessionExpired(cb: () => void): void {
   expiredListener = cb;
 }
 
-async function request<T>(path: string, options: { method?: string; body?: unknown } = {}): Promise<ApiResult<T>> {
+async function request<T>(path: string, options: { method?: string; body?: unknown; timeoutMs?: number; retry?: boolean } = {}, attempt = 0): Promise<ApiResult<T>> {
   try {
     const base = await getAdminUrl();
     const token = await getToken();
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 6000);
+    // Neon cold queries outlast tight budgets: profile lanes carry 20s.
+    const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 6000);
     const res = await fetch(`${base}/api/app${path}`, {
       method: options.method ?? 'GET',
       headers: {
@@ -144,7 +145,18 @@ async function request<T>(path: string, options: { method?: string; body?: unkno
     }
     return { ok: true, data: json };
   } catch {
-    return { ok: false, data: null, error: await classifyTransportError() };
+    const err = await classifyTransportError();
+    // One automatic retry for safe lanes: a cold Neon/Vercel hop eats the
+    // first budget; the retry lands warm and succeeds (Instagram pattern).
+    // GETs always; profile PATCH (last-write-wins) explicitly. Never POST —
+    // orders/promotions/payouts would double-apply.
+    const method = options.method ?? 'GET';
+    const safeLane = method === 'GET' || (method === 'PATCH' && path === '/users/me');
+    if (err === 'server-unreachable' && options.retry !== false && safeLane && attempt < 1) {
+      await new Promise((r) => setTimeout(r, 800));
+      return request<T>(path, options, attempt + 1);
+    }
+    return { ok: false, data: null, error: err };
   }
 }
 
@@ -221,7 +233,7 @@ export const serverApi = {
       ? request<{ token: string; user: Record<string, unknown> }>('/auth/google', { method: 'POST', body: { devBypass: true, email: devBypass.email, name: devBypass.name } })
       : request<{ token: string; user: Record<string, unknown> }>('/auth/google', { method: 'POST', body: { idToken } }),
   /** Authoritative profile for the current token - used to self-heal identity after login. */
-  getMe: () => request<{ user: Record<string, unknown> }>('/users/me'),
+  getMe: () => request<{ user: Record<string, unknown> }>('/users/me', { timeoutMs: 20000 }),
   /** Revoke the current session token server-side (logout). all=true burns every session on the account. */
   revokeSession: (all = false) =>
     request<{ ok: boolean }>(`/auth${all ? '?all=1' : ''}`, { method: 'DELETE' }),
@@ -458,17 +470,19 @@ export const serverApi = {
       reviews?: Array<{ id: string; reviewer: string; rating: number; text?: string; product?: string; createdAt: number }>;
     }>(`/users/${encodeURIComponent(username)}`),
   updateProfile: (patch: Record<string, unknown>) =>
-    request<{ user: Record<string, unknown> }>('/users/me', { method: 'PATCH', body: patch }),
+    request<{ user: Record<string, unknown> }>('/users/me', { method: 'PATCH', body: patch, timeoutMs: 20000 }),
   /** Live DB availability probe for a signup handle (debounced by caller). */
   checkUsername: (username: string) =>
     request<{ available: boolean; reason?: string; mine?: boolean }>(
-      `/users/check-username?u=${encodeURIComponent(username)}`
+      `/users/check-username?u=${encodeURIComponent(username)}`,
+      { timeoutMs: 20000 }
     ),
   /** One-time handle claim for fresh accounts (409 taken, 403 active). */
   claimUsername: (username: string) =>
     request<{ user: Record<string, unknown> }>('/users/claim-username', {
       method: 'POST',
       body: { username },
+      timeoutMs: 20000,
     }),
 
   // ─── Platform-curated home content (admin home-management) ─────────────
