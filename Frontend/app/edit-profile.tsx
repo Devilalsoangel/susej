@@ -43,7 +43,7 @@ const CATEGORIES = [
 ] as const;
 
 export default function EditProfileScreen() {
-  const { user, updateUser, logout } = useAuth();
+  const { user, updateUser, logoutAndReset } = useAuth();
   const [name, setName] = useState(user?.name ?? '');
   const [username, setUsername] = useState(user?.username ?? '');
   const [bio, setBio] = useState(user?.bio ?? '');
@@ -166,7 +166,7 @@ export default function EditProfileScreen() {
       'Your profile and listings will be hidden until you reactivate.',
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Deactivate', style: 'destructive', onPress: async () => { await logout(); router.replace('/login'); } },
+        { text: 'Deactivate', style: 'destructive', onPress: async () => { await logoutAndReset(); } },
       ]
     );
   };

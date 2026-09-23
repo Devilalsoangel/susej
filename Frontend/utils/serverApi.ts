@@ -104,10 +104,12 @@ export function onSessionExpired(cb: () => void): void {
   expiredListener = cb;
 }
 
-async function request<T>(path: string, options: { method?: string; body?: unknown; timeoutMs?: number; retry?: boolean } = {}, attempt = 0): Promise<ApiResult<T>> {
+async function request<T>(path: string, options: { method?: string; body?: unknown; timeoutMs?: number; retry?: boolean; authToken?: string } = {}, attempt = 0): Promise<ApiResult<T>> {
   try {
     const base = await getAdminUrl();
-    const token = await getToken();
+    // Explicit authToken (pending-revoke of a previous session) bypasses the
+    // live-session filter — the token comes from storage, already susej_.
+    const token = options.authToken ?? await getToken();
     const controller = new AbortController();
     // Neon cold queries outlast tight budgets: profile lanes carry 20s.
     const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 6000);
@@ -234,9 +236,9 @@ export const serverApi = {
       : request<{ token: string; user: Record<string, unknown> }>('/auth/google', { method: 'POST', body: { idToken } }),
   /** Authoritative profile for the current token - used to self-heal identity after login. */
   getMe: () => request<{ user: Record<string, unknown> }>('/users/me', { timeoutMs: 20000 }),
-  /** Revoke the current session token server-side (logout). all=true burns every session on the account. */
-  revokeSession: (all = false) =>
-    request<{ ok: boolean }>(`/auth${all ? '?all=1' : ''}`, { method: 'DELETE' }),
+  /** Revoke the current session token server-side (logout). all=true burns every session on the account. token= revokes a PREVIOUS session (pending offline-logout retry). */
+  revokeSession: (all = false, token?: string) =>
+    request<{ ok: boolean }>(`/auth${all ? '?all=1' : ''}`, { method: 'DELETE', ...(token ? { authToken: token } : {}) }),
 
 
   // ── Posts / feed ─────────────────────────────────────────────────────────

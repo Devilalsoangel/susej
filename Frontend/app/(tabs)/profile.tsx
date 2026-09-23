@@ -66,7 +66,7 @@ function CardIcon({ size = 20, color = colors.primary }: { size?: number; color?
 }
 
 export default function ProfileScreen() {
-  const { user, logout } = useAuth();
+  const { user, logoutAndReset } = useAuth();
   const { followedSellers, followersList } = useFollow();
   const insets = useSafeAreaInsets();
   const name = user?.name ?? '';
@@ -344,8 +344,9 @@ export default function ProfileScreen() {
                 className="flex-row items-center px-4 py-3.5"
                 style={{ borderRadius: 16, backgroundColor: colors.surfaceContainerLow }}
                 onPress={async () => {
-                  await logout();
-                  router.replace('/login');
+                  // Industry logout: wipe first, then RESET the stack — back
+                  // can never walk into the old account (see logoutAndReset).
+                  await logoutAndReset();
                 }}
               >
                 <View className="w-9 h-9 rounded-full items-center justify-center" style={{ backgroundColor: colors.primaryFixed }}>

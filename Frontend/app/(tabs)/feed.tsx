@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback, useRef, type ReactNode } from 'react';
-import { View, Text, Image, FlatList, ScrollView, TouchableOpacity, StyleSheet, Animated, Dimensions, RefreshControl } from 'react-native';
+import { View, Text, Image, FlatList, ScrollView, TouchableOpacity, StyleSheet, Animated, Dimensions, RefreshControl, BackHandler, ToastAndroid } from 'react-native';
 import Svg, { Path, Rect, Circle } from 'react-native-svg';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useFocusEffect } from 'expo-router';
@@ -231,6 +231,28 @@ function FeedContent() {
       return () => {
         active = false;
       };
+    }, [])
+  );
+
+  // Industry double-press-to-exit (Instagram/WhatsApp): at the feed root the
+  // stack has nowhere meaningful to go — first back warns, second within 2s
+  // exits. Deeper routes are unaffected: canGoBack lets normal back through,
+  // and this listener only lives while feed is the focused screen.
+  const lastBackPress = useRef(0);
+  useFocusEffect(
+    useCallback(() => {
+      const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+        if (router.canGoBack()) return false;
+        const now = Date.now();
+        if (now - lastBackPress.current < 2000) {
+          BackHandler.exitApp();
+          return true;
+        }
+        lastBackPress.current = now;
+        ToastAndroid.show('Press back again to exit', ToastAndroid.SHORT);
+        return true;
+      });
+      return () => sub.remove();
     }, [])
   );
 

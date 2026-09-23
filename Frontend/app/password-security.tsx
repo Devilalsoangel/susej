@@ -61,7 +61,7 @@ function getTwoFAKey(username?: string | null): string {
 
 export default function PasswordSecurityScreen() {
   const insets = useSafeAreaInsets();
-  const { logout, user } = useAuth();
+  const { logoutAndReset, user } = useAuth();
   const twoFAKey = getTwoFAKey(user?.username);
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
@@ -140,8 +140,7 @@ export default function PasswordSecurityScreen() {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
-            await logout();
-            router.replace('/login');
+            await logoutAndReset();
           },
         },
       ],

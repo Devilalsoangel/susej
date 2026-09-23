@@ -108,7 +108,7 @@ export default function SettingsScreen() {
   const [locale, setLocaleState] = useState<AppLocale>(getLocale());
   const { themeMode, setThemeMode } = useAppearance();
   const { settings, updateSetting } = useSettings();
-  const { logout } = useAuth();
+  const { logoutAndReset } = useAuth();
   const insets = useSafeAreaInsets();
 
   // App permissions — live status + tap to fire the OS popup
@@ -377,7 +377,7 @@ style={{
         <TouchableOpacity
           className="mx-5 items-center justify-center"
           style={{ height: 56, backgroundColor: 'rgba(255, 218, 214, 0.2)', borderRadius: 16 }}
-          onPress={() => { logout(); router.replace('/login'); }}
+          onPress={() => { void logoutAndReset(); }}
         >
           <Text className="font-inter-500" style={{ fontSize: 16, lineHeight: 24, color: colors.error }}>
             {t('logout')}

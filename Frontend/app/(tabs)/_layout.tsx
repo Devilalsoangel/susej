@@ -1,5 +1,6 @@
+import { useEffect } from 'react';
 import { useSyncExternalStore } from 'react';
-import { Tabs } from 'expo-router';
+import { Tabs, router } from 'expo-router';
 import { View, Text } from 'react-native';
 import Svg, { Path, Circle } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -158,8 +159,16 @@ export default function TabLayout() {
   // ROLE-BASED BOTTOM NAV: APPROVED sellers get the Sell "+" center tab;
   // buyers (and pending applicants) get an Orders center tab instead.
   // Creation surfaces never render for buyers.
-  const { user } = useAuth();
+  const { user, isLoading, isLoggedIn } = useAuth();
   const isSeller = isApprovedSeller(user);
+  // Auth gate (industry standard): the tab group never renders account
+  // chrome without a session. A back-navigation landing here logged-out is
+  // bounced to login WITHOUT rendering (kills the @-ghost flash); the
+  // replace keeps no authed route for back to return to.
+  useEffect(() => {
+    if (!isLoading && !isLoggedIn) router.replace('/login');
+  }, [isLoading, isLoggedIn]);
+  if (!isLoading && !isLoggedIn) return null;
   // Immersive surfaces (DM thread, community room) hide the tab bar via the
   // reactive bridge in utils/immersiveNav.ts - screenOptions-as-function is
   // the only hiding mechanism this router combination honors (Aug 25 proof).

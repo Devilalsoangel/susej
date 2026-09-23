@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { View, Text, TextInput, TouchableOpacity, ScrollView, Alert, Modal, FlatList } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { ChevronLeftIcon } from '../utils/icons';
 import Svg, { Path } from 'react-native-svg';
 import { colors } from '../utils/theme';
@@ -33,6 +33,11 @@ type AuthMode = 'phone' | 'email';
 
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
+  // Session-death landing (401 kill-switch / logout-expired): say WHY the
+  // user is here instead of silently showing the form (WhatsApp pattern).
+  const entryParams = useLocalSearchParams<{ expired?: string | string[] }>();
+  const expiredRaw = Array.isArray(entryParams.expired) ? entryParams.expired[0] : entryParams.expired;
+  const showExpiredNotice = expiredRaw === '1';
   const { serverLogin, serverEmailLogin, completeOnboarding } = useAuth();
   const [mode, setMode] = useState<AuthMode>('phone');
   // Phone OTP state
@@ -218,6 +223,11 @@ export default function LoginScreen() {
       const res = await serverLogin(fullPhone(), finalCode);
       if (res.ok) {
         await completeOnboarding();
+        // Fresh stack root: dismiss everything (welcome/login history) so
+        // the back button can never walk a logged-in user back to auth.
+        try {
+          router.dismissAll();
+        } catch {}
         router.replace('/(tabs)/feed');
       } else if (res.error) {
         if (res.needsSignup) {
@@ -247,6 +257,11 @@ export default function LoginScreen() {
       const res = await serverEmailLogin(emailRegister ? 'register' : 'login', email, password, name);
       if (res.ok) {
         await completeOnboarding();
+        // Fresh stack root: dismiss everything (welcome/login history) so
+        // the back button can never walk a logged-in user back to auth.
+        try {
+          router.dismissAll();
+        } catch {}
         router.replace('/(tabs)/feed');
       } else if (res.error) {
         setError(authErrorMessage(res.error, 'try again'));
@@ -284,6 +299,11 @@ export default function LoginScreen() {
             <Text className="font-inter-400 mt-1 mb-5" style={{ fontSize: 14, lineHeight: 20, color: colors.textSecondary }}>
               Sign in to continue to the marketplace.
             </Text>
+            {showExpiredNotice ? (
+              <Text className="font-inter-500 mb-4" style={{ fontSize: 13, lineHeight: 18, color: colors.tertiary }}>
+                Your session expired. Please log in again.
+              </Text>
+            ) : null}
 
             {/* Phone / Email switch */}
             <View className="flex-row mb-6 rounded-figma-16 p-1" style={{ backgroundColor: colors.surfaceContainer }}>

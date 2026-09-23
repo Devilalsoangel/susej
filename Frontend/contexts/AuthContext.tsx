@@ -1,7 +1,10 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { router } from 'expo-router';
 import { sessionStorage } from '../utils/sessionStorage';
 import { serverApi, onSessionExpired } from '../utils/serverApi';
+
+const PENDING_REVOKE_KEY = '@susej_pending_revoke';
 
 const ONBOARDED_KEY = '@susej_has_onboarded';
 const ONBOARDED_PREFIX = '@susej_has_onboarded:';
@@ -48,6 +51,13 @@ interface AuthContextType {
   serverEmailLogin: (action: 'login' | 'register', email: string, password: string, name?: string) => Promise<{ ok: boolean; offline?: boolean; error?: string }>;
   serverGoogleLogin: (idToken: string, devBypass?: { email: string; name?: string }) => Promise<{ ok: boolean; offline?: boolean; error?: string }>;
   logout: () => Promise<void>;
+  /**
+   * Industry-standard logout (Instagram/WhatsApp): await the FULL wipe
+   * (server revoke, disk, memory), THEN reset the nav stack so /login is the
+   * only route — the back button can never walk back into the old account.
+   * expired=true adds the session-expired notice on the login screen.
+   */
+  logoutAndReset: (expired?: boolean) => Promise<void>;
   setOnboardingStep: (step: number) => Promise<void>;
   completeOnboarding: () => Promise<void>;
   setHasSeenFeedWelcome: () => Promise<void>;
@@ -163,7 +173,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // identity switch. Per-account keyed storage (@key:<username>) is NOT
   // listed here - it cannot leak across accounts by construction.
   const clearMoneyCache = useCallback(async () => {
-    await AsyncStorage.multiRemove([
+    const bases = [
       '@susej_wallet', // WALLET_KEY (utils/walletStore) - kept literal to avoid an import cycle
       '@susej_withdrawals',
       '@susej_cart',
@@ -204,7 +214,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       '@susej_community_messages',
       '@susej_followed_hashtags',
       '@susej_settings',
-    ]);
+    ];
+    await AsyncStorage.multiRemove(bases);
+    // Sweep per-user suffixed variants (@key:<username>): same-user re-login
+    // flashed stale rows before server sync; legacy cross forms leak.
+    try {
+      const all = await AsyncStorage.getAllKeys();
+      const suffixed = all.filter((k) => bases.some((b) => k.startsWith(`${b}:`)));
+      if (suffixed.length) await AsyncStorage.multiRemove(suffixed);
+    } catch {}
   }, []);
 
   // Identity reconciliation: once the real token is on disk, pull the
@@ -240,6 +258,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // login() writes a mock token — overwrite it with the REAL server token
         // so every serverApi call authenticates (getToken() only accepts susej_).
         await sessionStorage.saveSession({ accessToken: res.data.token, refreshToken: '' }, 0);
+        // Retry a revoke left pending by an offline logout: that old Bearer
+        // is still live server-side until this kills it (new session proves
+        // connectivity, so the retry is meaningful now).
+        try {
+          const pending = await AsyncStorage.getItem(PENDING_REVOKE_KEY);
+          if (pending && pending !== res.data.token) {
+            await serverApi.revokeSession(false, pending).catch(() => undefined);
+          }
+          if (pending) await AsyncStorage.removeItem(PENDING_REVOKE_KEY).catch(() => {});
+        } catch {}
         // Signal contexts AFTER the real token is on disk so their refetch
         // actually authenticates.
         setTokenSeq((n) => n + 1);
@@ -295,15 +323,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = useCallback(async () => {
     // Revoke the Bearer server-side FIRST so a stolen token dies with the
-    // session instead of lingering for its 30-day TTL. Fire-and-forget:
-    // local wipe below must run even when offline.
-    try {
-      await serverApi.revokeSession(false);
-    } catch {}
+    // session instead of lingering for its 30-day TTL. A failed revoke
+    // (offline) is persisted as pending and retried on the next login —
+    // local wipe below still runs so the device never looks logged in.
+    const session = await sessionStorage.getSession().catch(() => null);
+    const token = session?.accessToken && session.accessToken.startsWith('susej_') ? session.accessToken : null;
+    if (token) {
+      try {
+        await serverApi.revokeSession(false, token);
+      } catch {
+        await AsyncStorage.setItem(PENDING_REVOKE_KEY, token).catch(() => {});
+      }
+    }
     setUser(null);
     setIsLoggedIn(false);
     setHasOnboarded(false);
     setSessionSeq((n) => n + 1);
+    setTokenSeq((n) => n + 1);
     await sessionStorage.clearSession();
     await AsyncStorage.removeItem(ONBOARDED_KEY);
     // Also drop the global onboarding mirrors: otherwise the next account on
@@ -313,6 +349,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await AsyncStorage.multiRemove([ONBOARDING_STEP_KEY_BASE, FEED_WELCOME_KEY_BASE]).catch(() => {});
     await clearMoneyCache();
   }, [clearMoneyCache]);
+
+  /**
+   * Full logout + nav-stack reset (see type docs). Awaited wipe FIRST, then
+   * dismissAll + replace so back has no authed route left to reach.
+   */
+  const logoutAndReset = useCallback(async (expired = false) => {
+    await logout();
+    try {
+      router.dismissAll();
+    } catch {}
+    router.replace(expired ? { pathname: '/login', params: { expired: '1' } } : '/login');
+  }, [logout]);
 
   const setOnboardingStep = useCallback(async (step: number) => {
     setOnboardingStepState(step);
@@ -398,8 +446,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Dead-Bearer kill-switch: any non-auth lane proving a 401 means the token
   // is revoked/rotated server-side. Wipe LOCAL state only (no revoke call —
-  // nothing to revoke) + drop cached money/chat rows so stale cache never
-  // renders as live truth. The login screen picks it up via isLoggedIn.
+  // nothing to revoke) + drop cached rows + RESET the stack to login with
+  // the expired notice — sitting on authed screens as a ghost is the bug.
   useEffect(() => {
     onSessionExpired(() => {
       setUser(null);
@@ -407,6 +455,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setSessionSeq((n) => n + 1);
       setTokenSeq((n) => n + 1);
       void clearMoneyCache();
+      try {
+        router.dismissAll();
+      } catch {}
+      router.replace({ pathname: '/login', params: { expired: '1' } });
     });
   }, [clearMoneyCache]);
 
@@ -426,6 +478,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     serverEmailLogin,
     serverGoogleLogin,
         logout,
+        logoutAndReset,
         setOnboardingStep,
         completeOnboarding,
         setHasSeenFeedWelcome,
