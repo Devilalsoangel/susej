@@ -8,6 +8,18 @@ import { colors } from '../utils/theme';
 import { useAuth } from '../contexts/AuthContext';
 import type { User } from '../contexts/AuthContext';
 import { editProfileImages } from '../utils/screenImages';
+import { uploadToServer } from '../utils/mediaUpload';
+import { transportMessage } from '../utils/serverApi';
+
+/** Upload failures in human copy (same standard as signup). */
+function uploadErrorCopy(msg: string): string {
+  const m = String(msg ?? '').trim();
+  if (!m) return "We couldn't save that photo. Please try again.";
+  if (m === 'offline' || m === 'server-unreachable' || m === 'session-expired' || /^HTTP \d{3}$/.test(m)) {
+    return transportMessage(m, 'try again');
+  }
+  return m;
+}
 
 // Expo Go SDK 57 builds can be missing the expo-image-picker native module
 // ('Cannot find native module ExponentImagePicker'); importing at module scope
@@ -108,7 +120,18 @@ export default function EditProfileScreen() {
         quality: 0.8,
       });
       if (!result.canceled && result.assets[0]) {
-        await updateUser({ avatar: result.assets[0].uri });
+        // Upload FIRST like every other surface: the server only persists
+        // hosted URLs (a raw file:// flashes then rolls back on 400).
+        try {
+          const hosted = await uploadToServer(
+            String(result.assets[0].uri ?? ''),
+            result.assets[0].mimeType || 'image/jpeg'
+          );
+          await updateUser({ avatar: hosted });
+        } catch (e) {
+          const msg = e instanceof Error && e.message ? e.message : '';
+          Alert.alert('Photo not saved', uploadErrorCopy(msg));
+        }
       }
     } catch {
       Alert.alert('Photo library unavailable', "We couldn't open your photo library. Please try again.");

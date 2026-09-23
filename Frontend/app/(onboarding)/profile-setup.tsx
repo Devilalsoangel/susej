@@ -5,7 +5,7 @@ import { ChevronLeftIcon, CameraPlusIcon, PencilIcon, ChevronRightIcon } from '.
 import { colors } from '../../utils/theme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../contexts/AuthContext';
-import { serverApi } from '../../utils/serverApi';
+import { serverApi, transportMessage } from '../../utils/serverApi';
 import { uploadToServer } from '../../utils/mediaUpload';
 import { profileImages, notificationImages } from '../../utils/screenImages';
 
@@ -39,6 +39,20 @@ const AVATAR_OPTIONS: { key: string; uri: string; src: RawSource }[] = Array.fro
 );
 
 type NameStatus = 'idle' | 'checking' | 'ok' | 'taken' | 'invalid';
+
+/**
+ * Upload errors in human copy: wire codes (offline/server-unreachable/HTTP)
+ * map through transportMessage; the server's own sentences (503 host text,
+ * 415 type text) already tell the truth and pass through verbatim.
+ */
+function humanUploadError(msg: string): string {
+  const m = String(msg ?? '').trim();
+  if (!m) return 'Could not upload that photo. Try another one.';
+  if (m === 'offline' || m === 'server-unreachable' || m === 'session-expired' || /^HTTP \d{3}$/.test(m)) {
+    return transportMessage(m, 'try again');
+  }
+  return m;
+}
 
 export default function ProfileSetupScreen() {
   const { user, updateUser } = useAuth();
@@ -116,13 +130,12 @@ export default function ProfileSetupScreen() {
       if (!uri) return;
       setUploading(true);
       try {
-        const hosted = await uploadToServer(uri);
+        const hosted = await uploadToServer(uri, result.assets[0].mimeType || 'image/jpeg');
         setAvatar(hosted);
       } catch (e) {
-        // Surface the server's reason (e.g. unsupported type) instead of a
-        // generic line — the user can act on the truth.
+        // Human copy: wire codes map, server sentences pass through.
         const msg = e instanceof Error && e.message ? e.message : '';
-        setPhotoError(msg || 'Could not upload that photo. Try another one.');
+        setPhotoError(humanUploadError(msg));
       } finally {
         setUploading(false);
       }
@@ -131,20 +144,35 @@ export default function ProfileSetupScreen() {
     }
   };
 
+  // Preset avatars upload FIRST like gallery photos: the server only
+  // persists hosted URLs, so a bundled local URI must be hosted before it
+  // becomes the avatar (previously presets 400'd at save time).
+  const pickPreset = async (uri: string) => {
+    if (!uri || uploading) return;
+    setPhotoError('');
+    setUploading(true);
+    try {
+      setAvatar(await uploadToServer(uri));
+    } catch (e) {
+      const msg = e instanceof Error && e.message ? e.message : '';
+      setPhotoError(humanUploadError(msg));
+    } finally {
+      setUploading(false);
+    }
+  };
+
   const typedHandle = username.trim().toLowerCase();
+  // Avatar is OPTIONAL (Instagram pattern): uploads may legitimately fail
+  // (offline, unconfigured host) and must never brick onboarding. Gallery +
+  // presets upload-first when chosen; Continue works with or without one.
   const canContinue =
     !uploading &&
     !saving &&
-    !!avatar &&
     name.trim().length > 0 &&
     (nameStatus === 'ok' || (typedHandle !== '' && typedHandle === serverHandle.toLowerCase()));
 
   const continuePressed = async () => {
     if (uploading || saving) return;
-    if (!avatar) {
-      setPhotoError('Please add a profile photo to continue.');
-      return;
-    }
     if (!name.trim()) {
       setSaveError('Please enter your name to continue.');
       return;
@@ -231,7 +259,7 @@ export default function ProfileSetupScreen() {
         </Text>
 
         {/* Profile Photo — tap the circle for the gallery (square crop built
-            in); presets below are one-tap alternatives. A photo is required. */}
+            in); presets below upload-first the same way. Photo optional. */}
         <View className="items-center mb-8">
           <TouchableOpacity className="relative mb-3" activeOpacity={0.7} onPress={pickFromGallery} disabled={uploading}>
             <View
@@ -258,7 +286,7 @@ export default function ProfileSetupScreen() {
               className="font-inter-600"
               style={{ fontSize: 14, lineHeight: 16, letterSpacing: 0.14, color: colors.primary }}
             >
-              {uploading ? 'Uploading…' : avatar ? 'Change Photo' : 'Add Photo *'}
+              {uploading ? 'Uploading…' : avatar ? 'Change Photo' : 'Add Photo (optional)'}
             </Text>
           </TouchableOpacity>
           {photoError ? (
@@ -290,7 +318,8 @@ export default function ProfileSetupScreen() {
                       borderColor: selected ? colors.primaryContainer : 'transparent',
                     }}
                     activeOpacity={0.7}
-                    onPress={() => setAvatar(opt.uri || undefined)}
+                    onPress={() => pickPreset(opt.uri)}
+                    disabled={uploading}
                   >
                     <Image source={opt.src} className="w-[46px] h-[46px] rounded-full" resizeMode="cover" />
                   </TouchableOpacity>

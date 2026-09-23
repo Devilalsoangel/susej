@@ -44,6 +44,9 @@ export default function LoginScreen() {
   const [resendIn, setResendIn] = useState(0);
   const [error, setError] = useState('');
   const [devHint, setDevHint] = useState('');
+  // Explicit unknown-number fork (user spec): the check said no account —
+  // the screen says so plainly plus a CTA into the create-account screens.
+  const [noAccount, setNoAccount] = useState(false);
   // Email state
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -120,15 +123,20 @@ export default function LoginScreen() {
       // a friendly message — never a blind OTP into a broken lane.
       const check = await serverApi.checkPhone(full);
       if (check.ok && check.data && !check.data.exists) {
-        router.push({ pathname: '/(onboarding)/otp', params: { phone: nationalDigits(), cc: countryCode } });
+        // Plain fork message + CTA below (no silent redirect — the user
+        // must READ that no account exists before moving to create one).
+        setNoAccount(true);
+        setError('No account found for this number. Create one to continue.');
         return;
       }
+      setNoAccount(false);
       if (!check.ok) {
         setError(authErrorMessage(check.error, 'try again'));
         return;
       }
       const res = await serverApi.sendOtp(full);
       if (res.ok) {
+        setNoAccount(false);
         setCode(Array(OTP_LENGTH).fill(''));
         setResendIn(45); // match server RESEND_COOLDOWN_MS (45s)
         setOtpSent(true);
@@ -330,6 +338,7 @@ export default function LoginScreen() {
                           }
                           setPhone(d);
                           if (error) setError('');
+                          if (noAccount) setNoAccount(false);
                         }}
                       />
                     </View>
@@ -338,6 +347,17 @@ export default function LoginScreen() {
                     <Text className="font-inter-500 mb-3" style={{ fontSize: 13, lineHeight: 18, color: colors.error }}>
                       {error}
                     </Text>
+                  ) : null}
+                  {noAccount ? (
+                    <TouchableOpacity
+                      className="w-full h-14 items-center justify-center rounded-figma-16 mb-2"
+                      style={{ backgroundColor: colors.primary }}
+                      onPress={() => router.push({ pathname: '/(onboarding)/otp', params: { phone: nationalDigits(), cc: countryCode } })}
+                    >
+                      <Text className="font-inter-600" style={{ fontSize: 14, lineHeight: 16, letterSpacing: 0.14, color: '#FFFFFF' }}>
+                        Create an account
+                      </Text>
+                    </TouchableOpacity>
                   ) : null}
                   <TouchableOpacity
                     className="w-full h-14 items-center justify-center rounded-figma-16 mb-2"

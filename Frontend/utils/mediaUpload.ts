@@ -20,42 +20,58 @@ export function isHostedImageUrl(url: string): boolean {
   return /^https?:\/\//i.test(String(url ?? '').trim());
 }
 
-/** Read a local file/content URI and encode it as a base64 data URL. */
+/** Read a local file/content URI and encode it as a base64 data URL.
+ *  Android labels gallery files application/octet-stream even for plain
+ *  JPEG/PNG — callers pass the picker's real mimeType so the label is TRUE.
+ *  FileReader would otherwise stamp the wrong (or octet-stream) label and
+ *  the server would persist HEIC bytes as .jpg, skipping its rescue path. */
 export async function uriToDataUrl(uri: string, mime = 'image/jpeg'): Promise<string> {
   const blob = await (await fetch(uri)).blob();
-  return await new Promise<string>((resolve, reject) => {
+  const raw = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(blob);
   });
+  const clean = String(mime || 'image/jpeg').trim() || 'image/jpeg';
+  return raw.replace(/^data:[^;]+;base64,/, `data:${clean};base64,`);
 }
 
 /**
- * Downscale a local image via expo-image-picker's ImageManipulator so uploads
- * stay under the server's 5MB cap. Falls back to a straight data-URL encode.
+ * Downscale a local image so uploads stay under the server's 5MB cap.
+ * Uses expo-image-manipulator when installed (1280px/JPEG) — the old
+ * expo-image-picker.ImageManipulator path never existed and silently
+ * shipped full camera originals. Falls back to a straight encode.
  */
 export async function shrinkForUpload(
   uri: string,
+  mime = 'image/jpeg',
   maxDim = UPLOAD_MAX_DIM,
   quality = UPLOAD_QUALITY
 ): Promise<string> {
   try {
-    const ImagePicker = require('expo-image-picker');
-    const manip = ImagePicker?.ImageManipulator;
-    if (manip?.manipulateAsync) {
-      const out = await manip.manipulateAsync(
+    const manipModule = require('expo-image-manipulator') as {
+      manipulateAsync?: (
+        u: string,
+        actions: unknown[],
+        opts: { compress: number; format: unknown; base64?: boolean }
+      ) => Promise<{ base64?: string; uri?: string }>;
+      SaveFormat?: { JPEG: unknown };
+    };
+    const manipulateAsync = manipModule?.manipulateAsync?.bind(manipModule);
+    if (manipulateAsync) {
+      const out = await manipulateAsync(
         uri,
         [{ resize: { width: maxDim } }],
-        { compress: quality, format: manip.SaveFormat.JPEG, base64: true }
+        { compress: quality, format: manipModule.SaveFormat?.JPEG, base64: true }
       );
-      if (out?.base64) return `data:image/jpeg;base64,${out.base64}`;
-      if (out?.uri) return uriToDataUrl(out.uri);
+      if (out?.base64) return `data:${mime};base64,${out.base64}`;
+      if (out?.uri) return uriToDataUrl(out.uri, mime);
     }
   } catch {
-    // fall through to plain encode
+    // manipulator not installed / failed — fall through to plain encode
   }
-  return uriToDataUrl(uri);
+  return uriToDataUrl(uri, mime);
 }
 
 /** Resolve a stored image reference to an absolute URL for <Image source>. */
@@ -70,8 +86,8 @@ export function resolveImageUrl(url: string, base: string): string {
  * URL (uploadBannerImage returns a root-relative /uploads/... path).
  * Throws on failure — callers decide the UX (block post, or offline fallback).
  */
-export async function uploadToServer(localUri: string): Promise<string> {
-  const dataUrl = await shrinkForUpload(String(localUri ?? '').trim());
+export async function uploadToServer(localUri: string, mime = 'image/jpeg'): Promise<string> {
+  const dataUrl = await shrinkForUpload(String(localUri ?? '').trim(), mime);
   const res = await serverApi.uploadBannerImage(dataUrl);
   if (!res.ok || !res.data?.url) throw new Error(res.error || 'Upload failed');
   const base = await getAdminUrl();

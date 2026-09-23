@@ -151,11 +151,13 @@ async function request<T>(path: string, options: { method?: string; body?: unkno
 // App-key request against the admin /api/v1/* surface (platform-curated home
 // content). Carries BOTH x-app-key AND a Bearer token so the server's
 // parseWriteSession can resolve the real user identity.
-async function requestWithAppKey<T>(path: string, options: { method?: string; body?: unknown } = {}): Promise<ApiResult<T>> {
+async function requestWithAppKey<T>(path: string, options: { method?: string; body?: unknown; timeoutMs?: number } = {}): Promise<ApiResult<T>> {
   try {
     const [base, key, token] = await Promise.all([getAdminUrl(), getAppKey(), getToken()]);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 6000);
+    // Uploads carry multi-MB base64 bodies: the default 6s budget aborts
+    // them mid-flight and misreports "couldn't reach the server".
+    const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 6000);
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'x-app-key': key,
@@ -541,9 +543,9 @@ export const serverApi = {
     requestWithAppKey<{ ok: boolean; withdrawalId: string; deduped?: boolean; destination?: string }>('/api/app/wallet/payout', { method: 'PUT', body: { amount, method, ...(ref ? { ref } : {}), ...(destination ? { destination } : {}), ...(typeof feePreview === 'number' ? { feePreview } : {}) } }),
 
   // Upload a local image and get back a hosted /uploads/... URL (root-relative
-  // — prefix with getAdminUrl()). Used by the shared media upload pipeline.
+  // — prefix with getAdminUrl()). 60s budget: photo bodies are megabytes.
   uploadBannerImage: (dataUrl: string) =>
-    requestWithAppKey<{ ok: boolean; url: string }>('/api/app/upload', { method: 'POST', body: { dataUrl } }),
+    requestWithAppKey<{ ok: boolean; url: string }>('/api/app/upload', { method: 'POST', body: { dataUrl }, timeoutMs: 60000 }),
 
   // Sync one marketing banner to the admin (POST=create with flat payload,
   // PATCH=update with { id, data } wrapper).

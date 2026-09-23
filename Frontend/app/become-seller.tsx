@@ -758,9 +758,14 @@ export default function BecomeSellerScreen() {
           if (sellerType === 'business') mustHave.push(['GST certificate', gstUp]);
           const failed = mustHave.find(([, r]) => !r?.ok || !r.data?.url);
           if (failed) {
+            // Name the failing document AND the server's reason: a 415-type
+            // rejection is not a connection problem and must not say so.
+            const reason = failed[1]?.error;
             Alert.alert(
               'Upload failed',
-              `${failed[0]} could not be uploaded. Check your connection and try again.`
+              reason
+                ? `${failed[0]} could not be uploaded: ${reason}`
+                : `${failed[0]} could not be uploaded. Check your connection and try again.`
             );
             setSubmitting(false);
             return;
