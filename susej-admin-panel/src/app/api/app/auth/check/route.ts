@@ -47,7 +47,11 @@ export async function POST(req: NextRequest) {
   const elapsed = Date.now() - startedAt;
   if (elapsed < 300) await new Promise((r) => setTimeout(r, 300 - elapsed));
   return NextResponse.json({ exists: !!user });
-  } catch {
-    return NextResponse.json({ error: "Server hiccup. Please try again." }, { status: 500 });
+  } catch (e) {
+    // TEMP-DEBUG (one deploy): surface the real throw so the prod 500 can be
+    // diagnosed from the client. Removed immediately after.
+    const detail = String((e as { message?: unknown })?.message ?? e).slice(0, 200);
+    console.error("[auth/check] throw:", detail);
+    return NextResponse.json({ error: "Server hiccup. Please try again.", debug: detail }, { status: 500 });
   }
 }
