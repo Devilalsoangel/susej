@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
-import { findUserByPhone } from "@/lib/app-auth";
+import { findUserByPhone, canonPhone } from "@/lib/app-auth";
 import { getClientIp } from "@/lib/auth";
 
 // Existence probe for the sign-in screen: "does this number have an account?"
@@ -35,12 +35,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Too many attempts — try again in a minute" }, { status: 429 });
     }
   }
-  const phone = (body.phone ?? "").replace(/\D/g, "");
+  const phone = canonPhone(body.phone ?? "");
   if (!phone) return NextResponse.json({ error: "Enter a phone number" }, { status: 400 });
   const prisma = await getPrisma();
   if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
+  // Every DB touch below can throw (Neon timeout, pool drop on serverless):
+  // without this guard the throw becomes a 500 HTML page, and the app shows
+  // a raw red "HTTP 500". Always answer JSON.
+  try {
   const user = await findUserByPhone(phone);
   const elapsed = Date.now() - startedAt;
   if (elapsed < 300) await new Promise((r) => setTimeout(r, 300 - elapsed));
   return NextResponse.json({ exists: !!user });
+  } catch {
+    return NextResponse.json({ error: "Server hiccup. Please try again." }, { status: 500 });
+  }
 }

@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
-import { View, Text, TextInput, TouchableOpacity, Modal, FlatList } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, Modal, FlatList, ScrollView } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { ChevronLeftIcon, PhoneIcon, LockArrowIcon } from '../../utils/icons';
 import { colors } from '../../utils/theme';
 import { useAuth } from '../../contexts/AuthContext';
-import { serverApi, transportMessage } from '../../utils/serverApi';
+import { serverApi, transportMessage, authErrorMessage } from '../../utils/serverApi';
 
 const COUNTRIES = [
   { code: '+91', name: 'India', flag: '🇮🇳' },
@@ -45,13 +45,21 @@ export default function OtpScreen() {
   const [countryCode, setCountryCode] = useState(prefillCc);
   const [showCountryPicker, setShowCountryPicker] = useState(false);
   const codeComplete = code.every((d) => d !== '');
-  const otpInputRef = useRef<TextInput>(null);
+  // Auto-submit guard: skips stale schedules after further typing/deletes.
+  const autoSubmitId = useRef(0);
 
   useEffect(() => {
     if (resendIn <= 0) return;
     const t = setTimeout(() => setResendIn((s) => s - 1), 1000);
     return () => clearTimeout(t);
   }, [resendIn]);
+
+  // Transient errors, same standard as login (never a sitting wall).
+  useEffect(() => {
+    if (!error) return;
+    const t = setTimeout(() => setError(''), 6000);
+    return () => clearTimeout(t);
+  }, [error]);
 
   // Industry standard (E.164): the selected country code is part of the
   // identity. Sending bare national digits made the picker decorative and
@@ -100,7 +108,7 @@ export default function OtpScreen() {
       // Real server-side code issuance (hashed, expiring, single-use).
       const res = await serverApi.sendOtp(full);
       if (!res.ok) {
-        setError(transportMessage(res.error, 'try again'));
+        setError(authErrorMessage(res.error, 'try again'));
         return;
       }
       // Dev-mode convenience: the SERVER decides whether a hint may be
@@ -128,13 +136,15 @@ export default function OtpScreen() {
     // digit never auto-submitted, only the manual button worked).
     if (text.replace(/\D/g, '').length === OTP_LENGTH) {
       const freshCode = digits.join('');
-      setTimeout(() => { handleVerify(freshCode); }, 150);
+      const id = ++autoSubmitId.current;
+      setTimeout(() => { if (id === autoSubmitId.current) handleVerify(freshCode); }, 150);
     }
   };
 
   const otpCode = code.join('');
 
   const handleResend = () => {
+    if (verifying) return; // resend mid-verify swaps the row: correct old code reads "Incorrect"
     handleSendOtp();
   };
 
@@ -182,7 +192,7 @@ export default function OtpScreen() {
       if (res.ok) {
         router.push('/(onboarding)/location');
       } else {
-        setError(transportMessage(res.error, 'try again'));
+        setError(authErrorMessage(res.error, 'try again'));
       }
     } catch (e) {
       setError('Sign-in is unavailable. Try again once you are back online.');
@@ -206,7 +216,12 @@ export default function OtpScreen() {
         </Text>
       </View>
 
-      <View className="flex-1 px-8">
+      <ScrollView
+        className="flex-1 px-8"
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={{ flexGrow: 1 }}
+      >
         {/* Icon Section - Phone */}
         <View className="items-center mb-6">
           <View className="w-20 h-20 rounded-full items-center justify-center" style={{ backgroundColor: 'rgba(93,95,239,0.1)' }}>
@@ -228,7 +243,7 @@ export default function OtpScreen() {
           style={{ fontSize: 16, lineHeight: 24, color: colors.textSecondary }}
         >
           {otpSent
-            ? `We've sent a verification code to\n${countryCode} ${phone || 'your number'}.`
+            ? `We've sent a verification code to\n+${countryCode.replace(/\D/g, '')} ${nationalDigits() || 'your number'}.`
             : "We'll send a 6-digit verification code to\nsecure your account."}
         </Text>
 
@@ -308,11 +323,12 @@ export default function OtpScreen() {
                 {error}
               </Text>
             ) : null}
-            <TouchableOpacity
-              activeOpacity={1}
-              onPress={() => otpInputRef.current?.focus()}
+            {/* OTP boxes: invisible input OVER the boxes (same as login) —
+              taps land on the input itself so Vivo-class devices open the
+              keyboard. Boxes underneath are display only. */}
+            <View
               className="flex-row mb-6"
-              style={{ gap: 8 }}
+              style={{ gap: 8, position: 'relative' }}
             >
               {code.map((d, i) => (
                 <View
@@ -329,19 +345,18 @@ export default function OtpScreen() {
                   </Text>
                 </View>
               ))}
-            </TouchableOpacity>
-            <TextInput
-              ref={otpInputRef}
-              value={otpCode}
-              onChangeText={handleOtpChange}
-              keyboardType="number-pad"
-              maxLength={6}
-              caretHidden
-              autoFocus={otpSent}
-              className="absolute opacity-0"
-              style={{ width: 1, height: 1 }}
-              textContentType="oneTimeCode"
-            />
+              <TextInput
+                value={otpCode}
+                onChangeText={handleOtpChange}
+                keyboardType="number-pad"
+                maxLength={6}
+                caretHidden
+                autoFocus={otpSent}
+                textContentType="oneTimeCode"
+                accessibilityLabel="6-digit verification code"
+                style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, opacity: 0.01 }}
+              />
+            </View>
 
             {/* Verify Button */}
             <TouchableOpacity
@@ -373,7 +388,7 @@ export default function OtpScreen() {
               >
                 Didn't get the code?{' '}
               </Text>
-              <TouchableOpacity disabled={resendIn > 0} onPress={handleResend}>
+              <TouchableOpacity disabled={resendIn > 0 || verifying} onPress={handleResend}>
                 <Text
                   className="font-inter-600"
                   style={{
@@ -452,7 +467,7 @@ export default function OtpScreen() {
               ))}
           </View>
         </View>
-      </View>
+      </ScrollView>
     </View>
   );
 }

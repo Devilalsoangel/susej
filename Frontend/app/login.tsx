@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { View, Text, TextInput, TouchableOpacity, ScrollView, Alert, Modal, FlatList } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -7,7 +7,7 @@ import { ChevronLeftIcon } from '../utils/icons';
 import Svg, { Path } from 'react-native-svg';
 import { colors } from '../utils/theme';
 import { useAuth } from '../contexts/AuthContext';
-import { serverApi, transportMessage } from '../utils/serverApi';
+import { serverApi, transportMessage, authErrorMessage } from '../utils/serverApi';
 
 const COUNTRIES = [
   { code: '+91', name: 'India', flag: '🇮🇳' },
@@ -43,7 +43,6 @@ export default function LoginScreen() {
   const [sending, setSending] = useState(false);
   const [resendIn, setResendIn] = useState(0);
   const [error, setError] = useState('');
-  const [needsSignup, setNeedsSignup] = useState(false);
   const [devHint, setDevHint] = useState('');
   // Email state
   const [email, setEmail] = useState('');
@@ -52,6 +51,9 @@ export default function LoginScreen() {
   const [emailRegister, setEmailRegister] = useState(false);
   const [countryCode, setCountryCode] = useState('+91');
   const [showCountryPicker, setShowCountryPicker] = useState(false);
+  // Auto-submit guard: each keystroke bumps the id; a scheduled submit only
+  // fires if nothing changed since (no stale-code verify after delete).
+  const autoSubmitId = useRef(0);
   const codeComplete = code.every((d) => d !== '');
 
   useEffect(() => {
@@ -59,6 +61,14 @@ export default function LoginScreen() {
     const t = setTimeout(() => setResendIn((s) => s - 1), 1000);
     return () => clearTimeout(t);
   }, [resendIn]);
+
+  // Industry-style transient errors: the message fades on its own (and
+  // instantly on any input), so a failure never sits on screen like a wall.
+  useEffect(() => {
+    if (!error) return;
+    const t = setTimeout(() => setError(''), 6000);
+    return () => clearTimeout(t);
+  }, [error]);
 
   // Industry standard (E.164): the selected country code is part of the
   // identity — never send bare national digits (see onboarding otp.tsx).
@@ -93,7 +103,7 @@ export default function LoginScreen() {
   const [devBypassing, setDevBypassing] = useState(false);
 
   const requestOtp = async () => {
-    if (sending) return;
+    if (sending || verifying) return;
     // Length guard FIRST: >10 (or <10) national digits warns and never
     // sends — the typo can never reach OTP, let alone mint anything.
     if (!isPhoneValid()) {
@@ -104,19 +114,18 @@ export default function LoginScreen() {
     setError('');
     try {
       const full = fullPhone();
-      // Industry split: check the account BEFORE burning an OTP. Unknown
-      // number → signup flow with the number prefilled (no OTP sent here,
-      // nothing minted). Known → OTP boxes as usual.
-      try {
-        const check = await serverApi.checkPhone(full);
-        if (check.ok && check.data && !check.data.exists) {
-          router.push({ pathname: '/(onboarding)/otp', params: { phone: nationalDigits(), cc: countryCode } });
-          return;
-        }
-        // Check unreachable/throttled → fail OPEN to send-OTP: verify still
-        // guards creation (404 needsSignup), so this never mints ghosts.
-      } catch {
-        // Probe threw (shouldn't — request() catches) → same fail-open.
+      // Existence-first (user spec): the number must resolve in the DB
+      // before any OTP burns. Unknown → create-account screens with the
+      // number prefilled (explicit consent lane). A failed check STOPS with
+      // a friendly message — never a blind OTP into a broken lane.
+      const check = await serverApi.checkPhone(full);
+      if (check.ok && check.data && !check.data.exists) {
+        router.push({ pathname: '/(onboarding)/otp', params: { phone: nationalDigits(), cc: countryCode } });
+        return;
+      }
+      if (!check.ok) {
+        setError(authErrorMessage(check.error, 'try again'));
+        return;
       }
       const res = await serverApi.sendOtp(full);
       if (res.ok) {
@@ -128,10 +137,10 @@ export default function LoginScreen() {
         // the app displays exactly what the server returned for this phone.
         setDevHint(res.data?.devCode ? `Dev code: ${res.data.devCode}` : '');
       } else {
-        setError(transportMessage(res.error, 'try again'));
+        setError(authErrorMessage(res.error, 'try again'));
       }
     } catch (e) {
-      setError('Could not send the code. Please try again.');
+      setError('No connection. Check your internet and try again.');
     } finally {
       setSending(false);
     }
@@ -174,13 +183,14 @@ export default function LoginScreen() {
     while (digits.length < OTP_LENGTH) digits.push('');
     setCode(digits);
     if (error) setError('');
-    if (needsSignup) setNeedsSignup(false);
     // Auto-submit once all 6 digits are entered (industry standard). Pass the
     // fresh digits explicitly — state is stale inside this handler, so the
     // 6th digit never auto-submitted (only the manual button worked).
+    // Guarded: skips if the user typed/deleted within the window.
     if (text.replace(/\D/g, '').length === OTP_LENGTH) {
       const freshCode = digits.join('');
-      setTimeout(() => { handleVerify(freshCode); }, 150);
+      const id = ++autoSubmitId.current;
+      setTimeout(() => { if (id === autoSubmitId.current) handleVerify(freshCode); }, 150);
     }
   };
 
@@ -193,19 +203,25 @@ export default function LoginScreen() {
     if (finalCode.length !== OTP_LENGTH || verifying) return;
     setVerifying(true);
     setError('');
-    setNeedsSignup(false);
     try {
-      // Sign-in only: no create flag, so an unknown/typo'd number gets 404
-      // needsSignup — never a silently minted ghost account.
+      // Known numbers land in the feed. needsSignup survives only as an
+      // old-server/race fallback → create screens with the number prefilled
+      // (same fork as the pre-check above).
       const res = await serverLogin(fullPhone(), finalCode);
       if (res.ok) {
         await completeOnboarding();
         router.replace('/(tabs)/feed');
       } else if (res.error) {
-        setError(transportMessage(res.error, 'try again'));
-        if (res.needsSignup) setNeedsSignup(true);
+        if (res.needsSignup) {
+          router.push({ pathname: '/(onboarding)/otp', params: { phone: nationalDigits(), cc: countryCode } });
+          return;
+        }
+        const tries = typeof res.attemptsLeft === 'number' && res.attemptsLeft >= 0
+          ? ` ${res.attemptsLeft} ${res.attemptsLeft === 1 ? 'try' : 'tries'} left — check the SMS and retry.`
+          : '';
+        setError(authErrorMessage(res.error, 'try again') + tries);
       } else {
-        Alert.alert('Sign-in unavailable', 'Sign-in is unavailable offline. Please try again once you are back online.');
+        setError('No connection. Check your internet and try again.');
       }
     } catch (e) {
       // Network abort/timeout must never crash to the root screen.
@@ -225,9 +241,9 @@ export default function LoginScreen() {
         await completeOnboarding();
         router.replace('/(tabs)/feed');
       } else if (res.error) {
-        setError(res.error);
+        setError(authErrorMessage(res.error, 'try again'));
       } else {
-        Alert.alert('Sign-in unavailable', 'Sign-in is unavailable offline. Please try again once you are back online.');
+        setError('No connection. Check your internet and try again.');
       }
     } catch (e) {
       // Network abort/timeout must never crash to the root screen.
@@ -296,8 +312,20 @@ export default function LoginScreen() {
                         placeholder="98765 43210"
                         placeholderTextColor="rgba(70,69,85,0.4)"
                         keyboardType="phone-pad"
+                        maxLength={10}
                         value={phone}
-                        onChangeText={(t) => { setPhone(t); if (error) setError(''); if (needsSignup) setNeedsSignup(false); }}
+                        onChangeText={(t) => {
+                          // Strict visible cap (user spec): digits only, one
+                          // leading-cc/trunk strip, hard 10. The field always
+                          // shows exactly what will be sent — typing more is
+                          // impossible, pasting more gets visibly trimmed.
+                          let d = t.replace(/\D/g, '');
+                          const cc = countryCode.replace(/\D/g, '');
+                          if (d.length > 10 && cc && d.startsWith(cc)) d = d.slice(cc.length);
+                          if (cc === '91' && d.length > 10 && d.startsWith('0')) d = d.slice(1);
+                          setPhone(d.slice(0, 10));
+                          if (error) setError('');
+                        }}
                       />
                     </View>
                   </View>
@@ -326,7 +354,7 @@ export default function LoginScreen() {
               ) : (
                 <>
                   <Text className="font-inter-400 mb-5" style={{ fontSize: 13, lineHeight: 18, color: colors.textSecondary }}>
-                    We've sent a 6-digit code to {countryCode} {phone}.
+                    We've sent a 6-digit code to +{countryCode.replace(/\D/g, '')} {nationalDigits()}.
                   </Text>
                   {devHint && !error ? (
                     <Text className="font-inter-500 mb-3" style={{ fontSize: 13, lineHeight: 18, color: colors.tertiary }}>
@@ -338,14 +366,12 @@ export default function LoginScreen() {
                       {error}
                     </Text>
                   ) : null}
-                  {needsSignup ? (
-                    <TouchableOpacity className="mb-3 items-center" onPress={() => router.replace('/(onboarding)/auth')}>
-                      <Text className="font-inter-600" style={{ fontSize: 13, lineHeight: 18, color: colors.primary }}>
-                        No account yet? Create one
-                      </Text>
-                    </TouchableOpacity>
-                  ) : null}
-                  <View className="flex-row mb-5" style={{ gap: 8 }}>
+                  {/* OTP boxes: the real TextInput sits INVISIBLE OVER the boxes
+                    (absolute fill, near-zero opacity). Taps land directly on
+                    the input, so the keyboard always opens — even on Vivo,
+                    which refuses to raise a keyboard for an off-screen 1px
+                    input focused via ref. Boxes underneath are display only. */}
+                  <View className="flex-row mb-5" style={{ gap: 8, position: 'relative' }}>
                     {code.map((d, i) => (
                       <View
                         key={i}
@@ -361,17 +387,18 @@ export default function LoginScreen() {
                         </Text>
                       </View>
                     ))}
+                    <TextInput
+                      value={otpCode}
+                      onChangeText={handleOtpChange}
+                      keyboardType="number-pad"
+                      maxLength={6}
+                      caretHidden
+                      autoFocus={otpSent}
+                      textContentType="oneTimeCode"
+                      accessibilityLabel="6-digit verification code"
+                      style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, opacity: 0.01 }}
+                    />
                   </View>
-                  <TextInput
-                    value={otpCode}
-                    onChangeText={handleOtpChange}
-                    keyboardType="number-pad"
-                    maxLength={6}
-                    caretHidden
-                    autoFocus={otpSent}
-                    className="absolute opacity-0"
-                    style={{ width: 1, height: 1, top: -9999 }}
-                  />
                   <TouchableOpacity
                     className="w-full h-14 items-center justify-center rounded-figma-16 mb-2"
                     style={{ backgroundColor: codeComplete && !verifying ? colors.primary : 'rgba(93,95,239,0.2)' }}
@@ -382,7 +409,10 @@ export default function LoginScreen() {
                       {verifying ? 'Signing in...' : 'Sign in'}
                     </Text>
                   </TouchableOpacity>
-                  <TouchableOpacity disabled={resendIn > 0} onPress={requestOtp} className="items-center">
+                  {/* Resend locked while a verify is in flight: resending swaps
+                    the server row and turns a correct in-flight code into
+                    "Incorrect code". */}
+                  <TouchableOpacity disabled={resendIn > 0 || verifying} onPress={() => { if (!verifying) requestOtp(); }} className="items-center">
                     <Text className="font-inter-600" style={{ fontSize: 13, lineHeight: 18, color: resendIn > 0 ? colors.textSecondary : colors.primary }}>
                       {resendIn > 0 ? `Resend in ${resendIn}s` : 'Resend code'}
                     </Text>

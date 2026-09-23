@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
 import { getPrisma } from "@/lib/db";
-import { createAppSession, createUserByPhone, findUserByPhone, toAppUser } from "@/lib/app-auth";
+import { createAppSession, createUserByPhone, findUserByPhone, toAppUser, isIndianPhoneShape, canonPhone } from "@/lib/app-auth";
 import { getClientIp } from "@/lib/auth";
 
 // Consumes the hashed OTP stored by POST /api/app/auth:
@@ -59,14 +59,17 @@ export async function POST(req: NextRequest) {
   // signup screen. Sign-in screens omit it, so a typo'd number can never
   // mint a ghost account + welcome money (was silent auto-create before).
   const wantCreate = body.create === true;
-  const phone = (body.phone ?? "").replace(/\D/g, "");
+  const raw = (body.phone ?? "").replace(/\D/g, "");
   const code = String(body.code ?? "").replace(/\D/g, "");
-  // Align with POST /api/app/auth (>=10 digits): shorter strings can never
-  // have a code row, and previously fell through to findUserByPhone -> null
-  // -> 500. Fail clean with 400 instead.
-  if (!phone || phone.length < 10) {
+  // Same canonical identity as the send lane (one code per number, never a
+  // parallel row per format variant) + same India-only shape gate.
+  if (!raw || raw.length < 10) {
     return NextResponse.json({ error: "A valid 10-digit phone number is required" }, { status: 400 });
   }
+  if (!isIndianPhoneShape(raw)) {
+    return NextResponse.json({ error: "Only Indian (+91) mobile numbers are supported" }, { status: 400 });
+  }
+  const phone = canonPhone(raw);
   if (!throttleVerifyIp(req)) {
     return NextResponse.json({ error: "Too many attempts — try again in a minute" }, { status: 429 });
   }
@@ -76,6 +79,10 @@ export async function POST(req: NextRequest) {
   const prisma = await getPrisma();
   if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
 
+  // Every DB touch below can throw (Neon timeout, pool drop on serverless):
+  // without this guard the throw becomes a 500 HTML page, and the app shows
+  // a raw red "HTTP 500". Always answer JSON.
+  try {
   const rec = await prisma.appSetting.findUnique({ where: { key: `otp:${phone}` } });
   const data = rec?.value as { hash?: string; exp?: number; attempts?: number } | undefined;
   if (!rec || !data?.hash) {
@@ -119,10 +126,10 @@ export async function POST(req: NextRequest) {
       .catch(() => null);
     return NextResponse.json({ token, user: toAppUser(fresh ?? existing) });
   }
-  // Unknown number + correct code: sign-in must NOT create. Tell the client
-  // it is a signup case so it can ask for explicit consent (industry split,
-  // same as email login 401 vs register). Creation mints 500 welcome money,
-  // so it additionally passes the per-IP creation bucket.
+  // Unknown number + CORRECT code (ownership proven above): the sign-in
+  // screen routes these to the create-account screens with the number
+  // prefilled — explicit consent, explicit signup lane (and its bonus).
+  // Sign-in itself never mints: a typo'd number can never become an account.
   if (!wantCreate) {
     return NextResponse.json(
       { error: "No account found for this number. Create one to continue.", needsSignup: true },
@@ -143,4 +150,7 @@ export async function POST(req: NextRequest) {
     .findUnique({ where: { id: user.id } })
     .catch(() => null);
   return NextResponse.json({ token, user: toAppUser(fresh ?? user) });
+  } catch {
+    return NextResponse.json({ error: "Server hiccup. Please try again." }, { status: 500 });
+  }
 }

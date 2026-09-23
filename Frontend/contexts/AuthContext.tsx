@@ -44,7 +44,7 @@ interface AuthContextType {
   /** Real server login via OTP — falls back to local demo identity when offline.
    *  opts.create:true = explicit signup (signup screens only); sign-in omits
    *  it so unknown numbers get needsSignup instead of a ghost account. */
-  serverLogin: (phone: string, code: string, opts?: { create?: boolean }) => Promise<{ ok: boolean; offline?: boolean; needsSignup?: boolean; error?: string }>;
+  serverLogin: (phone: string, code: string, opts?: { create?: boolean }) => Promise<{ ok: boolean; offline?: boolean; needsSignup?: boolean; attemptsLeft?: number; error?: string }>;
   serverEmailLogin: (action: 'login' | 'register', email: string, password: string, name?: string) => Promise<{ ok: boolean; offline?: boolean; error?: string }>;
   serverGoogleLogin: (idToken: string, devBypass?: { email: string; name?: string }) => Promise<{ ok: boolean; offline?: boolean; error?: string }>;
   logout: () => Promise<void>;
@@ -226,7 +226,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const serverLogin = useCallback(
-    async (phone: string, code: string, opts?: { create?: boolean }) => {
+    async (phone: string, code: string, opts?: { create?: boolean }): Promise<{ ok: boolean; error?: string; needsSignup?: boolean; attemptsLeft?: number; offline?: boolean }> => {
       const digits = phone.replace(/\D/g, '');
       // 1. Try the real server first - logs in a REAL user row, or (signup
       //    screens only) creates one with explicit consent. Sign-in typos get
@@ -250,7 +250,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       //    expired, throttled, unknown-number needsSignup). Only a network
       //    failure is reported as offline.
       if (res.error && res.error !== 'offline') {
-        return { ok: false, error: res.error, ...(res.needsSignup ? { needsSignup: true } : {}) };
+        return { ok: false, error: res.error, ...(res.needsSignup ? { needsSignup: true } : {}), ...(typeof res.attemptsLeft === 'number' ? { attemptsLeft: res.attemptsLeft } : {}) };
       }
       // 3. Offline fallback: NO local identity exists for an unknown number -
       //    sign-in simply fails honestly until connectivity returns.

@@ -34,7 +34,39 @@ export function transportMessage(error: string | undefined, action: string): str
   if (error === 'offline') return `You're offline. Check your connection and ${action}.`;
   if (error === 'server-unreachable') return `Couldn't reach the susej server. Please ${action}.`;
   if (error === 'session-expired') return `Your session expired. Please log in again and ${action}.`;
+  // Raw HTTP fallbacks from the wire must never reach the user verbatim —
+  // a red "HTTP 500" tells them nothing. Map to human copy.
+  if (error === 'HTTP 500' || error === 'HTTP 502' || error === 'HTTP 503') {
+    return `Our server had a hiccup. Please ${action}.`;
+  }
+  if (error === 'HTTP 429') return `Too many attempts. Wait a minute and ${action}.`;
+  if (error && /^HTTP \d{3}$/.test(error)) return `Something went wrong. Please ${action}.`;
   return error || `Something went wrong. Please ${action}.`;
+}
+
+/**
+ * Industry-style auth error copy: every failure tells the user WHAT happened
+ * and WHAT to do next — never a raw code, never a red wall of jargon.
+ * Falls back to transportMessage for wire-level errors.
+ */
+export function authErrorMessage(error: string | undefined, action: string): string {
+  if (!error) return `Something went wrong. Please ${action}.`;
+  if (error === 'offline' || error === 'server-unreachable' || error === 'session-expired' || error.startsWith('HTTP')) {
+    return transportMessage(error, action);
+  }
+  const low = error.toLowerCase();
+  if (low.includes('incorrect code')) return error; // already human ("Incorrect code", attempts shown beside it)
+  if (low.includes('expired')) return 'That code expired. Tap Resend for a fresh one.';
+  if (low.includes('no code requested') || low.includes('tap resend')) return 'No code was sent yet. Tap Send code first.';
+  if (low.includes('too many attempts') || low.includes('too many codes')) return 'Too many tries. Wait a minute, then tap Resend.';
+  if (low.includes('too many accounts')) return 'Too many accounts from this network. Try again later.';
+  if (low.includes('already sent') || low.includes('wait before requesting')) return 'Code already on its way. Wait a few seconds, then Resend.';
+  if (low.includes('valid 10-digit') || low.includes('valid phone') || low.includes('valid mobile')) return error;
+  if (low.includes('only indian')) return 'Only Indian (+91) mobile numbers are supported right now.';
+  if (low.includes('sms delivery') || low.includes('database unavailable')) return 'Our server stumbled. Try again in a moment.';
+  if (low.includes('account disabled')) return 'This account is disabled. Contact support for help.';
+  if (low.includes('hiccup')) return error;
+  return error;
 }
 
 export interface ApiResult<T> {
@@ -43,6 +75,8 @@ export interface ApiResult<T> {
   error?: string;
   /** Set on 404 from OTP verify: unknown number, signup consent required. */
   needsSignup?: boolean;
+  /** Tries remaining after a wrong OTP guess (verify 401). Surfaced in UI. */
+  attemptsLeft?: number;
 }
 
 export interface ServerComment {
@@ -96,6 +130,7 @@ async function request<T>(path: string, options: { method?: string; body?: unkno
     if (!res.ok) {
       const err = (json as { error?: string } | null)?.error ?? `HTTP ${res.status}`;
       const needsSignup = (json as { needsSignup?: boolean } | null)?.needsSignup;
+      const attemptsLeft = (json as { attemptsLeft?: number } | null)?.attemptsLeft;
       // Dead Bearer (revoked server-side, rotated, or forged): never present
       // cache as live. Wipe the token and tell the app to force re-auth.
       if (res.status === 401 && token && !path.startsWith('/auth')) {
@@ -105,7 +140,7 @@ async function request<T>(path: string, options: { method?: string; body?: unkno
         } catch {}
         return { ok: false, data: null, error: 'session-expired' };
       }
-      return { ok: false, data: null, error: err, ...(needsSignup ? { needsSignup: true } : {}) };
+      return { ok: false, data: null, error: err, ...(needsSignup ? { needsSignup: true } : {}), ...(typeof attemptsLeft === 'number' ? { attemptsLeft } : {}) };
     }
     return { ok: true, data: json };
   } catch {
@@ -173,7 +208,7 @@ export const serverApi = {
   // screens omit it, so a typo'd number gets 404 needsSignup instead of a
   // silently minted ghost account + welcome money.
   verifyOtp: (phone: string, code: string, create?: boolean) =>
-    request<{ token: string; user: Record<string, unknown>; needsSignup?: boolean }>('/auth/verify', { method: 'POST', body: create ? { phone, code, create: true } : { phone, code } }),
+    request<{ token: string; user: Record<string, unknown>; needsSignup?: boolean; attemptsLeft?: number }>('/auth/verify', { method: 'POST', body: create ? { phone, code, create: true } : { phone, code } }),
   emailAuth: (action: 'login' | 'register', email: string, password: string, name?: string) =>
     request<{ token: string; user: Record<string, unknown> }>('/auth/email', { method: 'POST', body: { action, email, password, name } }),
   googleAuth: (idToken: string, devBypass?: { email: string; name?: string }) =>

@@ -82,6 +82,18 @@ export function isIndianPhoneShape(digits: string): boolean {
 }
 
 /**
+ * Canonical phone identity (P0 fix): every OTP/cooldown/counter key and every
+ * lookup uses this form, so 9876543210 / 919876543210 / 09876543210 collapse
+ * to ONE identity — one live code, one cooldown, one hourly counter. Without
+ * this, format variants minted independent OTP rows (SMS pump multiplier).
+ */
+export function canonPhone(phone: string): string {
+  const digits = phone.replace(/\D/g, "");
+  if (isIndianPhoneShape(digits)) return `91${digits.slice(-10)}`;
+  return digits;
+}
+
+/**
  * Pure phone lookup (used by OTP verify). NEVER creates — creation is an
  * explicit signup decision (see createUserByPhone). Silent auto-provision on
  * a typo'd number used to mint ghost accounts + 500 welcome money each.
@@ -97,8 +109,11 @@ export async function findUserByPhone(phone: string) {
   const digits = phone.replace(/\D/g, "");
   if (digits.length < 10) return null;
   if (!isIndianPhoneShape(digits)) {
+    // Exact-digit match only. (No `{ not: null }` guard: combining it with
+    // `equals` fails Prisma runtime validation and threw a 500 on every
+    // sign-in existence check. NULL rows can never equal a string anyway.)
     return prisma.user.findFirst({
-      where: { OR: [{ phone: { not: null, equals: digits } }, { phone: { not: null, equals: phone } }] },
+      where: { OR: [{ phone: digits }, { phone }] },
     });
   }
   // Normalize to E.164-ish India form (91 + last 10) so a paste of
@@ -112,30 +127,35 @@ export async function findUserByPhone(phone: string) {
   // and only then the endsWith fallback. A single findFirst with OR is
   // ambiguous when a ghost duplicate exists (tony 911556848908 vs ghost
   // 91911556848908 both end with 1556848908) — the DB could return either.
+  // Exact forms first (same note: no `{ not: null }` combined with
+  // `equals`/`endsWith` — Prisma runtime rejects it with a 500).
   const exactFirst = await prisma.user.findFirst({
     where: {
       OR: [
-        { phone: { not: null, equals: normalized } },
-        { phone: { not: null, equals: digits } },
-        { phone: { not: null, equals: phone } },
-        { phone: { not: null, equals: national } },
+        { phone: normalized },
+        { phone: digits },
+        { phone },
+        { phone: national },
       ],
     },
   });
   if (exactFirst) return exactFirst;
   const candidate = await prisma.user.findFirst({
-    where: { phone: { not: null, endsWith: national } as never },
+    where: { phone: { endsWith: national } as never },
   });
   if (candidate) return candidate;
   return null;
 }
 
 /**
- * Explicit signup creation (ONLY called when the client passes create:true
- * from a signup screen + the caller passed its creation throttle). Split
- * from the finder so a sign-in typo can never mint an account or money.
+ * Account creation by verified phone.
+ * - Explicit signup lane (create:true): welcomeBonus defaults TRUE (500 + ledger).
+ * - Sign-in lane auto-provision (verified code, unknown number): pass
+ *   { welcomeBonus: false } — a typo'd number must never mint money. The
+ *   account is real and usable; the bonus stays a signup-lane reward.
  */
-export async function createUserByPhone(phone: string) {
+export async function createUserByPhone(phone: string, opts?: { welcomeBonus?: boolean }) {
+  const welcomeBonus = opts?.welcomeBonus !== false;
   const prisma = await getPrisma();
   if (!prisma) return null;
   const digits = phone.replace(/\D/g, "");
@@ -170,7 +190,7 @@ export async function createUserByPhone(phone: string) {
         username,
         role: "buyer",
         status: "active",
-        walletBalance: 500, // welcome bonus
+        walletBalance: welcomeBonus ? 500 : 0, // sign-in lane: no minting
         joinedAt: new Date(),
       },
     });
@@ -180,7 +200,9 @@ export async function createUserByPhone(phone: string) {
   }
   if (!created) return null;
   // Ledger the bonus so every rupee in the wallet is traceable - an
-  // unaudited balance is indistinguishable from minted money.
+  // unaudited balance is indistinguishable from minted money. Skipped
+  // entirely on the bonus-free lane (nothing to trace).
+  if (welcomeBonus) {
   try {
     await prisma.walletTransaction.create({
       data: {
@@ -193,6 +215,7 @@ export async function createUserByPhone(phone: string) {
     });
   } catch {
     // Ledger write must never block login; balance stays authoritative.
+  }
   }
   return created;
 }

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHash, randomInt } from "crypto";
 import { getPrisma } from "@/lib/db";
-import { getAppUser, isIndianPhoneShape } from "@/lib/app-auth";
+import { getAppUser, isIndianPhoneShape, canonPhone } from "@/lib/app-auth";
 import { getClientIp } from "@/lib/auth";
 
 // Per-IP send throttle: the per-phone 45s cooldown alone lets one IP pump
@@ -59,23 +59,30 @@ export async function POST(req: NextRequest) {
   } catch {
     return NextResponse.json({ error: "Invalid body" }, { status: 400 });
   }
-  const phone = (body.phone ?? "").replace(/\D/g, "");
-  if (!phone || phone.length < 10) {
+  const raw = (body.phone ?? "").replace(/\D/g, "");
+  if (!raw || raw.length < 10) {
     return NextResponse.json({ error: "A valid 10-digit phone number is required" }, { status: 400 });
   }
   // India-only product (INR identity, 91-normalized accounts): codes are
   // issued to Indian shapes only. A foreign number sharing an Indian
   // account's last 10 digits must never receive a code — the verify step
   // binds sessions by phone, and cross-country issuance is account takeover.
-  if (!isIndianPhoneShape(phone)) {
+  if (!isIndianPhoneShape(raw)) {
     return NextResponse.json({ error: "Only Indian (+91) mobile numbers are supported" }, { status: 400 });
   }
+  // Canonical identity: format variants (0-trunk, 91-prefix) share one OTP
+  // row, one cooldown, one hourly counter — never parallel live codes.
+  const phone = canonPhone(raw);
   if (!throttleSendIp(getClientIp(req))) {
     return NextResponse.json({ error: "Too many codes requested — try again in a minute" }, { status: 429 });
   }
   const prisma = await getPrisma();
   if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
 
+  // Every DB touch below can throw (Neon timeout, pool drop on serverless):
+  // without this guard the throw becomes a 500 HTML page, and the app shows
+  // a raw red "HTTP 500". Always answer JSON.
+  try {
   // Cooldown: an unexpired request cannot be re-issued inside the window.
   const existing = await prisma.appSetting.findUnique({ where: { key: `otp:${phone}` } });
   if (existing?.value) {
@@ -122,6 +129,9 @@ export async function POST(req: NextRequest) {
     message: delivered ? "OTP sent" : "OTP generated (dev mode)",
     ...(exposeDevCode ? { devCode: code } : {}),
   });
+  } catch {
+    return NextResponse.json({ error: "Server hiccup. Please try again." }, { status: 500 });
+  }
 }
 
 /**
