@@ -223,12 +223,14 @@ export default function LoginScreen() {
       const res = await serverLogin(fullPhone(), finalCode);
       if (res.ok) {
         await completeOnboarding();
-        // Fresh stack root: dismiss everything (welcome/login history) so
-        // the back button can never walk a logged-in user back to auth.
+        // Fresh stack root: ONE atomic dismissTo (never a dismissAll+replace
+        // pair — the gate's own navigation landing between the two corrupts
+        // the stack into a blank window, proven on logout).
         try {
-          router.dismissAll();
-        } catch {}
-        router.replace('/(tabs)/feed');
+          router.dismissTo('/(tabs)/feed');
+        } catch {
+          router.replace('/(tabs)/feed');
+        }
       } else if (res.error) {
         if (res.needsSignup) {
           router.push({ pathname: '/(onboarding)/otp', params: { phone: nationalDigits(), cc: countryCode } });
@@ -257,12 +259,14 @@ export default function LoginScreen() {
       const res = await serverEmailLogin(emailRegister ? 'register' : 'login', email, password, name);
       if (res.ok) {
         await completeOnboarding();
-        // Fresh stack root: dismiss everything (welcome/login history) so
-        // the back button can never walk a logged-in user back to auth.
+        // Fresh stack root: ONE atomic dismissTo (never a dismissAll+replace
+        // pair — the gate's own navigation landing between the two corrupts
+        // the stack into a blank window, proven on logout).
         try {
-          router.dismissAll();
-        } catch {}
-        router.replace('/(tabs)/feed');
+          router.dismissTo('/(tabs)/feed');
+        } catch {
+          router.replace('/(tabs)/feed');
+        }
       } else if (res.error) {
         setError(authErrorMessage(res.error, 'try again'));
       } else {

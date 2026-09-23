@@ -352,14 +352,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   /**
    * Full logout + nav-stack reset (see type docs). Awaited wipe FIRST, then
-   * dismissAll + replace so back has no authed route left to reach.
+   * ONE atomic dismissTo('/login'): the earlier dismissAll+replace pair let
+   * the tab gate's own replace land between the two calls, corrupting the
+   * stack into a permanently blank (blue window) state.
    */
   const logoutAndReset = useCallback(async (expired = false) => {
     await logout();
+    const target = (expired ? { pathname: '/login', params: { expired: '1' } } : '/login') as never;
     try {
-      router.dismissAll();
-    } catch {}
-    router.replace(expired ? { pathname: '/login', params: { expired: '1' } } : '/login');
+      router.dismissTo(target as never);
+    } catch {
+      try {
+        router.dismissAll();
+      } catch {}
+      router.replace(target as never);
+    }
   }, [logout]);
 
   const setOnboardingStep = useCallback(async (step: number) => {
@@ -456,9 +463,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setTokenSeq((n) => n + 1);
       void clearMoneyCache();
       try {
-        router.dismissAll();
-      } catch {}
-      router.replace({ pathname: '/login', params: { expired: '1' } });
+        router.dismissTo({ pathname: '/login', params: { expired: '1' } } as never);
+      } catch {
+        router.replace({ pathname: '/login', params: { expired: '1' } });
+      }
     });
   }, [clearMoneyCache]);
 
