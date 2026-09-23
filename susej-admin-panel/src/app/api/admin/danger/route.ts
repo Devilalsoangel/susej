@@ -232,13 +232,6 @@ function publicIdOf(item: unknown): string | null {
   return typeof v.public_id === "string" && v.public_id ? v.public_id : null;
 }
 
-function toTotalCount(raw: unknown): number {
-  if (typeof raw !== "object" || raw === null) return 0;
-  const v = raw as Record<string, unknown>;
-  const n = v.total_count;
-  return typeof n === "number" && Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
-}
-
 function countDeleted(raw: unknown): number {
   if (typeof raw !== "object" || raw === null) return 0;
   const v = raw as Record<string, unknown>;
@@ -259,17 +252,42 @@ function chunkStrings(list: string[], size: number): string[][] {
 
 // Live asset total across both managed prefixes. Never throws — the counts
 // GET must survive an unconfigured or failing image host.
+// NOTE: Admin API `resources` with a `prefix` does NOT return total_count
+// (undefined) — counting the pages themselves is the only honest total.
+async function countPrefix(
+  api: CloudinaryAdminApi,
+  prefix: string
+): Promise<{ count: number; truncated: boolean }> {
+  let count = 0;
+  let cursor: string | undefined;
+  for (let page = 0; page < 10; page += 1) {
+    const raw = (await api.resources({
+      type: "upload",
+      prefix,
+      max_results: 500,
+      ...(cursor ? { next_cursor: cursor } : {}),
+    })) as unknown;
+    if (typeof raw !== "object" || raw === null) break;
+    const v = raw as { resources?: unknown[]; next_cursor?: unknown };
+    if (Array.isArray(v.resources)) count += v.resources.length;
+    cursor = typeof v.next_cursor === "string" && v.next_cursor ? v.next_cursor : undefined;
+    if (!cursor) return { count, truncated: false };
+  }
+  return { count, truncated: true };
+}
+
 async function getMediaCount(): Promise<{ count: number; error?: string }> {
   if (!process.env.CLOUDINARY_URL) {
     return { count: 0, error: "Image host not configured — media count unavailable." };
   }
   try {
     const api = await cloudinaryAdmin();
-    const [app, probe] = await Promise.all([
-      api.resources({ type: "upload", prefix: "susej/", max_results: 1 }),
-      api.resources({ type: "upload", prefix: "susej-probe/", max_results: 1 }),
-    ]);
-    return { count: toTotalCount(app) + toTotalCount(probe) };
+    const [app, probe] = await Promise.all([countPrefix(api, "susej/"), countPrefix(api, "susej-probe/")]);
+    const count = app.count + probe.count;
+    if (app.truncated || probe.truncated) {
+      return { count, error: `Counting capped at ${count} (5000+ assets) — browse pages the rest.` };
+    }
+    return { count };
   } catch (e) {
     return { count: 0, error: e instanceof Error ? e.message : "Media count unavailable — please retry." };
   }
