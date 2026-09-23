@@ -312,18 +312,23 @@ export default function LoginScreen() {
                         placeholder="98765 43210"
                         placeholderTextColor="rgba(70,69,85,0.4)"
                         keyboardType="phone-pad"
-                        maxLength={10}
                         value={phone}
                         onChangeText={(t) => {
-                          // Strict visible cap (user spec): digits only, one
-                          // leading-cc/trunk strip, hard 10. The field always
-                          // shows exactly what will be sent — typing more is
-                          // impossible, pasting more gets visibly trimmed.
+                          // Strict visible cap (user spec): digits only, hard
+                          // 10. A pasted +91/0 prefix is stripped VISIBLY (the
+                          // field shows the result); anything beyond 10 plain
+                          // digits is refused WITH a warning, never silently
+                          // kept. The field always shows exactly what sends.
                           let d = t.replace(/\D/g, '');
                           const cc = countryCode.replace(/\D/g, '');
                           if (d.length > 10 && cc && d.startsWith(cc)) d = d.slice(cc.length);
                           if (cc === '91' && d.length > 10 && d.startsWith('0')) d = d.slice(1);
-                          setPhone(d.slice(0, 10));
+                          if (d.length > 10) {
+                            setPhone(d.slice(0, 10));
+                            setError(phoneWarn());
+                            return;
+                          }
+                          setPhone(d);
                           if (error) setError('');
                         }}
                       />
