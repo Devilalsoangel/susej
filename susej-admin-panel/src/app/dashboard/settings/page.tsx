@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
@@ -731,8 +732,114 @@ const DANGER_AREAS: { area: string; label: string; blurb: string; phrase: string
   { area: "full", label: "Everything", blurb: "All areas above, in order. Pre-launch demo reset.", phrase: "DELETE EVERYTHING FOREVER" },
 ];
 
+// ---- Danger Zone media browse (real Cloudinary assets, selective delete) ----
+
+interface MediaAssetItem {
+  public_id: string;
+  secure_url: string;
+  bytes: number;
+  width: number;
+  height: number;
+  created_at: string;
+  folder: string;
+  scope: "demo" | "app" | "other";
+}
+
+function isMediaAssetItem(value: unknown): value is MediaAssetItem {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.public_id === "string" &&
+    typeof v.secure_url === "string" &&
+    typeof v.bytes === "number" &&
+    typeof v.width === "number" &&
+    typeof v.height === "number" &&
+    typeof v.created_at === "string" &&
+    typeof v.folder === "string" &&
+    (v.scope === "demo" || v.scope === "app" || v.scope === "other")
+  );
+}
+
+// Server-provided error text when present, human fallback otherwise —
+// transport statuses never leak into the UI.
+function serverMessage(body: unknown, fallback: string): string {
+  if (typeof body === "object" && body !== null) {
+    const err = (body as Record<string, unknown>).error;
+    if (typeof err === "string" && err) return err;
+  }
+  return fallback;
+}
+
+function parseCountsBody(body: unknown): {
+  counts: Record<string, number>;
+  isSuper: boolean;
+  mediaError: string | null;
+} | null {
+  if (typeof body !== "object" || body === null) return null;
+  const v = body as Record<string, unknown>;
+  if (typeof v.counts !== "object" || v.counts === null || typeof v.isSuper !== "boolean") return null;
+  const counts: Record<string, number> = {};
+  for (const [k, n] of Object.entries(v.counts)) {
+    if (typeof n === "number" && Number.isFinite(n)) counts[k] = n;
+  }
+  const mediaError = typeof v.mediaError === "string" && v.mediaError ? v.mediaError : null;
+  return { counts, isSuper: v.isSuper, mediaError };
+}
+
+function parseMediaListBody(body: unknown): { resources: MediaAssetItem[]; nextCursor: string | null } | null {
+  if (typeof body !== "object" || body === null) return null;
+  const v = body as Record<string, unknown>;
+  if (!Array.isArray(v.resources)) return null;
+  const list: unknown[] = v.resources;
+  const resources = list.filter(isMediaAssetItem);
+  const nextCursor = typeof v.next_cursor === "string" && v.next_cursor ? v.next_cursor : null;
+  return { resources, nextCursor };
+}
+
+function parsePurgeBody(body: unknown): { results: DangerModelResult[]; totalDeleted: number } | null {
+  if (typeof body !== "object" || body === null) return null;
+  const v = body as Record<string, unknown>;
+  if (!Array.isArray(v.results)) return null;
+  const list: unknown[] = v.results;
+  const results: DangerModelResult[] = [];
+  for (const item of list) {
+    if (typeof item !== "object" || item === null) continue;
+    const r = item as Record<string, unknown>;
+    if (typeof r.model !== "string") continue;
+    const row: DangerModelResult = { model: r.model };
+    if (typeof r.deleted === "number") row.deleted = r.deleted;
+    if (typeof r.error === "string") row.error = r.error;
+    if (typeof r.skipped === "boolean") row.skipped = r.skipped;
+    results.push(row);
+  }
+  const totalDeleted =
+    typeof v.totalDeleted === "number" ? v.totalDeleted : results.reduce((n, r) => n + (r.deleted ?? 0), 0);
+  return { results, totalDeleted };
+}
+
+function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return "—";
+  if (n < 1024) return `${n} B`;
+  if (n < 1048576) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1048576).toFixed(1)} MB`;
+}
+
+function formatAssetDate(value: string): string {
+  const t = Date.parse(value);
+  if (!Number.isFinite(t)) return "—";
+  return new Date(t).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+}
+
+function parseKeepPrefixes(text: string): string[] {
+  return text
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
 function DangerZoneSettings() {
   const [counts, setCounts] = useState<Record<string, number> | null>(null);
+  const [mediaCountNote, setMediaCountNote] = useState<string | null>(null);
   const [isSuper, setIsSuper] = useState<boolean | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [confirmArea, setConfirmArea] = useState<string | null>(null);
@@ -740,26 +847,66 @@ function DangerZoneSettings() {
   const [busy, setBusy] = useState(false);
   const [postError, setPostError] = useState<string | null>(null);
   const [result, setResult] = useState<{ area: string; results: DangerModelResult[]; totalDeleted: number } | null>(null);
+  // Media browse: real Cloudinary assets with selective delete (never blind).
+  const [mediaOpen, setMediaOpen] = useState(false);
+  const [mediaAssets, setMediaAssets] = useState<MediaAssetItem[]>([]);
+  const [mediaCursor, setMediaCursor] = useState<string | null>(null);
+  const [mediaLoading, setMediaLoading] = useState(false);
+  const [mediaError, setMediaError] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [keepText, setKeepText] = useState("");
+
+  async function fetchCounts(): Promise<void> {
+    const res = await fetch("/api/admin/danger", { cache: "no-store", credentials: "include" });
+    const body: unknown = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(serverMessage(body, "Could not load danger zone — please retry."));
+    const parsed = parseCountsBody(body);
+    if (!parsed) throw new Error("Could not load danger zone — please retry.");
+    setCounts(parsed.counts);
+    setIsSuper(parsed.isSuper);
+    setMediaCountNote(parsed.mediaError);
+  }
+
+  // Counts refresh after a purge is best-effort — the result card below
+  // already reports what was deleted.
+  async function refreshCountsQuiet(): Promise<void> {
+    try {
+      await fetchCounts();
+    } catch {
+      // Intentionally silent: post-delete counts are a nicety, not the proof.
+    }
+  }
+
+  async function loadMedia(cursor: string | null, append: boolean): Promise<void> {
+    setMediaLoading(true);
+    setMediaError(null);
+    try {
+      const url = cursor
+        ? `/api/admin/danger?list=media&cursor=${encodeURIComponent(cursor)}`
+        : "/api/admin/danger?list=media";
+      const res = await fetch(url, { cache: "no-store", credentials: "include" });
+      const body: unknown = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(serverMessage(body, "Could not load media assets — please retry."));
+      const parsed = parseMediaListBody(body);
+      if (!parsed) throw new Error("Could not load media assets — please retry.");
+      setMediaAssets((prev) => (append ? [...prev, ...parsed.resources] : parsed.resources));
+      setMediaCursor(parsed.nextCursor);
+    } catch (e) {
+      setMediaError(e instanceof Error ? e.message : "Could not load media assets — please retry.");
+    } finally {
+      setMediaLoading(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/admin/danger", { cache: "no-store", credentials: "include" })
-      .then(async (res) => {
-        const body = await res.json().catch(() => null);
-        if (!res.ok) throw new Error(body?.error ?? `Load failed (${res.status})`);
-        return body as { counts: Record<string, number>; isSuper: boolean };
-      })
-      .then((body) => {
-        if (cancelled) return;
-        setCounts(body.counts);
-        setIsSuper(body.isSuper);
-      })
-      .catch((e) => {
-        if (!cancelled) setLoadError(e instanceof Error ? e.message : "Load failed.");
-      });
+    fetchCounts().catch((e) => {
+      if (!cancelled) setLoadError(e instanceof Error ? e.message : "Could not load danger zone — please retry.");
+    });
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (isSuper === null && !loadError) {
@@ -784,6 +931,27 @@ function DangerZoneSettings() {
     setResult(null);
   }
 
+  const allMediaSelected =
+    mediaAssets.length > 0 && mediaAssets.every((a) => selectedIds.includes(a.public_id));
+
+  function toggleMediaId(publicId: string) {
+    setSelectedIds((prev) =>
+      prev.includes(publicId) ? prev.filter((id) => id !== publicId) : [...prev, publicId]
+    );
+  }
+
+  function toggleMediaAll() {
+    setSelectedIds((prev) => {
+      const all = mediaAssets.length > 0 && mediaAssets.every((a) => prev.includes(a.public_id));
+      return all ? [] : mediaAssets.map((a) => a.public_id);
+    });
+  }
+
+  function toggleMediaBrowse() {
+    if (!mediaOpen && mediaAssets.length === 0 && !mediaLoading) void loadMedia(null, false);
+    setMediaOpen(!mediaOpen);
+  }
+
   async function runPurge() {
     const def = DANGER_AREAS.find((a) => a.area === confirmArea);
     if (!def || busy) return;
@@ -795,28 +963,77 @@ function DangerZoneSettings() {
     setBusy(true);
     setPostError(null);
     try {
+      // Media bulk wipe honors keep-prefixes so core images are never blindly
+      // wiped; other areas POST the bare area+phrase exactly as before.
+      const payload: { area: string; phrase: string; keepPrefixes?: string[] } =
+        def.area === "media"
+          ? { area: def.area, phrase: typed, keepPrefixes: parseKeepPrefixes(keepText) }
+          : { area: def.area, phrase: typed };
       const res = await fetch("/api/admin/danger", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ area: def.area, phrase: typed }),
+        body: JSON.stringify(payload),
       });
-      const body = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(body?.error ?? `Purge failed (${res.status})`);
+      const body: unknown = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(serverMessage(body, "Purge failed — nothing was removed."));
+      const parsed = parsePurgeBody(body);
+      if (!parsed) throw new Error("Purge failed — nothing was removed.");
       setResult({
         area: def.area,
-        results: (body.results ?? []) as DangerModelResult[],
-        totalDeleted: Number(body.totalDeleted ?? 0),
+        results: parsed.results,
+        totalDeleted: parsed.totalDeleted,
       });
       setConfirmArea(null);
       setTyped("");
-      // Refresh counts after the wipe.
-      const fresh = await fetch("/api/admin/danger", { cache: "no-store", credentials: "include" })
-        .then((r) => r.json())
-        .catch(() => null);
-      if (fresh?.counts) setCounts(fresh.counts as Record<string, number>);
+      await refreshCountsQuiet();
+      if (def.area === "media") {
+        setSelectedIds([]);
+        await loadMedia(null, false);
+      }
     } catch (e) {
-      setPostError(e instanceof Error ? e.message : "Purge failed — nothing confirmed.");
+      setPostError(e instanceof Error ? e.message : "Purge failed — nothing was removed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Selective media delete: ONLY the ticked assets, behind the same
+  // typed-phrase confirm as the bulk wipe.
+  async function runDeleteSelected() {
+    const def = DANGER_AREAS.find((a) => a.area === "media");
+    if (!def || busy) return;
+    if (typed !== def.phrase) {
+      setPostError(`Type ${def.phrase} exactly to confirm.`);
+      return;
+    }
+    if (selectedIds.length === 0) {
+      setPostError("Select at least one asset first.");
+      return;
+    }
+    setBusy(true);
+    setPostError(null);
+    try {
+      const res = await fetch("/api/admin/danger", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ area: "media", phrase: typed, publicIds: selectedIds }),
+      });
+      const body: unknown = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(serverMessage(body, "Delete failed — nothing was removed."));
+      const parsed = parsePurgeBody(body);
+      if (!parsed) throw new Error("Delete failed — nothing was removed.");
+      setResult({
+        area: "media",
+        results: parsed.results,
+        totalDeleted: parsed.totalDeleted,
+      });
+      setSelectedIds([]);
+      await refreshCountsQuiet();
+      await loadMedia(null, false);
+    } catch (e) {
+      setPostError(e instanceof Error ? e.message : "Delete failed — nothing was removed.");
     } finally {
       setBusy(false);
     }
@@ -838,15 +1055,132 @@ function DangerZoneSettings() {
                 <p className="text-sm font-semibold text-[#18181B]">
                   {def.label}
                   <span className="ml-2 rounded-full bg-[#F4F4F5] px-2 py-0.5 text-xs font-medium text-gray-500">
-                    {counts?.[def.area] ?? "…"} rows
+                    {counts?.[def.area] ?? "…"} {def.area === "media" ? "assets" : "rows"}
                   </span>
                 </p>
                 <p className="mt-0.5 text-xs text-gray-500">{def.blurb}</p>
+                {def.area === "media" && (
+                  <div className="mt-1.5">
+                    <button
+                      type="button"
+                      onClick={toggleMediaBrowse}
+                      className="text-xs font-medium text-[#6C3BFF] hover:underline"
+                    >
+                      {mediaOpen ? "Hide assets" : "Browse assets"}
+                    </button>
+                    {mediaCountNote && <p className="mt-1 text-xs text-[#92400E]">{mediaCountNote}</p>}
+                  </div>
+                )}
               </div>
               <Button variant="danger" size="sm" onClick={() => openConfirm(def.area)}>
                 Wipe {def.label}
               </Button>
             </div>
+            {def.area === "media" && mediaOpen && (
+              <div className="mt-3 rounded-xl border border-[#E4E4E7] bg-[#FAFAFA] p-4">
+                <div>
+                  <Label>Keep prefixes (comma-separated)</Label>
+                  <Input
+                    value={keepText}
+                    onChange={(e) => setKeepText(e.target.value)}
+                    placeholder="susej/core/"
+                  />
+                  <p className="mt-1 text-xs text-gray-500">
+                    Bulk wipe skips assets whose id starts with these — core images stay safe.
+                    Selected delete removes only what you tick.
+                  </p>
+                </div>
+                <div className="mt-3 flex items-center justify-between">
+                  <Checkbox
+                    id="media-select-all"
+                    checked={allMediaSelected}
+                    onChange={toggleMediaAll}
+                    label={allMediaSelected ? "Deselect all" : `Select all (${mediaAssets.length})`}
+                  />
+                  <span className="text-xs text-gray-500">{selectedIds.length} selected</span>
+                </div>
+                {mediaLoading && mediaAssets.length === 0 ? (
+                  <p className="mt-3 text-xs text-gray-500">Loading assets…</p>
+                ) : mediaError ? (
+                  <div className="mt-3">
+                    <p className="text-xs text-[#DC2626]">{mediaError}</p>
+                    <button
+                      type="button"
+                      onClick={() => void loadMedia(null, false)}
+                      className="mt-1 text-xs font-medium text-[#6C3BFF] hover:underline"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                ) : mediaAssets.length === 0 ? (
+                  <p className="mt-3 text-xs text-gray-500">No assets under susej/ or susej-probe/.</p>
+                ) : (
+                  <>
+                    <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3">
+                      {mediaAssets.map((a) => (
+                        <div key={a.public_id} className="overflow-hidden rounded-xl border border-[#E4E4E7] bg-white">
+                          <div className="relative">
+                            {a.secure_url ? (
+                              <img
+                                src={a.secure_url}
+                                alt={a.public_id}
+                                className="h-24 w-full object-cover"
+                                loading="lazy"
+                              />
+                            ) : (
+                              <div className="flex h-24 w-full items-center justify-center bg-[#F4F4F5] text-xs text-gray-400">
+                                No preview
+                              </div>
+                            )}
+                            <div className="absolute left-2 top-2">
+                              <Checkbox
+                                id={`media-${a.public_id}`}
+                                checked={selectedIds.includes(a.public_id)}
+                                onChange={() => toggleMediaId(a.public_id)}
+                              />
+                            </div>
+                            <span
+                              className={`absolute right-2 top-2 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                                a.scope === "demo"
+                                  ? "bg-[#FEF3C7] text-[#92400E]"
+                                  : a.scope === "app"
+                                    ? "bg-[#EDE9FE] text-[#5B21B6]"
+                                    : "bg-[#F4F4F5] text-gray-500"
+                              }`}
+                            >
+                              {a.scope}
+                            </span>
+                          </div>
+                          <div className="px-2 py-1.5">
+                            <p className="truncate text-[11px] font-medium text-[#18181B]" title={a.public_id}>
+                              {a.public_id}
+                            </p>
+                            <p className="mt-0.5 text-[11px] text-gray-500">
+                              {formatBytes(a.bytes)} · {formatAssetDate(a.created_at)}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-3 flex items-center justify-between">
+                      <p className="text-xs text-gray-500">
+                        {mediaAssets.length} shown{mediaCursor ? " — more available" : ""}
+                      </p>
+                      {mediaCursor && (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => void loadMedia(mediaCursor, true)}
+                          disabled={mediaLoading}
+                        >
+                          {mediaLoading ? "Loading…" : "Load more"}
+                        </Button>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
             {confirmArea === def.area && (
               <div className="mt-3 rounded-xl border border-[#FCA5A5] bg-[#FEF2F2] p-4">
                 <p className="text-xs font-semibold text-[#991B1B]">
@@ -860,10 +1194,26 @@ function DangerZoneSettings() {
                   />
                 </div>
                 {postError && <p className="mt-2 text-xs text-[#DC2626]">{postError}</p>}
+                {def.area === "media" && (
+                  <p className="mt-2 text-xs text-[#991B1B]">
+                    Delete selected removes only the ticked assets. Confirm wipe removes everything
+                    except the keep-prefixes above.
+                  </p>
+                )}
                 <div className="mt-3 flex justify-end gap-2">
                   <Button variant="secondary" size="sm" onClick={() => { setConfirmArea(null); setTyped(""); setPostError(null); }}>
                     Cancel
                   </Button>
+                  {def.area === "media" && (
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      onClick={runDeleteSelected}
+                      disabled={busy || typed !== def.phrase || selectedIds.length === 0}
+                    >
+                      {busy ? "Deleting…" : `Delete selected (${selectedIds.length})`}
+                    </Button>
+                  )}
                   <Button variant="danger" size="sm" onClick={runPurge} disabled={busy || typed !== def.phrase}>
                     {busy ? "Wiping…" : `Confirm wipe ${def.label}`}
                   </Button>
@@ -877,7 +1227,9 @@ function DangerZoneSettings() {
       {result && (
         <div className="rounded-2xl border border-[#E4E4E7] bg-white p-4">
           <p className="text-sm font-semibold text-[#18181B]">
-            {result.area} wiped — {result.totalDeleted} rows deleted
+            {result.area === "media"
+              ? `Media delete — ${result.totalDeleted} assets deleted`
+              : `${result.area} wiped — ${result.totalDeleted} rows deleted`}
           </p>
           <ul className="mt-2 space-y-1">
             {result.results.map((r, i) => (
