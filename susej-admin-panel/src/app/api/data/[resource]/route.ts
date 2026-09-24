@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPrisma as resolveDb } from "@/lib/db";
 import { verifySessionToken, hashPassword, SESSION_COOKIE, getClientIp } from "@/lib/auth";
 import { checkAppKeyAsync, getMintedKeyScope } from "@/lib/promotions/api-auth";
-import { lazySweep } from "@/lib/promotions/activate";
 import { getAppUser } from "@/lib/app-auth";
 import { resolveCommissionRate, settlementGoodsBasis, settledFeeFromLegs } from "@/lib/commission";
 import { notifyUser } from "@/lib/notifications";
@@ -683,7 +682,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const TAKE_MAX = exportMode ? 5000 : 100;
   const orderByKey = url.searchParams.get("orderBy") ?? url.searchParams.get("sortBy") ?? url.searchParams.get("sort") ?? "";
   const orderDir = (url.searchParams.get("orderDir") ?? url.searchParams.get("sortDir") ?? "desc").toLowerCase() === "asc" ? "asc" : "desc";
-  let take = takeRaw ? Math.min(Math.max(parseInt(takeRaw, 10) || 0, 1), TAKE_MAX) : 0;
+  let take = takeRaw ? Math.min(Math.max(parseInt(takeRaw, 10) || 0, 1), TAKE_MAX) : 100;
   let skip = skipRaw ? Math.max(parseInt(skipRaw, 10) || 0, 0) : 0;
   if (!skipRaw && pageRaw && take) {
     const page = Math.max(parseInt(pageRaw, 10) || 1, 1);
@@ -735,7 +734,6 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const prisma = (await resolveDb()) as any;
   if (prisma) {
     try {
-      await lazySweep();
       // Transactions: the legacy `Transaction` table is an empty pre-launch
       // model (0 rows) — the REAL money movements live in WalletTransaction
       // (every debit/credit the engine writes). Serve those, projected onto
@@ -792,6 +790,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         }
       }
       if (take) { findArgs.take = take; findArgs.skip = skip; }
+      const totalPromise = hasPagination
+        ? prisma[PRISMA_MODELS[resource]].count({ where: Object.keys(where).length ? where : undefined }).catch(() => null)
+        : null;
       const list = hasPagination
         ? await prisma[PRISMA_MODELS[resource]].findMany(findArgs)
         : await prisma[PRISMA_MODELS[resource]].findMany(EXTENDED[resource] ?? {});
@@ -998,7 +999,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       if (hasPagination) {
         // Also return total for client pagination UI when paginated
         try {
-          const total = await prisma[PRISMA_MODELS[resource]].count({ where: Object.keys(where).length ? where : undefined });
+          const total = totalPromise ? await totalPromise : 0;
           // Bulk-export audit: full-book pulls (KYC/bank/ID rows included)
           // must leave a trail of who pulled what — best-effort, never
           // blocks the read.
