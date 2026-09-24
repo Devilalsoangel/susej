@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
+import { cacheKey, cachedRead } from "@/lib/cache";
 import { getAppUser } from "@/lib/app-auth";
 import { validateMediaRefs } from "@/lib/media";
 
@@ -74,37 +75,36 @@ async function parseProductRef(
  *  KPIs reflect reality without a separate cron. */
 export async function GET(req: NextRequest) {
   void req;
-  const prisma = await getPrisma();
-  if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
-
-  const now = new Date();
-  await prisma.story.updateMany({
-    where: { expiresAt: { lt: now }, status: "active" },
-    data: { status: "expired" },
-  });
-
-  const rows = await prisma.story.findMany({
-    where: { status: "active", expiresAt: { gt: now }, image: { not: "" } },
-    orderBy: { createdAt: "desc" },
-    // Industry cap: latest 100 active stories (24h TTL already bounds rows).
-    take: 100,
-  });
-
-  return NextResponse.json({
-    stories: rows.map((s) => ({
-      id: s.id,
-      username: s.username,
-      creatorName: s.creatorName || s.username,
-      image: s.image,
-      caption: s.caption ?? "",
-      durationMs: s.durationMs,
-      overlays: s.overlays ?? null,
-      productRef: s.productRef ?? null,
-      views: s.views,
-      createdAt: s.createdAt.getTime(),
-      expiresAt: s.expiresAt.getTime(),
-    })),
-  });
+  try {
+    const payload = await cachedRead(cacheKey("stories"), async () => {
+      const prisma = await getPrisma({ probe: false });
+      if (!prisma) throw new Error("Database unavailable");
+      const now = new Date();
+      const rows = await prisma.story.findMany({
+        where: { status: "active", expiresAt: { gt: now }, image: { not: "" } },
+        orderBy: { createdAt: "desc" },
+        take: 100,
+      });
+      return {
+        stories: rows.map((s) => ({
+          id: s.id,
+          username: s.username,
+          creatorName: s.creatorName || s.username,
+          image: s.image,
+          caption: s.caption ?? "",
+          durationMs: s.durationMs,
+          overlays: s.overlays ?? null,
+          productRef: s.productRef ?? null,
+          views: s.views,
+          createdAt: s.createdAt.getTime(),
+          expiresAt: s.expiresAt.getTime(),
+        })),
+      };
+    }, { freshMs: 15_000, staleMs: 60_000 });
+    return NextResponse.json(payload);
+  } catch {
+    return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
+  }
 }
 
 /** POST /api/app/stories — post YOUR story (auth required, real image required).

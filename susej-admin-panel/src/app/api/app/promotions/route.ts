@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
+import { cacheKey, cachedRead } from "@/lib/cache";
 import { getAppUser } from "@/lib/app-auth";
 import { getClientIp } from "@/lib/auth";
 import { checkWriteRate } from "@/lib/rate-limit";
@@ -12,47 +13,33 @@ import { notifyUser } from "@/lib/notifications";
  *  the Hot Deals rail, and Top Seller pills. No active rows -> no placements. */
 export async function GET(req: NextRequest) {
   void req;
-  const prisma = await getPrisma();
-  if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
+  const base = await cachedRead(cacheKey("promotions-base"), async () => {
+    const prisma = await getPrisma({ probe: false });
+    if (!prisma) throw new Error("Database unavailable");
+    const now = new Date();
+    const rows = await prisma.promotionPurchase.findMany({
+      where: {
+        status: "active",
+        OR: [{ startsAt: null }, { startsAt: { lte: now } }],
+        AND: [{ OR: [{ endsAt: null }, { endsAt: { gt: now } }] }],
+      },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+    });
+    const postIds = [...new Set(rows.map((p) => p.postId).filter((v): v is string => !!v))];
+    const liveIds = postIds.length
+      ? new Set((await prisma.post.findMany({ where: { id: { in: postIds }, status: "published", isSold: false }, select: { id: true } })).map((p) => p.id))
+      : new Set<string>();
+    return rows.filter((p) => !p.postId || liveIds.has(p.postId));
+  }, { freshMs: 15_000, staleMs: 60_000 }).catch(() => null);
+  if (!base) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
 
-  const now = new Date();
-  // Read-path purity: no writes on GET (expiry is owned by lazySweep + the
-  // cron lane; the query below already filters past-window rows, so readers
-  // never see stale placements either way).
-
-  const rows = await prisma.promotionPurchase.findMany({
-    where: {
-      status: "active",
-      OR: [{ startsAt: null }, { startsAt: { lte: now } }],
-      AND: [{ OR: [{ endsAt: null }, { endsAt: { gt: now } }] }],
-    },
-    orderBy: { createdAt: "desc" },
-    take: 100,
-  });
-  // Placements whose listing left published status (sold/hidden/removed)
-  // must not render — filter against live post rows in one query.
-  const postIds = [...new Set(rows.map((p) => p.postId).filter((v): v is string => !!v))];
-  let liveIds = new Set<string>(postIds);
-  if (postIds.length > 0) {
-    try {
-      const live = await prisma.post.findMany({
-        where: { id: { in: postIds }, status: "published", isSold: false },
-        select: { id: true },
-      });
-      liveIds = new Set(live.map((p) => p.id));
-    } catch {
-      liveIds = new Set();
-    }
-  }
-
-  // Viewer-scoped spend: the public lane serves placements to everyone, but
-  // amountPaid leaves the server only for the owning seller's own rows.
   const me = await getAppUser(req).catch(() => null);
   const myName = typeof (me as { user?: { username?: unknown } } | null)?.user?.username === "string"
     ? String((me as { user: { username: string } }).user.username ?? "").toLowerCase()
     : "";
   return NextResponse.json({
-    promotions: rows.filter((p) => !p.postId || liveIds.has(p.postId)).map((p) => ({
+    promotions: base.map((p) => ({
       id: p.id,
       kind: p.kind,
       packageName: p.packageName,

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
+import { cacheKey, cachedRead } from "@/lib/cache";
 import { getAppUser } from "@/lib/app-auth";
 import { checkWriteRate } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/auth";
@@ -8,24 +9,31 @@ import { getClientIp } from "@/lib/auth";
 // app can one-tap add the whole set to cart. Legacy rows without items still
 // list (the card links the seller's shop instead).
 export async function GET() {
-  const prisma = await getPrisma();
-  if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
-  const rows = await prisma.bundle.findMany({
-    where: { status: "active" },
-    orderBy: { createdAt: "desc" },
-    take: 50,
-  });
-  return NextResponse.json({
-    bundles: rows.map((b) => ({
-      id: b.id,
-      title: b.title,
-      itemsCount: b.itemsCount,
-      price: b.price,
-      discount: b.discount,
-      sellerName: b.sellerName,
-      items: Array.isArray(b.items) ? b.items : null,
-    })),
-  });
+  try {
+    const payload = await cachedRead(cacheKey("bundles"), async () => {
+      const prisma = await getPrisma({ probe: false });
+      if (!prisma) throw new Error("Database unavailable");
+      const rows = await prisma.bundle.findMany({
+        where: { status: "active" },
+        orderBy: { createdAt: "desc" },
+        take: 50,
+      });
+      return {
+        bundles: rows.map((b) => ({
+          id: b.id,
+          title: b.title,
+          itemsCount: b.itemsCount,
+          price: b.price,
+          discount: b.discount,
+          sellerName: b.sellerName,
+          items: Array.isArray(b.items) ? b.items : null,
+        })),
+      };
+    }, { freshMs: 30_000, staleMs: 300_000 });
+    return NextResponse.json(payload);
+  } catch {
+    return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
+  }
 }
 
 /**

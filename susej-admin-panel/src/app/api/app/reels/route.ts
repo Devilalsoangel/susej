@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
+import { cacheKey, cachedRead } from "@/lib/cache";
 import { getAppUser } from "@/lib/app-auth";
 import { validateMediaRefs } from "@/lib/media";
 
@@ -10,31 +11,38 @@ import { validateMediaRefs } from "@/lib/media";
  * filtered by seller username for storefronts and the reels rail.
  */
 export async function GET(req: NextRequest) {
-  const prisma = await getPrisma();
-  if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
   const seller = req.nextUrl.searchParams.get("seller")?.trim() || undefined;
   const take = Math.min(Number(req.nextUrl.searchParams.get("take") ?? 50) || 50, 50);
-  const rows = await prisma.reel.findMany({
-    where: {
-      status: "published",
-      ...(seller ? { creatorUsername: seller } : {}),
-    },
-    orderBy: { createdAt: "desc" },
-    take,
-  });
-  return NextResponse.json({
-    reels: rows.map((r) => ({
-      id: r.id,
-      title: r.title,
-      caption: r.caption ?? "",
-      mediaUrl: r.mediaUrl ?? "",
-      creatorName: r.creatorName,
-      creatorUsername: r.creatorUsername ?? "",
-      views: r.views,
-      likes: r.likes,
-      createdAt: r.createdAt.getTime(),
-    })),
-  });
+  try {
+    const payload = await cachedRead(cacheKey("reels", seller ?? "all", take), async () => {
+      const prisma = await getPrisma({ probe: false });
+      if (!prisma) throw new Error("Database unavailable");
+      const rows = await prisma.reel.findMany({
+        where: {
+          status: "published",
+          ...(seller ? { creatorUsername: seller } : {}),
+        },
+        orderBy: { createdAt: "desc" },
+        take,
+      });
+      return {
+        reels: rows.map((r) => ({
+          id: r.id,
+          title: r.title,
+          caption: r.caption ?? "",
+          mediaUrl: r.mediaUrl ?? "",
+          creatorName: r.creatorName,
+          creatorUsername: r.creatorUsername ?? "",
+          views: r.views,
+          likes: r.likes,
+          createdAt: r.createdAt.getTime(),
+        })),
+      };
+    }, { freshMs: 30_000, staleMs: 120_000 });
+    return NextResponse.json(payload);
+  } catch {
+    return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
+  }
 }
 
 export async function POST(req: NextRequest) {

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { checkAppKeyAsync, unauthorized } from "@/lib/promotions/api-auth";
 import { getPrisma } from "@/lib/db";
+import { cacheKey, cachedRead } from "@/lib/cache";
 import {
   PROMOTION_PACKAGES,
   applyPriceOverrides,
@@ -31,51 +32,53 @@ function asRate(n: number): number {
 export async function GET(request: NextRequest) {
   if (!await checkAppKeyAsync(request)) return unauthorized();
 
-  let commission = FALLBACK;
-  let priceOverrides: Record<string, unknown> | null = null;
-  const prisma = await getPrisma();
-  if (prisma) {
-    try {
-      const row = await prisma.commissionSetting.findUnique({ where: { id: "global" } });
-      if (row) {
-        const overrides = Array.isArray(row.categoryOverrides)
-          ? (row.categoryOverrides as { category?: string; rate?: number }[])
-              .filter((o) => o && typeof o.category === "string")
-              .map((o) => ({ category: o.category as string, rate: Number(o.rate) || 0 }))
-          : [];
-        commission = {
-          commissionRate: asRate(Number(row.commissionRate) || FALLBACK.commissionRate),
-          listingFee: Number(row.listingFee) || FALLBACK.listingFee,
-          payoutFee: Number(row.payoutFee) || FALLBACK.payoutFee,
-          categoryOverrides: overrides.map((o) => ({ category: o.category, rate: asRate(o.rate) })),
-        };
-      }
-      // Admin-managed promo/chat-pin pricing (Commission & Fees page edits this).
-      const setting = await prisma.appSetting.findUnique({ where: { key: "promoPrices" } });
-      const value = setting?.value;
-      if (value && typeof value === "object" && !Array.isArray(value)) {
-        priceOverrides = value as Record<string, unknown>;
-      }
-    } catch {
-      // DB hiccup — fall back to defaults below
+  const payload = await cachedRead(cacheKey("config"), async () => {
+    let commission = FALLBACK;
+    let priceOverrides: Record<string, unknown> | null = null;
+    const prisma = await getPrisma();
+    if (prisma) {
+      try {
+        const [row, setting] = await Promise.all([
+          prisma.commissionSetting.findUnique({ where: { id: "global" } }),
+          prisma.appSetting.findUnique({ where: { key: "promoPrices" } }),
+        ]);
+        if (row) {
+          const overrides = Array.isArray(row.categoryOverrides)
+            ? (row.categoryOverrides as { category?: string; rate?: number }[])
+                .filter((o) => o && typeof o.category === "string")
+                .map((o) => ({ category: o.category as string, rate: Number(o.rate) || 0 }))
+            : [];
+          commission = {
+            commissionRate: asRate(Number(row.commissionRate) || FALLBACK.commissionRate),
+            listingFee: Number(row.listingFee) || FALLBACK.listingFee,
+            payoutFee: Number(row.payoutFee) || FALLBACK.payoutFee,
+            categoryOverrides: overrides.map((o) => ({ category: o.category, rate: asRate(o.rate) })),
+          };
+        }
+        const value = setting?.value;
+        if (value && typeof value === "object" && !Array.isArray(value)) {
+          priceOverrides = value as Record<string, unknown>;
+        }
+      } catch {}
     }
-  }
 
-  const packages = applyPriceOverrides(priceOverrides);
+    const packages = applyPriceOverrides(priceOverrides);
+    return {
+      commission,
+      promotions: packages.map((p) => ({
+        id: p.id,
+        kind: p.kind,
+        name: p.name,
+        description: p.description,
+        price: p.price,
+        days: p.durationDays,
+      })),
+      chatPin: {
+        price: getChatPinPrice(priceOverrides),
+        days: DEFAULT_CHAT_PIN.days,
+      },
+    };
+  }, { freshMs: 30_000, staleMs: 300_000 });
 
-  return NextResponse.json({
-    commission,
-    promotions: packages.map((p) => ({
-      id: p.id,
-      kind: p.kind,
-      name: p.name,
-      description: p.description,
-      price: p.price,
-      days: p.durationDays,
-    })),
-    chatPin: {
-      price: getChatPinPrice(priceOverrides),
-      days: DEFAULT_CHAT_PIN.days,
-    },
-  });
+  return NextResponse.json(payload);
 }
