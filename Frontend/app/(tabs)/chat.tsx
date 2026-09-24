@@ -214,6 +214,7 @@ export default function ChatScreen() {
   const threadPollInFlight = useRef(false);
   const openChatRequest = useRef(0);
   const threadHistoryReady = useRef(false);
+  const threadServerSettled = useRef(false);
   const [serverChats, setServerChats] = useState<ChatItem[]>([]);
   const [threadsLoading, setThreadsLoading] = useState(true);
   const threadsServerLoaded = useRef(false);
@@ -733,6 +734,7 @@ export default function ChatScreen() {
   const openChat = (chat: ChatItem) => {
     const requestId = ++openChatRequest.current;
     threadHistoryReady.current = false;
+    threadServerSettled.current = false;
     markChatRead(chat.id);
     setActiveChat(chat);
     setOfferProduct(chat.productName);
@@ -751,22 +753,25 @@ export default function ChatScreen() {
       AsyncStorage.getItem(cacheKey)
         .then((raw) => {
           if (requestId !== openChatRequest.current) return;
+          let cachedLength: number | null = null;
           if (raw) {
             try {
               const cached = JSON.parse(raw) as ThreadMessage[];
               if (Array.isArray(cached)) {
+                cachedLength = cached.length;
                 setThreadMessages(cached);
-                setThreadLoading(cached.length === 0);
               }
             } catch {}
           }
           threadHistoryReady.current = true;
+          if (!threadServerSettled.current) setThreadLoading(cachedLength === null || cachedLength === 0);
         })
         .catch(() => { threadHistoryReady.current = true; });
       serverApi
         .getMessages(chat.serverThreadId)
         .then((res) => {
           if (requestId !== openChatRequest.current) return;
+          threadServerSettled.current = true;
           if (!res.ok || !res.data?.messages) {
             if (threadHistoryReady.current) setThreadLoading(false);
             return;
@@ -777,7 +782,12 @@ export default function ChatScreen() {
           setHasOlderMessages(data.hasMore === true);
           if (threadHistoryReady.current) setThreadLoading(false);
         })
-        .catch(() => { if (requestId === openChatRequest.current && threadHistoryReady.current) setThreadLoading(false); });
+        .catch(() => {
+          if (requestId === openChatRequest.current) {
+            threadServerSettled.current = true;
+            if (threadHistoryReady.current) setThreadLoading(false);
+          }
+        });
       return;
     }
     // No server thread and no history: start the thread honestly EMPTY.
@@ -786,6 +796,7 @@ export default function ChatScreen() {
     setOlderLoading(false);
     setThreadLoading(false);
     threadHistoryReady.current = true;
+    threadServerSettled.current = true;
   };
 
   useEffect(() => {
