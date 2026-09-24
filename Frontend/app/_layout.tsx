@@ -38,6 +38,7 @@ import { RecentlyViewedProvider } from '../contexts/RecentlyViewedContext';
 import { HashtagProvider } from '../contexts/HashtagContext';
 import { PromotionProvider } from '../contexts/PromotionContext';
 import { OfflineBanner } from '../components/OfflineBanner';
+import { serverApi } from '../utils/serverApi';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -99,6 +100,21 @@ function LaunchSkeleton() {
       <View style={{ width: '100%', height: 74, borderRadius: 16, marginTop: 24, backgroundColor: colors.surfaceContainer }} />
     </View>
   );
+}
+
+function PublicReadWarmup() {
+  const started = useRef(false);
+  useEffect(() => {
+    if (started.current) return;
+    started.current = true;
+    void Promise.allSettled([
+      serverApi.getCategories(),
+      serverApi.getHome(),
+      serverApi.getStories(),
+      serverApi.getPromotions(),
+    ]);
+  }, []);
+  return null;
 }
 
 function SessionDataTree() {
@@ -228,6 +244,7 @@ export default function RootLayout() {
         <AppearanceContext.Provider value={{ themeMode, setThemeMode }}>
           <RootCrashBoundary>
             <AuthProvider>
+              <PublicReadWarmup />
               <StatusBar style={themeMode === 'dark' ? 'light' : 'dark'} />
               <SessionDataTree />
             </AuthProvider>

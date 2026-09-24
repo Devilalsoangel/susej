@@ -3,6 +3,7 @@ import { getPrisma } from "@/lib/db";
 import { getAppUser } from "@/lib/app-auth";
 import { checkWriteRate } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/auth";
+import { cacheKey, invalidateCache } from "@/lib/cache";
 
 /**
  * GET /api/app/blocks — usernames I blocked (cross-device truth; the app
@@ -56,12 +57,16 @@ export async function POST(req: NextRequest) {
     const msg = e instanceof Error ? e.message : String(e);
     // Already blocked → idempotent ok. Missing table (pre-migration) →
     // client keeps its device-local list (current behavior).
-    if (code === "P2002") return NextResponse.json({ ok: true, deduped: true });
+    if (code === "P2002") {
+      await invalidateCache(cacheKey("chat", "threads", me), cacheKey("chat", "threads", other));
+      return NextResponse.json({ ok: true, deduped: true });
+    }
     if (/relation .* does not exist|does not exist|no such table/i.test(msg)) {
       return NextResponse.json({ ok: true, localOnly: true });
     }
     throw e;
   }
+  await invalidateCache(cacheKey("chat", "threads", me), cacheKey("chat", "threads", other));
   return NextResponse.json({ ok: true }, { status: 201 });
 }
 
@@ -85,5 +90,6 @@ export async function DELETE(req: NextRequest) {
   } catch {
     // Missing table → nothing server-side to remove; client list stands.
   }
+  await invalidateCache(cacheKey("chat", "threads", auth.user.username!), cacheKey("chat", "threads", other));
   return NextResponse.json({ ok: true });
 }

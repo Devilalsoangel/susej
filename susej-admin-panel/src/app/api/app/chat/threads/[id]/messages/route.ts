@@ -3,6 +3,7 @@ import { getPrisma } from "@/lib/db";
 import { getAppUser } from "@/lib/app-auth";
 import { getClientIp } from "@/lib/auth";
 import { checkWriteRate } from "@/lib/rate-limit";
+import { cachedRead, cacheKey, invalidateCache } from "@/lib/cache";
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -18,14 +19,15 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     return NextResponse.json({ error: "Not your thread" }, { status: 403 });
   }
 
-  // Latest 100 (industry cap): desc-take then reverse to asc for the UI.
-  // take-500-asc returned the FIRST 500 — long threads never saw new messages.
-  const latestDesc = await prisma.chatMessage.findMany({
-    where: { threadId: id },
-    orderBy: { createdAt: "desc" },
-    take: 100,
-  });
-  const messages = latestDesc.reverse();
+  const loadMessages = async () => {
+    const latestDesc = await prisma.chatMessage.findMany({
+      where: { threadId: id },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+    });
+    return latestDesc.reverse();
+  };
+  const messages = await cachedRead(cacheKey("chat", "messages", id), loadMessages, { freshMs: 2_000, staleMs: 15_000, maxBytes: 512_000 });
   // Seen-marks scope to exactly what we return: marking the whole thread
   // would fake read-receipts for history the user never saw.
   await prisma.chatMessage.updateMany({
@@ -39,7 +41,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       sender: m.sender,
       receiver: m.receiver,
       body: m.body,
-      status: m.status,
+      status: m.receiver === username ? "seen" : m.status,
       createdAt: m.createdAt.getTime(),
       offer:
         typeof (m as unknown as { offerAmount?: number }).offerAmount === "number"
@@ -111,6 +113,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     where: { id },
     data: { lastMessage: text, lastAt: new Date() },
   });
+  await invalidateCache(
+    cacheKey("chat", "messages", id),
+    cacheKey("chat", "threads", username),
+    cacheKey("chat", "threads", receiver),
+  );
   return NextResponse.json(
     {
       message: {
@@ -169,5 +176,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     return NextResponse.json({ error: "You can't accept your own offer" }, { status: 400 });
   }
   await prisma.chatMessage.update({ where: { id: messageId }, data: { offerStatus: next } });
+  await invalidateCache(
+    cacheKey("chat", "messages", id),
+    cacheKey("chat", "threads", thread.participantA),
+    cacheKey("chat", "threads", thread.participantB),
+  );
   return NextResponse.json({ ok: true, status: next });
 }

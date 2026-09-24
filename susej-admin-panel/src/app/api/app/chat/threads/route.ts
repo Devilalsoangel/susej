@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
 import { getAppUser } from "@/lib/app-auth";
+import { cachedRead, cacheKey, invalidateCache } from "@/lib/cache";
 
 export async function GET(req: NextRequest) {
   const auth = await getAppUser(req);
@@ -9,7 +10,8 @@ export async function GET(req: NextRequest) {
   if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
 
   const username = auth.user.username!;
-  let threads = await prisma.chatThread.findMany({
+  const loadThreads = async () => {
+    let threads = await prisma.chatThread.findMany({
     where: { OR: [{ participantA: username }, { participantB: username }] },
     orderBy: { lastAt: "desc" },
     take: 100,
@@ -73,6 +75,8 @@ export async function GET(req: NextRequest) {
       pinnedUntil: t.pinnedUntil ? t.pinnedUntil.getTime() : null,
     };
   });
+  };
+  const out = await cachedRead(cacheKey("chat", "threads", username), loadThreads, { freshMs: 5_000, staleMs: 30_000, maxBytes: 256_000 });
   return NextResponse.json({ threads: out });
 }
 
@@ -135,5 +139,6 @@ export async function POST(req: NextRequest) {
       if (!thread) throw e;
     }
   }
+  await invalidateCache(cacheKey("chat", "threads", username));
   return NextResponse.json({ thread: { id: thread.id, otherUsername: other } }, { status: 201 });
 }

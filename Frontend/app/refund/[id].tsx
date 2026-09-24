@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, KeyboardAvoidingView, Platform } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, TextInput, KeyboardAvoidingView, Platform } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ChevronLeftIcon, SendIcon, CheckIcon, CloseIcon } from '../../utils/icons';
@@ -46,7 +46,7 @@ export default function RefundDetailScreen() {
   const refundId = Array.isArray(id) ? id[0] : id ?? '';
   const insets = useSafeAreaInsets();
   const { getOrder, respondRefund } = useOrders();
-  const [loaded, setLoaded] = useState(false);
+  const [serverLoading, setServerLoading] = useState(false);
   const [response, setResponse] = useState('');
 
   const localOrder = getOrder(String(refundId));
@@ -57,9 +57,13 @@ export default function RefundDetailScreen() {
   useEffect(() => {
     setServerOrder(null);
     setServerMiss(false);
+    setServerLoading(Boolean(refundId));
   }, [refundId]);
   useEffect(() => {
-    if (localOrder || !refundId || serverOrder || serverMiss) return;
+    if (localOrder || !refundId || serverOrder || serverMiss) {
+      if (localOrder || !refundId) setServerLoading(false);
+      return;
+    }
     let alive = true;
     serverApi
       .getOrder(String(refundId))
@@ -70,18 +74,14 @@ export default function RefundDetailScreen() {
         if (!mapped) setServerMiss(true);
         else setServerOrder(mapped);
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => { if (alive) setServerLoading(false); });
     return () => {
       alive = false;
     };
   }, [localOrder, refundId, serverOrder, serverMiss]);
   const order = localOrder ?? serverOrder ?? undefined;
   const refund = order?.refund;
-
-  useEffect(() => {
-    const t = setTimeout(() => setLoaded(true), 250);
-    return () => clearTimeout(t);
-  }, [refundId]);
 
   // Refund money moves ONLY server-side (seller/desk decision machines) —
   // a client-side credit helper lived here that could never work (server
@@ -109,9 +109,11 @@ export default function RefundDetailScreen() {
         <View style={{ width: 18 }} />
       </View>
 
-      {!loaded && !order ? (
-        <View className="flex-1 items-center justify-center">
-          <ActivityIndicator color={colors.primaryContainer} />
+      {!order && serverLoading ? (
+        <View className="flex-1 px-5 pt-8">
+          <View style={{ width: 150, height: 22, borderRadius: 11, backgroundColor: colors.surfaceContainer }} />
+          <View style={{ width: '100%', height: 96, borderRadius: 18, marginTop: 24, backgroundColor: colors.surfaceContainerLow }} />
+          <View style={{ width: '100%', height: 78, borderRadius: 18, marginTop: 14, backgroundColor: colors.surfaceContainerLow }} />
         </View>
       ) : !order || !refund ? (
         <View className="flex-1 items-center justify-center px-8">
