@@ -34,50 +34,37 @@ async function buildHomePayload() {
   let featuredPosts: Awaited<ReturnType<typeof prisma.featuredPost.findMany>> = [];
   let spotlight: Awaited<ReturnType<typeof prisma.spotlight.findMany>> = [];
   let sections: { name: string; isEnabled: boolean }[] = [];
-  let degraded = false;
-  try {
-    [topSellers, hotDeals, marketingBanners, featuredPosts, spotlight, sections] = await Promise.all([
-    // Rails serve at most 3 rows (the app + desk contract): extra active rows
-    // wait their turn and expire naturally — the rail never overflows no
-    // matter how many campaigns the engine sells.
-    prisma.topSeller.findMany({ where: { status: ACTIVE }, orderBy: { position: "asc" }, take: 3 }),
-    prisma.hotDeal.findMany({ where: { status: ACTIVE }, orderBy: { priority: "asc" }, take: 3 }),
-    // Marketing banners: seller-uploaded banner images from the seller dashboard,
-    // synced into storefrontBanner. Ordered by explicit position (lower first,
-    // nulls last) then newest. Bounded like every other rail (the app hero
-    // renders the first row with an image — an unbounded payload only burns
-    // cold-start bytes after the first few rows).
-    prisma.storefrontBanner.findMany({
+  let failedPrimaryReads = 0;
+  const read = async <T,>(label: string, query: () => Promise<T>, fallback: T): Promise<T> => {
+    try {
+      return await query();
+    } catch (error) {
+      failedPrimaryReads += 1;
+      console.error(`[home] ${label} read failed`, error instanceof Error ? error.message : error);
+      return fallback;
+    }
+  };
+  [topSellers, hotDeals, marketingBanners, featuredPosts, spotlight, sections] = await Promise.all([
+    read("top-sellers", () => prisma.topSeller.findMany({ where: { status: ACTIVE }, orderBy: { position: "asc" }, take: 3 }), []),
+    read("hot-deals", () => prisma.hotDeal.findMany({ where: { status: ACTIVE }, orderBy: { priority: "asc" }, take: 3 }), []),
+    read("marketing-banners", () => prisma.storefrontBanner.findMany({
       where: { status: ACTIVE },
       orderBy: [{ position: { sort: "asc", nulls: "last" } }, { createdAt: "desc" }],
       take: 5,
-    }),
-    // Featured posts: paid promo placements (promo engine writes them on
-    // purchase). Previously write-only — orphans rendered nowhere while money
-    // was taken. Now a real home rail, ordered pinned-first then position.
-    // Rail contract is 3 rows like every other rail (unbounded payloads broke
-    // the app contract the moment the engine sold depth).
-    prisma.featuredPost.findMany({
+    }), []),
+    read("featured-posts", () => prisma.featuredPost.findMany({
       where: { status: ACTIVE },
       orderBy: [{ isPinned: "desc" }, { position: "asc" }, { createdAt: "desc" }],
       take: 3,
-    }),
-    // Spotlight: paid position-1 feed pins (promo engine writes it on
-    // purchase). Was write-only — money taken, rendered nowhere. Served here
-    // so paid placements actually display; at most 3 concurrent (activation
-    // refuses the 4th instead of selling an invisible slot), newest first.
-    prisma.spotlight.findMany({
+    }), []),
+    read("spotlight", () => prisma.spotlight.findMany({
       where: { status: ACTIVE },
       orderBy: { createdAt: "desc" },
       take: 3,
-    }),
-    // Home-section visibility (admin "Show on home page" toggle): missing row
-    // = ON (fresh prod renders), explicit isEnabled=false hides the rail.
-    prisma.homeSection.findMany().catch(() => [] as { name: string; isEnabled: boolean }[]),
+    }), []),
+    read("home-sections", () => prisma.homeSection.findMany(), [] as { name: string; isEnabled: boolean }[]),
   ]);
-  } catch {
-    degraded = true;
-  }
+  const degraded = failedPrimaryReads >= 5;
   const sectionOff = new Set(
     (sections as { name: string; isEnabled: boolean }[]).filter((s) => !s.isEnabled).map((s) => s.name)
   );
