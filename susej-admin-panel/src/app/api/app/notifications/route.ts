@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
 import { getAppUser } from "@/lib/app-auth";
+import { cachedRead, cacheKey, invalidateCache } from "@/lib/cache";
 
 export async function GET(req: NextRequest) {
   const auth = await getAppUser(req);
@@ -10,28 +11,33 @@ export async function GET(req: NextRequest) {
 
   const beforeRaw = req.nextUrl.searchParams.get("before");
   const before = beforeRaw ? Number(beforeRaw) : NaN;
-  const rows = await prisma.userNotification.findMany({
-    where: {
-      username: auth.user.username!,
-      ...(Number.isFinite(before) && before > 0 ? { timestamp: { lt: new Date(before) } } : {}),
-    },
-    orderBy: { timestamp: "desc" },
-    take: 100,
-  });
-  return NextResponse.json({
-    notifications: rows.map((n) => ({
-      id: n.id,
-      type: n.type,
-      userName: n.userName,
-      userHandle: n.userHandle ?? undefined,
-      action: n.action,
-      target: n.target ?? undefined,
-      targetId: n.targetId ?? undefined,
-      timestamp: n.timestamp.getTime(),
-      read: n.read,
-    })),
-    unreadCount: rows.filter((r) => !r.read).length,
-  });
+  const loadNotifications = async () => {
+    const rows = await prisma.userNotification.findMany({
+      where: {
+        username: auth.user.username!,
+        ...(Number.isFinite(before) && before > 0 ? { timestamp: { lt: new Date(before) } } : {}),
+      },
+      orderBy: { timestamp: "desc" },
+      take: 100,
+    });
+    return {
+      notifications: rows.map((n) => ({
+        id: n.id,
+        type: n.type,
+        userName: n.userName,
+        userHandle: n.userHandle ?? undefined,
+        action: n.action,
+        target: n.target ?? undefined,
+        targetId: n.targetId ?? undefined,
+        timestamp: n.timestamp.getTime(),
+        read: n.read,
+      })),
+      unreadCount: rows.filter((r) => !r.read).length,
+    };
+  };
+  if (Number.isFinite(before) && before > 0) return NextResponse.json(await loadNotifications());
+  const payload = await cachedRead(cacheKey("notifications", auth.user.username!, "latest"), loadNotifications, { freshMs: 3_000, staleMs: 20_000 });
+  return NextResponse.json(payload);
 }
 
 // Mark notifications read (all or one)
@@ -61,5 +67,6 @@ export async function POST(req: NextRequest) {
       data: { read: true },
     });
   }
+  await invalidateCache(cacheKey("notifications", auth.user.username!, "latest"));
   return NextResponse.json({ ok: true });
 }
