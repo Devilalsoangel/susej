@@ -254,9 +254,13 @@ export default function LoginScreen() {
           : '';
         setError(authErrorMessage(res.error, 'try again') + tries);
       } else {
+        setSigningIn(false);
         setError('No connection. Check your internet and try again.');
       }
     } catch (e) {
+      // Failure AFTER the overlay went up must take it back down, or the
+      // user sits on "Signing you in…" forever with the cause hidden below.
+      setSigningIn(false);
       // Network abort/timeout must never crash to the root screen.
       setError('Sign-in is unavailable. Check your connection and try again.');
     } finally {

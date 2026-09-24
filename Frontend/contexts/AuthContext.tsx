@@ -259,7 +259,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (res.ok && res.data?.token) {
         // Identity is about to change - drop the outgoing account's cached
         // money state so it can never flash as the new account's truth.
-        await clearMoneyCache();
+        // Guarded: a storage throw here must never break the login handoff.
+        await clearMoneyCache().catch(() => {});
         await login(res.data.user as unknown as User);
         // login() writes a mock token — overwrite it with the REAL server token
         // so every serverApi call authenticates (getToken() only accepts susej_).
@@ -377,11 +378,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const completeOnboarding = useCallback(async () => {
+    // Bookkeeping must NEVER break login: a storage throw here used to land
+    // the user on a permanent "Signing you in…" overlay with the session
+    // saved but the handoff dead.
     setHasOnboarded(true);
-    const u = await sessionStorage.getUser();
-    if (u?.username) {
-      await AsyncStorage.setItem(ONBOARDED_PREFIX + u.username, 'true');
-    }
+    try {
+      const u = await sessionStorage.getUser();
+      if (u?.username) {
+        await AsyncStorage.setItem(ONBOARDED_PREFIX + u.username, 'true');
+      }
+    } catch {}
     // No global write: it fed the next account's login migration
     // (cross-account completion leak). Legacy global residue still migrates
     // once via login(), then logout clears it for good.
@@ -389,9 +395,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const setHasSeenFeedWelcome = useCallback(async () => {
     setHasSeenFeedWelcomeState(true);
-    const u = await sessionStorage.getUser();
-    const key = u?.username ? FEED_WELCOME_PREFIX + u.username : FEED_WELCOME_KEY_BASE;
-    await AsyncStorage.setItem(key, 'true');
+    // Storage guarded like completeOnboarding: bookkeeping never breaks flow.
+    try {
+      const u = await sessionStorage.getUser();
+      const key = u?.username ? FEED_WELCOME_PREFIX + u.username : FEED_WELCOME_KEY_BASE;
+      await AsyncStorage.setItem(key, 'true');
+    } catch {}
     // No global mirror: same cross-account leak class as the onboarding step.
   }, []);
 
