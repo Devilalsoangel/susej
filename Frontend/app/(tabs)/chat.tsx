@@ -195,6 +195,7 @@ export default function ChatScreen() {
   useEffect(() => () => setImmersiveNav(false), []);
   const [threadMessages, setThreadMessages] = useState<ThreadMessage[]>([]);
   const [serverChats, setServerChats] = useState<ChatItem[]>([]);
+  const [threadsLoading, setThreadsLoading] = useState(true);
   const threadsServerLoaded = useRef(false);
   const threadsInFlight = useRef(false);
   const [composer, setComposer] = useState('');
@@ -314,12 +315,16 @@ export default function ChatScreen() {
     let cancelled = false;
     const key = user?.username ? `${THREADS_CACHE_KEY_BASE}:${user.username}` : THREADS_CACHE_KEY_BASE;
     threadsServerLoaded.current = false;
+    setThreadsLoading(true);
     setServerChats([]);
     AsyncStorage.getItem(key).then((raw) => {
       if (cancelled || !raw || threadsServerLoaded.current) return;
       try {
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) setServerChats(parsed as ChatItem[]);
+        if (Array.isArray(parsed)) {
+          setServerChats(parsed as ChatItem[]);
+          setThreadsLoading(false);
+        }
       } catch {}
     }).catch(() => {});
     return () => { cancelled = true; };
@@ -357,11 +362,13 @@ export default function ChatScreen() {
         }));
         threadsServerLoaded.current = true;
         setServerChats(items);
+        setThreadsLoading(false);
         AsyncStorage.setItem(key, JSON.stringify(items)).catch(() => {});
       })
       .catch(() => {})
       .finally(() => {
         threadsInFlight.current = false;
+        setThreadsLoading(false);
       });
   };
 
@@ -1363,21 +1370,33 @@ export default function ChatScreen() {
         keyExtractor={(item) => item.id}
         contentContainerClassName="pb-40"
         ListEmptyComponent={
-          <View className="px-8 py-12 items-center">
-            <Text className="font-inter-400 text-textSecondary text-center" style={{ fontSize: 14, lineHeight: 20 }}>
-              {tab === 'broadcast'
-                ? 'No broadcast channels yet. Sellers create channels to announce drops and deals.'
-                : tab === 'community'
-                ? 'Join communities from the Communities Hub to chat with members'
-                : filter === 'unread'
-                ? 'No unread chats'
-                : filter === 'offers'
-                ? 'No offers yet'
-                : q
-                ? 'No conversations match your search'
-                : 'No conversations yet — tap Message on any product to start one'}
-            </Text>
-          </View>
+          tab === 'messages' && threadsLoading ? (
+            <View className="px-5 py-3">
+              {[0, 1, 2, 3].map((key) => (
+                <View key={`chat-skeleton-${key}`} className="h-[78px] mb-2 rounded-2xl" style={{ backgroundColor: colors.surfaceContainerLow }}>
+                  <View style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: colors.surfaceContainer, margin: 15 }} />
+                  <View style={{ position: 'absolute', left: 78, top: 19, width: 120, height: 12, borderRadius: 6, backgroundColor: colors.surfaceContainer }} />
+                  <View style={{ position: 'absolute', left: 78, top: 42, width: 190, height: 10, borderRadius: 5, backgroundColor: colors.surfaceContainer }} />
+                </View>
+              ))}
+            </View>
+          ) : (
+            <View className="px-8 py-12 items-center">
+              <Text className="font-inter-400 text-textSecondary text-center" style={{ fontSize: 14, lineHeight: 20 }}>
+                {tab === 'broadcast'
+                  ? 'No broadcast channels yet. Sellers create channels to announce drops and deals.'
+                  : tab === 'community'
+                  ? 'Join communities from the Communities Hub to chat with members'
+                  : filter === 'unread'
+                  ? 'No unread chats'
+                  : filter === 'offers'
+                  ? 'No offers yet'
+                  : q
+                  ? 'No conversations match your search'
+                  : 'No conversations yet — tap Message on any product to start one'}
+              </Text>
+            </View>
+          )
         }
         ListHeaderComponent={
           <View className="px-5 pt-3 pb-2">

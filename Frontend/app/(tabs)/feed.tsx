@@ -812,7 +812,14 @@ function FeedContent() {
                     For You
                   </Text>
                 </TouchableOpacity>
-                {worldCats.map((tile) => (
+                {worldCats.length === 0
+                  ? [0, 1, 2].map((key) => (
+                      <View key={`category-skeleton-${key}`} className="w-[72px] h-[92px] rounded-figma-16" style={{ backgroundColor: colors.surfaceContainer }}>
+                        <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: colors.surfaceContainerLow, marginTop: 14, alignSelf: 'center' }} />
+                        <View style={{ width: 48, height: 8, borderRadius: 4, backgroundColor: colors.surfaceContainerLow, marginTop: 10, alignSelf: 'center' }} />
+                      </View>
+                    ))
+                  : worldCats.map((tile) => (
                   <TouchableOpacity
                     key={tile.slug}
                     className="w-[72px] h-[92px] rounded-figma-16 overflow-hidden"

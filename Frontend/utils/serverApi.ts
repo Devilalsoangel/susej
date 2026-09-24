@@ -225,8 +225,12 @@ function tokenFingerprint(token: string | null): string {
   return (hash >>> 0).toString(36);
 }
 
+function isPublicReadPath(path: string): boolean {
+  return path === '/api/v1/home' || path === '/api/v1/config' || path === '/api/app/categories' || path === '/search' || path === '/stories' || path === '/bundles' || path === '/reels' || path === '/live' || path === '/broadcasts' || path === '/auctions' || path.startsWith('/auctions/') || path.startsWith('/categories') || path.startsWith('/storefront-banners') || path === '/coupons' || /^\/users\/[^/]+$/.test(path);
+}
+
 function readCacheKey(path: string, token: string | null): string {
-  return `${READ_CACHE_PREFIX}${readCacheGeneration}:${tokenFingerprint(token)}:${path}`;
+  return `${READ_CACHE_PREFIX}${readCacheGeneration}:${isPublicReadPath(path) ? 'public' : tokenFingerprint(token)}:${path}`;
 }
 
 function readCacheSpec(path: string): ReadCacheSpec | null {
