@@ -207,6 +207,7 @@ export default function ChatScreen() {
   const [threadLoading, setThreadLoading] = useState(false);
   const [olderLoading, setOlderLoading] = useState(false);
   const [hasOlderMessages, setHasOlderMessages] = useState(false);
+  const threadPollInFlight = useRef(false);
   const [serverChats, setServerChats] = useState<ChatItem[]>([]);
   const [threadsLoading, setThreadsLoading] = useState(true);
   const threadsServerLoaded = useRef(false);
@@ -848,6 +849,8 @@ export default function ChatScreen() {
     if (!threadId || !isFocused) return;
     let cancelled = false;
     const pull = () => {
+      if (threadPollInFlight.current) return;
+      threadPollInFlight.current = true;
       serverApi
         .getMessages(threadId)
         .then((res) => {
@@ -865,7 +868,8 @@ export default function ChatScreen() {
           setHasOlderMessages(res.data.hasMore === true);
           if (!cancelled) setThreadLoading(false);
         })
-        .catch(() => { if (!cancelled) setThreadLoading(false); });
+        .catch(() => { if (!cancelled) setThreadLoading(false); })
+        .finally(() => { threadPollInFlight.current = false; });
     };
     const t = setInterval(pull, 6000);
     return () => { cancelled = true; clearInterval(t); };
