@@ -44,13 +44,18 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [serverSettled, setServerSettled] = useState(false);
+  const [loadedAccount, setLoadedAccount] = useState<string | null>(null);
+  const accountKey = user?.username ?? null;
   // Re-seed per account switch (tokenSeq) so a new login never inherits
   // the previous account's cached notifications.
   const serverSeeded = useRef<string | null>(null);
 
   useEffect(() => {
     const key = user?.username ? `${NOTIFS_KEY_BASE}:${user.username}` : NOTIFS_KEY_BASE;
+    const account = user?.username ?? null;
     let cancelled = false;
+    setLoadedAccount(null);
+    setServerSettled(false);
     AsyncStorage.getItem(key)
       .then((data) => {
         if (cancelled) return;
@@ -59,12 +64,19 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
             const saved = JSON.parse(data) as AppNotification[];
             const real = saved.filter((n) => n && n.id && !/^n\d+$/.test(n.id));
             setNotifications(real.sort((a, b) => b.timestamp - a.timestamp));
-          } catch { /* start empty */ }
+          } catch {
+            setNotifications([]);
+          }
         } else {
           setNotifications([]);
         }
+        setLoadedAccount(account);
       })
-      .catch(() => { if (!cancelled) setNotifications([]); });
+      .catch(() => {
+        if (cancelled) return;
+        setNotifications([]);
+        setLoadedAccount(account);
+      });
     return () => { cancelled = true; };
   }, [user?.username]);
 
@@ -72,18 +84,19 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   // so a new login never inherits the previous account's notifications.
   // Skipped while push is off (no silent fetching behind a disabled toggle).
   useEffect(() => {
+    let cancelled = false;
     if (!user?.username) {
       setServerSettled(true);
-      return;
+      return () => { cancelled = true; };
     }
     // Seed key includes the push flag: toggling push back ON refetches.
     const seedKey = `${tokenSeq}:${pushOn ? 1 : 0}`;
-    if (serverSeeded.current === seedKey) return;
+    if (serverSeeded.current === seedKey) return () => { cancelled = true; };
     serverSeeded.current = seedKey;
     setServerSettled(!pushOn);
-    if (!pushOn) return;
+    if (!pushOn) return () => { cancelled = true; };
     serverApi.getNotifications().then((res) => {
-      if (!res.ok) return;
+      if (cancelled || !res.ok) return;
       const serverRows = (res.data?.notifications ?? [])
         .filter((n: any) => n && n.id)
         .map((n: any) => ({
@@ -99,7 +112,10 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         }));
       setNotifications([...serverRows].sort((a, b) => b.timestamp - a.timestamp));
       setHasMore(serverRows.length >= 100);
-    }).catch(() => {}).finally(() => setServerSettled(true));
+    }).catch(() => {}).finally(() => {
+      if (!cancelled) setServerSettled(true);
+    });
+    return () => { cancelled = true; };
   }, [user?.username, tokenSeq, pushOn]);
 
   const persist = useCallback((updated: AppNotification[]) => {
@@ -107,7 +123,9 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     AsyncStorage.setItem(key, JSON.stringify(updated)).catch(() => {});
   }, [user?.username]);
 
-  const unreadCount = pushOn ? notifications.filter((n) => !n.read).length : 0;
+  const accountReady = loadedAccount === accountKey;
+  const visibleNotifications = accountReady ? notifications : [];
+  const unreadCount = pushOn ? visibleNotifications.filter((n) => !n.read).length : 0;
 
   const refreshFromServer = useCallback(() => {
     serverApi.getNotifications().then((res) => {
@@ -200,10 +218,10 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     });
   }, [persist, pushOn]);
 
-  const hydrating = Boolean(user?.username && pushOn && notifications.length === 0 && !serverSettled);
+  const hydrating = Boolean(accountKey && (!accountReady || (pushOn && visibleNotifications.length === 0 && !serverSettled)));
 
   return (
-    <NotificationContext.Provider value={{ notifications, unreadCount, markAsRead, markAllAsRead, addNotification, loadMore, hasMore, hydrating }}>
+    <NotificationContext.Provider value={{ notifications: visibleNotifications, unreadCount, markAsRead, markAllAsRead, addNotification, loadMore, hasMore, hydrating }}>
       {children}
     </NotificationContext.Provider>
   );
