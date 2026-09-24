@@ -30,6 +30,7 @@ interface NotificationContextType {
   /** Pull older rows (server cursor). No-op while push is off. */
   loadMore: () => void;
   hasMore: boolean;
+  hydrating: boolean;
 }
 
 const NotificationContext = createContext<NotificationContextType | null>(null);
@@ -42,6 +43,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   const pushOn = settings.pushNotifications !== false;
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [hasMore, setHasMore] = useState(false);
+  const [serverSettled, setServerSettled] = useState(false);
   // Re-seed per account switch (tokenSeq) so a new login never inherits
   // the previous account's cached notifications.
   const serverSeeded = useRef<string | null>(null);
@@ -70,11 +72,15 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   // so a new login never inherits the previous account's notifications.
   // Skipped while push is off (no silent fetching behind a disabled toggle).
   useEffect(() => {
-    if (!user?.username) return;
+    if (!user?.username) {
+      setServerSettled(true);
+      return;
+    }
     // Seed key includes the push flag: toggling push back ON refetches.
     const seedKey = `${tokenSeq}:${pushOn ? 1 : 0}`;
     if (serverSeeded.current === seedKey) return;
     serverSeeded.current = seedKey;
+    setServerSettled(!pushOn);
     if (!pushOn) return;
     serverApi.getNotifications().then((res) => {
       if (!res.ok) return;
@@ -93,7 +99,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         }));
       setNotifications([...serverRows].sort((a, b) => b.timestamp - a.timestamp));
       setHasMore(serverRows.length >= 100);
-    });
+    }).catch(() => {}).finally(() => setServerSettled(true));
   }, [user?.username, tokenSeq, pushOn]);
 
   const persist = useCallback((updated: AppNotification[]) => {
@@ -194,8 +200,10 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     });
   }, [persist, pushOn]);
 
+  const hydrating = Boolean(user?.username && pushOn && notifications.length === 0 && !serverSettled);
+
   return (
-    <NotificationContext.Provider value={{ notifications, unreadCount, markAsRead, markAllAsRead, addNotification, loadMore, hasMore }}>
+    <NotificationContext.Provider value={{ notifications, unreadCount, markAsRead, markAllAsRead, addNotification, loadMore, hasMore, hydrating }}>
       {children}
     </NotificationContext.Provider>
   );

@@ -114,10 +114,11 @@ export default function OrderDetailsScreen() {
     // false "not found" for an order that exists (deep link / 2nd device).
     if (!serverMiss) {
       return (
-        <View className="flex-1 bg-surface items-center justify-center">
-          <Text className="text-[14px] font-inter-400 text-textSecondary" style={{ lineHeight: 20 }}>
-            Loading order…
-          </Text>
+        <View className="flex-1 bg-surface px-5 pt-8" style={{ paddingTop: insets.top + 8 }}>
+          <View style={{ width: 150, height: 22, borderRadius: 11, backgroundColor: colors.surfaceContainer }} />
+          <View style={{ width: '100%', height: 110, borderRadius: 20, marginTop: 24, backgroundColor: colors.surfaceContainerLow }} />
+          <View style={{ width: '100%', height: 78, borderRadius: 18, marginTop: 14, backgroundColor: colors.surfaceContainerLow }} />
+          <View style={{ width: '100%', height: 78, borderRadius: 18, marginTop: 14, backgroundColor: colors.surfaceContainerLow }} />
         </View>
       );
     }

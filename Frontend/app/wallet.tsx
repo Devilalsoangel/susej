@@ -545,10 +545,10 @@ export default function WalletScreen() {
       </View>
 
       {!loaded ? (
-        <View className="flex-1 items-center justify-center">
-          <Text className="font-inter-400" style={{ fontSize: 14, lineHeight: 20, color: colors.textSecondary }}>
-            Loading wallet…
-          </Text>
+        <View className="flex-1 px-5 pt-5">
+          <View style={{ width: '100%', height: 180, borderRadius: 24, backgroundColor: colors.surfaceContainer }} />
+          <View style={{ width: '100%', height: 120, borderRadius: 24, marginTop: 16, backgroundColor: colors.surfaceContainer }} />
+          <View style={{ width: '100%', height: 74, borderRadius: 16, marginTop: 18, backgroundColor: colors.surfaceContainer }} />
         </View>
       ) : (
         <FlatList

@@ -69,9 +69,9 @@ function GearIcon({ size = 20, color = '#464555' }: { size?: number; color?: str
 export default function SellerDashboardHubScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
-  const { posts, deletePost, toggleSold } = usePosts();
-  const { orders } = useOrders();
-  const { promotions } = usePromotions();
+  const { posts, deletePost, toggleSold, loaded: postsLoaded } = usePosts();
+  const { orders, loaded: ordersLoaded } = useOrders();
+  const { promotions, loaded: promotionsLoaded } = usePromotions();
   const { followerCounts } = useFollow();
 
   // Logged-out fallback is '' (matches nobody): 'user' previously rendered
@@ -106,6 +106,7 @@ export default function SellerDashboardHubScreen() {
   }, [username, user?.avatar]);
   const verified = user?.verification === 'approved';
   const category = user?.category ? findMainCategory(user.category)?.label ?? user.category : null;
+  const dashboardReady = postsLoaded && ordersLoaded && promotionsLoaded;
 
   // Case-insensitive like seller-orders (server keeps exact casing, C3).
   const myPosts = useMemo(() => {
@@ -276,6 +277,29 @@ export default function SellerDashboardHubScreen() {
   // Approved sellers only (SELLER-C1): buyers/pending deep-links get status,
   // never tools. Matches server 403s. After all hooks (rules-of-hooks safe).
   if (!isApprovedSeller(user)) return <SellerGate title="Seller dashboard" user={user} />;
+
+  if (!dashboardReady) {
+    return (
+      <View className="flex-1 bg-surface">
+        <View className="flex-row items-center px-5" style={{ height: 54 + insets.top, paddingTop: insets.top, backgroundColor: colors.surface }}>
+          <TouchableOpacity onPress={() => router.back()}>
+            <ChevronLeftIcon size={18} color={colors.textPrimary} />
+          </TouchableOpacity>
+          <View style={{ flex: 1, alignItems: 'center' }}>
+            <Text className="font-inter-600 text-textPrimary" style={{ fontSize: 17, lineHeight: 22 }}>Seller dashboard</Text>
+          </View>
+          <View style={{ width: 20 }} />
+        </View>
+        <View style={{ paddingHorizontal: 20, paddingTop: 18 }}>
+          <View style={{ width: '100%', height: 164, borderRadius: 24, backgroundColor: colors.surfaceContainer }} />
+          <View style={{ flexDirection: 'row', gap: 12, marginTop: 18 }}>
+            {[0, 1].map((key) => <View key={key} style={{ flex: 1, height: 130, borderRadius: 16, backgroundColor: colors.surfaceContainer }} />)}
+          </View>
+          <View style={{ width: '100%', height: 74, borderRadius: 16, marginTop: 14, backgroundColor: colors.surfaceContainer }} />
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View className="flex-1 bg-surface">

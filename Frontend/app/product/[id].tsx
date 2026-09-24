@@ -593,10 +593,11 @@ export default function ProductDetailsScreen() {
   // never a fake fallback product.
   if (!loaded || (!post && !serverMiss)) {
     return (
-      <View className="flex-1 items-center justify-center" style={{ backgroundColor: colors.surface }}>
-        <Text className="font-inter-400 text-textSecondary" style={{ fontSize: 14, lineHeight: 20 }}>
-          Loading…
-        </Text>
+      <View className="flex-1 px-5 pt-8" style={{ backgroundColor: colors.surface, paddingTop: insets.top + 8 }}>
+        <View style={{ width: 150, height: 22, borderRadius: 11, backgroundColor: colors.surfaceContainer }} />
+        <View style={{ width: '100%', height: 300, borderRadius: 20, marginTop: 22, backgroundColor: colors.surfaceContainer }} />
+        <View style={{ width: '82%', height: 20, borderRadius: 10, marginTop: 18, backgroundColor: colors.surfaceContainer }} />
+        <View style={{ width: '48%', height: 16, borderRadius: 8, marginTop: 12, backgroundColor: colors.surfaceContainer }} />
       </View>
     );
   }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { View, Text, FlatList, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { View, Text, FlatList, TouchableOpacity } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -114,8 +114,8 @@ export default function BroadcastChannelsScreen() {
       </View>
 
       {loading ? (
-        <View className="flex-1 items-center justify-center">
-          <ActivityIndicator size="small" color={colors.primary} />
+        <View className="flex-1 px-5 pt-5">
+          {[0, 1, 2].map((key) => <View key={key} style={{ height: 86, borderRadius: 18, marginBottom: 12, backgroundColor: colors.surfaceContainer }} />)}
         </View>
       ) : (
         <FlatList

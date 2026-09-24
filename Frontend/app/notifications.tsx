@@ -30,7 +30,7 @@ const timeAgo = (ts: number): string => {
 export default function NotificationsScreen() {
   const insets = useSafeAreaInsets();
   const [activeTab, setActiveTab] = useState<Tab>('All');
-  const { notifications, markAsRead, markAllAsRead, loadMore, hasMore } = useNotifications();
+  const { notifications, markAsRead, markAllAsRead, loadMore, hasMore, hydrating } = useNotifications();
   const { settings } = useSettings();
   const pushOff = settings.pushNotifications === false;
 
@@ -295,14 +295,20 @@ export default function NotificationsScreen() {
           ) : null
         }
         ListEmptyComponent={
-          <View className="items-center py-16 px-4">
-            <Text className="font-inter-500 text-textSecondary" style={{ fontSize: 15, lineHeight: 20 }}>
-              No {activeTab === 'All' ? '' : activeTab.toLowerCase() + ' '}notifications
-            </Text>
-            <Text className="font-inter-400 text-secondary mt-2" style={{ fontSize: 12, lineHeight: 16 }}>
-              New activity will show up here
-            </Text>
-          </View>
+          hydrating ? (
+            <View className="px-4 pt-2">
+              {[0, 1, 2, 3].map((key) => <View key={key} style={{ height: 76, borderRadius: 24, marginBottom: 12, backgroundColor: colors.surfaceContainer }} />)}
+            </View>
+          ) : (
+            <View className="items-center py-16 px-4">
+              <Text className="font-inter-500 text-textSecondary" style={{ fontSize: 15, lineHeight: 20 }}>
+                No {activeTab === 'All' ? '' : activeTab.toLowerCase() + ' '}notifications
+              </Text>
+              <Text className="font-inter-400 text-secondary mt-2" style={{ fontSize: 12, lineHeight: 16 }}>
+                New activity will show up here
+              </Text>
+            </View>
+          )
         }
       />
     </View>

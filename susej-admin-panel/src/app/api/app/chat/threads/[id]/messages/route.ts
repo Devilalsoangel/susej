@@ -9,7 +9,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const { id } = await params;
   const auth = await getAppUser(req);
   if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-  const prisma = await getPrisma();
+  const prisma = await getPrisma({ probe: false });
   if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
 
   const thread = await prisma.chatThread.findUnique({ where: { id } });
