@@ -99,6 +99,8 @@ export interface Post {
 interface PostContextType {
   posts: Post[];
   loaded: boolean;
+  serverSettled: boolean;
+  serverError: boolean;
   addPost: (post: Omit<Post, 'id' | 'createdAt' | 'likes' | 'comments'>) => Promise<'acked' | 'offline' | 'rejected' | 'ambiguous'>;
   removePost: (id: string) => void;
   deletePost: (id: string) => void;
@@ -148,9 +150,11 @@ function isServerPostId(id: string): boolean {
 }
 
 export function PostProvider({ children }: { children: React.ReactNode }) {
-  const { user, tokenSeq } = useAuth();
+  const { user, tokenSeq, isLoading: authLoading } = useAuth();
   const [posts, setPosts] = useState<Post[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [serverSettled, setServerSettled] = useState(false);
+  const [serverError, setServerError] = useState(false);
   const [liked, setLiked] = useState<Record<string, boolean>>({});
   const likedRef = useRef<Record<string, boolean>>({});
   // Snapshot ref for optimistic-rollback: server rejections (offline/403)
@@ -166,21 +170,25 @@ export function PostProvider({ children }: { children: React.ReactNode }) {
   const [modLoaded, setModLoaded] = useState(false);
 
   const getPostsKey = useCallback(() => {
-    const u = user?.username?.trim();
+    const u = user?.username?.trim().toLowerCase();
     return u ? `${POSTS_KEY_BASE}:${u}` : POSTS_KEY_BASE;
   }, [user?.username]);
 
   // Load cached posts per-user (offline mirror). Falls back to legacy global key on first run per account.
   useEffect(() => {
     let cancelled = false;
+    if (authLoading) return;
+    if (!user?.username) {
+      setLoaded(true);
+      setServerSettled(true);
+      setServerError(false);
+      setPosts([]);
+      return;
+    }
     const key = getPostsKey();
     const load = async () => {
       let data: string | null = null;
       try { data = await AsyncStorage.getItem(key); } catch {}
-      if (!data && key !== POSTS_KEY_BASE) {
-        try { data = await AsyncStorage.getItem(POSTS_KEY_BASE); } catch {}
-        if (data) { try { await AsyncStorage.setItem(key, data); } catch {} }
-      }
       if (cancelled) return;
       if (data) {
         try {
@@ -202,30 +210,32 @@ export function PostProvider({ children }: { children: React.ReactNode }) {
       if (!cancelled) setLoaded(true);
     };
     setLoaded(false);
+    setServerSettled(false);
+    setServerError(false);
     setPosts([]);
     load();
     return () => { cancelled = true; };
-  }, [getPostsKey, tokenSeq]);
+  }, [authLoading, getPostsKey, tokenSeq, user?.username]);
 
 
   const getHiddenKey = useCallback(() => {
-    const u = user?.username?.trim();
+    const u = user?.username?.trim().toLowerCase();
     return u ? `${HIDDEN_KEY_BASE}:${u}` : HIDDEN_KEY_BASE;
   }, [user?.username]);
   const getMutedKey = useCallback(() => {
-    const u = user?.username?.trim();
+    const u = user?.username?.trim().toLowerCase();
     return u ? `${MUTED_KEY_BASE}:${u}` : MUTED_KEY_BASE;
   }, [user?.username]);
   const getReportsKey = useCallback(() => {
-    const u = user?.username?.trim();
+    const u = user?.username?.trim().toLowerCase();
     return u ? `${REPORTS_KEY_BASE}:${u}` : REPORTS_KEY_BASE;
   }, [user?.username]);
   const getLikedKey = useCallback(() => {
-    const u = user?.username?.trim();
+    const u = user?.username?.trim().toLowerCase();
     return u ? `${LIKED_KEY_BASE}:${u}` : LIKED_KEY_BASE;
   }, [user?.username]);
   const getTombstoneKey = useCallback(() => {
-    const u = user?.username?.trim();
+    const u = user?.username?.trim().toLowerCase();
     return u ? `${TOMBSTONE_KEY_BASE}:${u}` : TOMBSTONE_KEY_BASE;
   }, [user?.username]);
 
@@ -249,6 +259,11 @@ export function PostProvider({ children }: { children: React.ReactNode }) {
   // Load moderation state per-user (hidden posts, muted sellers, reports, liked posts, tombstones)
   useEffect(() => {
     let cancelled = false;
+    if (authLoading) return;
+    if (!user?.username) {
+      setModLoaded(true);
+      return;
+    }
     const hiddenKey = getHiddenKey();
     const mutedKey = getMutedKey();
     const reportsKey = getReportsKey();
@@ -292,7 +307,7 @@ export function PostProvider({ children }: { children: React.ReactNode }) {
         if (!cancelled) setModLoaded(true);
       });
     return () => { cancelled = true; };
-  }, [getHiddenKey, getMutedKey, getReportsKey, getLikedKey, getTombstoneKey, tokenSeq]);
+  }, [authLoading, getHiddenKey, getMutedKey, getReportsKey, getLikedKey, getTombstoneKey, tokenSeq, user?.username]);
 
   // Persist whenever posts change (skip initial seed load)
   const persist = useCallback((updated: Post[]) => {
@@ -355,14 +370,28 @@ export function PostProvider({ children }: { children: React.ReactNode }) {
   // Re-seed on every account switch (tokenSeq) so the feed reflects the
   // new account's likedByMe + server posts, even with an identical username.
   const serverSeeded = useRef(-1);
+  const tokenSeqRef = useRef(tokenSeq);
+  useEffect(() => { tokenSeqRef.current = tokenSeq; }, [tokenSeq]);
   useEffect(() => {
-    if (!loaded || !modLoaded || !user?.username) return;
+    if (authLoading) return;
+    if (!user?.username) {
+      setServerSettled(true);
+      setServerError(false);
+      return;
+    }
+    if (!loaded || !modLoaded) return;
     if (serverSeeded.current === tokenSeq) return;
     serverSeeded.current = tokenSeq;
-    serverApi.getPosts().then((res) => {
-      // An EMPTY server feed is still the truth — it must clear cached
-      // server-sourced posts (e.g. after a data reset). Only !ok skips.
-      if (!res.ok) return;
+     serverApi.getPosts().then((res) => {
+       if (tokenSeqRef.current !== tokenSeq) return;
+       // An EMPTY server feed is still the truth — it must clear cached
+       // server-sourced posts (e.g. after a data reset). Only !ok skips.
+       if (!res.ok) {
+         setServerError(true);
+         setServerSettled(true);
+         return;
+       }
+       setServerError(false);
       const serverPosts = (res.data?.posts ?? []).map(normalizeServerPost).filter(Boolean) as Post[];
       // Seed liked map from server truth — REPLACE, not merge, so an
       // unlike on another device clears the local entry.
@@ -385,10 +414,14 @@ export function PostProvider({ children }: { children: React.ReactNode }) {
       setPosts((prev) => {
         const localOnly = prev.filter((p) => p.id.startsWith('post_') && p.sellerUsername === user.username);
         const visible = serverPosts.filter((sp) => !tombstones.includes(sp.id));
-        return [...visible, ...localOnly];
-      });
-    });
-  }, [loaded, modLoaded, user?.username, tokenSeq, tombstones, normalizeServerPost, getLikedKey, persistMod]);
+         return [...visible, ...localOnly];
+       });
+       setServerSettled(true);
+     }).catch(() => {
+       setServerError(true);
+       setServerSettled(true);
+     });
+  }, [authLoading, loaded, modLoaded, user?.username, tokenSeq, tombstones, normalizeServerPost, getLikedKey, persistMod]);
 
   // User-initiated full refresh (pull-to-refresh): re-fetch server posts and reconcile —
   // same merge as the seed above (cache wins on request failure — honest no-spinner-lie).
@@ -851,7 +884,7 @@ export function PostProvider({ children }: { children: React.ReactNode }) {
   const isLiked = useCallback((postId: string) => !!liked[postId], [liked]);
 
   return (
-    <PostContext.Provider value={{ posts, loaded, refresh, searchServer, addPost, removePost, deletePost, addComment, toggleLike, isLiked, updatePost, toggleSold, decrementStock, hiddenPostIds, hidePost, mutedSellers, toggleMuteSeller, reportPost, reports }}>
+    <PostContext.Provider value={{ posts, loaded, serverSettled, serverError, refresh, searchServer, addPost, removePost, deletePost, addComment, toggleLike, isLiked, updatePost, toggleSold, decrementStock, hiddenPostIds, hidePost, mutedSellers, toggleMuteSeller, reportPost, reports }}>
       {children}
     </PostContext.Provider>
   );

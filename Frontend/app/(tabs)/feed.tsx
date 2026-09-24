@@ -71,9 +71,11 @@ export default function FeedScreen() {
 
 function FeedContent() {
   // hiddenPostIds/mutedSellers land in PostContext from a parallel agent — read defensively
-  const { posts, hiddenPostIds = [], mutedSellers = [], refresh: refreshPosts, toggleLike, isLiked } = usePosts() as {
+  const { posts, hiddenPostIds = [], mutedSellers = [], refresh: refreshPosts, toggleLike, isLiked, serverSettled, serverError } = usePosts() as {
     posts: Post[];
     loaded: boolean;
+    serverSettled: boolean;
+    serverError: boolean;
     refresh: () => Promise<boolean>;
     hiddenPostIds?: string[];
     mutedSellers?: string[];
@@ -83,7 +85,7 @@ function FeedContent() {
   // Industry-standard cart affordance: item-count badge on the bag icon (feed header). The
   // count mirrors CartContext so the badge stays truthful across every surface.
   const { cartCount } = useCart();
-  const feedLoaded = (usePosts() as unknown as { loaded?: boolean }).loaded ?? false;
+  const feedLoaded = (usePosts() as unknown as { loaded?: boolean }).loaded === true && ((serverSettled && !serverError) || posts.length > 0);
   // Industry-standard pull-to-refresh: refetch server feed + reconcile cache; spinner
   // runs only while the request is live — failure shows "Couldn't refresh"
   // (IG parity) instead of passing as "no new posts".
@@ -222,12 +224,13 @@ function FeedContent() {
   // and success always clears the degraded flag. 401-key is its own honest,
   // non-scary state (config outage, not a dying server).
   const fetchHomeRails = useCallback(async (isActive: () => boolean) => {
-    const [homeRes, catsRes, storiesRes, promosRes] = await Promise.all([
-      serverApi.getHome(),
+    const homeRequest = serverApi.getHome();
+    const auxiliaryRequest = Promise.all([
       serverApi.getCategories(),
       serverApi.getStories(),
       serverApi.getPromotions(),
     ]);
+    const homeRes = await homeRequest;
     if (!isActive()) return false;
     if (!homeRes.ok) {
       const err = (homeRes as { error?: unknown }).error;
@@ -244,82 +247,29 @@ function FeedContent() {
     setHomeDegraded(data.degraded === true);
     if (data.degraded === true) setHomeDegradedWhy('server');
     await applyHomePayload(data, isActive);
-    // Persist last-good (never degraded/empty) for instant cold-start paint.
     if (!data.degraded) {
       try {
         const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
         await AsyncStorage.setItem(HOME_RAILS_CACHE_KEY, JSON.stringify({ at: Date.now(), data }));
       } catch {}
     }
-    // Idempotent re-apply of the same payload (same values, one extra paint):
-    // kept while applyHomePayload above is the single applier both paths share.
-    const sections = data.sections ?? null;
-    if (isActive()) setHomeSections(sections);
-    const secOn = (k: string) => (sections as Record<string, boolean> | null)?.[k] !== false;
-    if (secOn('spotlight')) setHomeSpotlightPostId(data.spotlight?.postId ?? null);
-    else if (isActive()) setHomeSpotlightPostId(null);
-    // Featured rail merges into the paid boost sets (pinned floats top).
-    if (secOn('featured-posts') && data.featuredPosts?.length) {
-      const pinned: string[] = [];
-      const boosted: string[] = [];
-      for (const f of data.featuredPosts) {
-        if (!f?.postId) continue;
-        if (f.isPinned) pinned.push(f.postId);
-        else boosted.push(f.postId);
-      }
-      setHomeFeaturedPinned(pinned);
-      setHomeFeaturedBoosted(boosted);
-    } else if (isActive()) {
-      setHomeFeaturedPinned([]);
-      setHomeFeaturedBoosted([]);
-    }
-    // Server rails: curated top sellers (username-resolved) + paid hot
-    // deals (postId-resolved). Rows without a resolvable key are dropped —
-    // a dead chip is worse than a shorter rail; organic fills the gap.
-    if (secOn('top-sellers') && data.topSellers?.length) {
-      setHomeTopSellers(data.topSellers.filter((t) => t?.sellerUsername));
-    } else if (isActive()) {
-      setHomeTopSellers([]);
-    }
-    if (secOn('hot-deals') && data.hotDeals?.length) {
-      setHomeHotDeals(data.hotDeals.filter((d) => d?.postId));
-    } else if (isActive()) {
-      setHomeHotDeals([]);
-    }
-    if (secOn('storefront-banners') && data.marketingBanners?.length) {
-      // Only banners with a REAL uploaded image can be a hero — a text-only
-      // row would render an empty box.
-      const first = data.marketingBanners.find((b) => b.imageUrl) || null;
-      if (first && first.imageUrl) {
-        const base = await getAdminUrl();
-        if (!isActive()) return true;
-        setHero({
-          sellerUsername: first.sellerUsername,
-          sellerName: first.sellerName,
-          title: first.title,
-          subtitle: first.subtitle,
-          ctaLabel: first.ctaLabel,
-          imageUrl: first.imageUrl.startsWith('http') ? first.imageUrl : `${base}${first.imageUrl}`,
-          size: first.size,
-        });
-      } else if (isActive()) {
-        setHero(null);
-      }
-    } else if (isActive()) {
-      setHero(null);
-    }
-    if (catsRes.ok && isActive()) {
-      const cats = catsRes.data?.categories?.length ? catsRes.data.categories : [];
-      setWorldCats(cats.slice(0, 6).map((c) => ({ name: c.name, slug: c.slug, bannerImage: c.bannerImage ?? null })));
-    }
-    if (storiesRes.ok && isActive()) {
-      setServerStories(storiesRes.data?.stories ? (storiesRes.data.stories as AppStory[]) : []);
-    }
-    if (promosRes.ok && isActive()) {
-      setServerPromos(promosRes.data?.promotions ? (promosRes.data.promotions as any[]) : []);
-    }
+    void auxiliaryRequest
+      .then(([catsRes, storiesRes, promosRes]) => {
+        if (!isActive()) return;
+        if (catsRes.ok) {
+          const cats = catsRes.data?.categories?.length ? catsRes.data.categories : [];
+          setWorldCats(cats.slice(0, 6).map((c) => ({ name: c.name, slug: c.slug, bannerImage: c.bannerImage ?? null })));
+        }
+        if (storiesRes.ok) {
+          setServerStories(storiesRes.data?.stories ? (storiesRes.data.stories as AppStory[]) : []);
+        }
+        if (promosRes.ok) {
+          setServerPromos(promosRes.data?.promotions ? (promosRes.data.promotions as any[]) : []);
+        }
+      })
+      .catch(() => {});
     return true;
-  }, []);
+  }, [applyHomePayload]);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
@@ -1248,23 +1198,34 @@ function FeedContent() {
         }
         ListEmptyComponent={
           !feedLoaded ? (
-            <View className="pt-4">
-              <PostCardSkeleton />
-              <PostCardSkeleton />
-              <PostCardSkeleton />
-            </View>
+            serverError ? (
+              <View className="items-center justify-center px-10 py-24">
+                <Text className="font-inter-500 text-textSecondary text-center" style={{ fontSize: 15, lineHeight: 22 }}>
+                  We couldn't load the marketplace right now.
+                </Text>
+                <TouchableOpacity className="mt-5 h-11 px-6 items-center justify-center rounded-figma-full" style={{ backgroundColor: colors.primaryContainer }} onPress={() => { void refreshPosts(); }}>
+                  <Text className="font-inter-600 text-white" style={{ fontSize: 13, lineHeight: 16 }}>Try again</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View className="pt-4">
+                <PostCardSkeleton />
+                <PostCardSkeleton />
+                <PostCardSkeleton />
+              </View>
+            )
           ) : (
-          <View className="items-center justify-center px-10 py-24">
-            <Text className="font-inter-500 text-textSecondary text-center" style={{ fontSize: 15, lineHeight:  22 }}>
-              Nothing here — follow sellers to fill your feed
-            </Text>
-            <TouchableOpacity className="mt-5 flex-row items-center h-11 px-6 rounded-figma-full" style={{ backgroundColor: colors.primaryContainer }} onPress={() => router.push('/explore')}>
-              <PlusIcon size={14} color={colors.surfaceContainerLowest} />
-              <Text className="font-inter-600 ml-2" style={{ fontSize: 13, lineHeight: 16, color: colors.surfaceContainerLowest }}>
-                Follow suggestions
+            <View className="items-center justify-center px-10 py-24">
+              <Text className="font-inter-500 text-textSecondary text-center" style={{ fontSize: 15, lineHeight: 22 }}>
+                Nothing here — follow sellers to fill your feed
               </Text>
-            </TouchableOpacity>
-          </View>
+              <TouchableOpacity className="mt-5 flex-row items-center h-11 px-6 rounded-figma-full" style={{ backgroundColor: colors.primaryContainer }} onPress={() => router.push('/explore')}>
+                <PlusIcon size={14} color={colors.surfaceContainerLowest} />
+                <Text className="font-inter-600 ml-2" style={{ fontSize: 13, lineHeight: 16, color: colors.surfaceContainerLowest }}>
+                  Follow suggestions
+                </Text>
+              </TouchableOpacity>
+            </View>
           )
         }
         contentContainerClassName="pb-20"

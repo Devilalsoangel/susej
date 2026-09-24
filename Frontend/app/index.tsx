@@ -25,17 +25,27 @@ export default function SplashScreen() {
   // on every auth transition and its bare replace could land mid-login or
   // mid-logout, fighting the boundary reset into a corrupt stack.
   const redirected = useRef(false);
+  const initialAuth = useRef<{ hasOnboarded: boolean; isLoggedIn: boolean } | null>(null);
   useEffect(() => {
-    if (isLoading || redirected.current) return;
-    redirected.current = true;
+    if (isLoading) return;
+    if (!initialAuth.current) {
+      initialAuth.current = { hasOnboarded, isLoggedIn };
+    }
+    if (
+      initialAuth.current.hasOnboarded !== hasOnboarded ||
+      initialAuth.current.isLoggedIn !== isLoggedIn ||
+      redirected.current
+    ) {
+      return;
+    }
     const target = hasOnboarded && isLoggedIn ? '/(tabs)/feed' : '/(onboarding)/welcome';
     const timer = setTimeout(() => {
-      // Plain replace: index is the only route in the stack, so there is
-      // nothing beneath to clear and nothing dismissTo can empty.
+      if (redirected.current) return;
+      redirected.current = true;
       router.replace(target);
     }, 2000);
     return () => clearTimeout(timer);
-  }, [isLoading]);
+  }, [hasOnboarded, isLoggedIn, isLoading]);
 
   return (
     <View style={styles.root}>

@@ -389,8 +389,11 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
     loadedOrdersFor.current = key;
     // mine=all: one pull returns BOTH purchase history and sales — every
     // screen (buyer orders, seller dashboard/orders) filters locally.
-    serverApi.getOrders('all').then((res) => {
-      if (!res.ok || !res.data?.orders) return; // offline -> keep cached orders
+     serverApi.getOrders('all').then((res) => {
+       if (!res.ok || !res.data?.orders) {
+         setLoaded(true);
+         return;
+       }
       serverAuthoritative.current = true;
       // Merge, never wholesale replace: the server row lacks client-side
       // fields (deliveryFee/promoCode/booking/reviewAnonymous) that have no

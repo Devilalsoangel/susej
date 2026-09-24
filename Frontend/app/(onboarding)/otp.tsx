@@ -100,9 +100,8 @@ export default function OtpScreen() {
       setError(phoneWarn());
       return;
     }
-    const full = fullPhone();
-    updateUser({ phone: full });
-    setError('');
+     const full = fullPhone();
+     setError('');
     setSending(true);
     try {
       // Real server-side code issuance (hashed, expiring, single-use).
@@ -163,9 +162,9 @@ export default function OtpScreen() {
       if (res.ok && res.data?.devCode) {
         // Signup screen: explicit creation consent.
         const verifyRes = await serverLogin(full, res.data.devCode, { create: true });
-        if (verifyRes.ok) {
-          router.replace('/(onboarding)/location');
-        } else {
+         if (verifyRes.ok) {
+           return;
+         } else {
           setError('Dev bypass failed');
         }
       } else {
@@ -189,11 +188,9 @@ export default function OtpScreen() {
       // Server-first signup — explicit create:true (this is the signup
       // screen). Sign-in typos elsewhere get needsSignup, never ghosts.
       const res = await serverLogin(fullPhone(), finalCode, { create: true });
-      if (res.ok) {
-        // Forward within onboarding: replace (never push) — back to a
-        // consumed OTP screen after login makes no sense.
-        router.replace('/(onboarding)/location');
-      } else {
+       if (res.ok) {
+         return;
+       } else {
         // Expired code: row is gone server-side — issue a fresh one instead
         // of stranding the user on "no code requested" (same as login).
         if (typeof res.error === 'string' && res.error.toLowerCase().includes('expired')) {

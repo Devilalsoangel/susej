@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { sessionStorage } from '../utils/sessionStorage';
 import { serverApi, onSessionExpired } from '../utils/serverApi';
@@ -84,93 +84,116 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [tokenSeq, setTokenSeq] = useState(0);
   // Raised on 401 session-death; login shows it until keystroke/success.
   const [expiredNotice, setExpiredNotice] = useState(false);
+  const authTransitionRef = useRef<Promise<void> | null>(null);
   const clearExpiredNotice = useCallback(() => setExpiredNotice(false), []);
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const storedUser = await sessionStorage.getUser();
-        const session = await sessionStorage.getSession();
-        if (storedUser && session) {
-          setUser(storedUser);
-          setIsLoggedIn(true);
-          const perUser = await AsyncStorage.getItem(ONBOARDED_PREFIX + storedUser.username);
-          const global = await AsyncStorage.getItem(ONBOARDED_KEY);
-          setHasOnboarded(perUser === 'true' || global === 'true');
-          const wPer = await AsyncStorage.getItem(FEED_WELCOME_PREFIX + storedUser.username);
-          const wGlob = await AsyncStorage.getItem(FEED_WELCOME_KEY_BASE);
-          if (wPer === 'true' || wGlob === 'true') setHasSeenFeedWelcomeState(true);
-          if (wPer === null && wGlob === 'true') {
-            try { await AsyncStorage.setItem(FEED_WELCOME_PREFIX + storedUser.username, 'true'); } catch {}
-          }
-        } else {
-          const onboarded = await AsyncStorage.getItem(ONBOARDED_KEY);
-          setHasOnboarded(onboarded === 'true');
-        }
-      } catch {
-      }
-      // onboardingStep is per-user when logged in, global fallback when logged out
-      const uForStep = (await sessionStorage.getUser())?.username ?? null;
-      const stepKey = uForStep ? `${ONBOARDING_STEP_KEY_BASE}:${uForStep}` : ONBOARDING_STEP_KEY_BASE;
-      const legacyStepKey = ONBOARDING_STEP_KEY_BASE;
-      const [welcome, step, legacyStep] = await Promise.all([
-        AsyncStorage.getItem(FEED_WELCOME_KEY_BASE),
-        AsyncStorage.getItem(stepKey),
-        stepKey !== legacyStepKey ? AsyncStorage.getItem(legacyStepKey) : Promise.resolve(null),
-      ]);
-      // Only use global welcome when no user is loaded yet; per-user check above handles logged-in case
-      if (!hasSeenFeedWelcome) setHasSeenFeedWelcomeState(welcome === 'true');
-      let rawStep: string | null = step;
-      if (rawStep === null && legacyStep !== null) {
-        rawStep = legacyStep;
-        if (uForStep) { try { await AsyncStorage.setItem(stepKey, legacyStep); } catch {} }
-      }
-      const parsedStep = rawStep ? parseInt(rawStep, 10) : 1;
-      setOnboardingStepState(Number.isNaN(parsedStep) ? 1 : parsedStep);
-      setIsLoading(false);
-    })();
+  const waitForAuthTransition = useCallback(async () => {
+    const pending = authTransitionRef.current;
+    if (pending) await pending;
   }, []);
 
-  const login = useCallback(async (nextUser: User) => {
+  useEffect(() => {
+    let active = true;
+    let storedUser: User | null = null;
+    (async () => {
+      try {
+        const [userRecord, session] = await Promise.all([
+          sessionStorage.getUser(),
+          sessionStorage.getSession(),
+        ]);
+        if (!active) return;
+        if (userRecord && session) {
+          storedUser = userRecord as User;
+          setUser(storedUser);
+          setIsLoggedIn(true);
+          const [perUser, global, welcomePerUser, welcomeGlobal] = await Promise.all([
+            AsyncStorage.getItem(ONBOARDED_PREFIX + storedUser.username),
+            AsyncStorage.getItem(ONBOARDED_KEY),
+            AsyncStorage.getItem(FEED_WELCOME_PREFIX + storedUser.username),
+            AsyncStorage.getItem(FEED_WELCOME_KEY_BASE),
+          ]);
+          if (!active) return;
+          setHasOnboarded(perUser === 'true' || global === 'true');
+          setHasSeenFeedWelcomeState(welcomePerUser === 'true' || welcomeGlobal === 'true');
+          if (welcomePerUser === null && welcomeGlobal === 'true') {
+            await AsyncStorage.setItem(FEED_WELCOME_PREFIX + storedUser.username, 'true');
+          }
+        } else {
+          const [global, welcome] = await Promise.all([
+            AsyncStorage.getItem(ONBOARDED_KEY),
+            AsyncStorage.getItem(FEED_WELCOME_KEY_BASE),
+          ]);
+          if (!active) return;
+          setHasOnboarded(global === 'true');
+          setHasSeenFeedWelcomeState(welcome === 'true');
+        }
+      } catch {
+        if (active) {
+          setHasOnboarded(false);
+          setHasSeenFeedWelcomeState(false);
+        }
+      }
+      try {
+        const uForStep = storedUser?.username ?? null;
+        const stepKey = uForStep ? `${ONBOARDING_STEP_KEY_BASE}:${uForStep}` : ONBOARDING_STEP_KEY_BASE;
+        const legacyStepKey = ONBOARDING_STEP_KEY_BASE;
+        const [step, legacyStep] = await Promise.all([
+          AsyncStorage.getItem(stepKey),
+          stepKey !== legacyStepKey ? AsyncStorage.getItem(legacyStepKey) : Promise.resolve(null),
+        ]);
+        if (!active) return;
+        let rawStep: string | null = step;
+        if (rawStep === null && legacyStep !== null) {
+          rawStep = legacyStep;
+          if (uForStep) await AsyncStorage.setItem(stepKey, legacyStep);
+        }
+        const parsedStep = rawStep ? parseInt(rawStep, 10) : 1;
+        setOnboardingStepState(Number.isNaN(parsedStep) ? 1 : parsedStep);
+      } catch {
+        if (active) setOnboardingStepState(1);
+      } finally {
+        if (active) setIsLoading(false);
+      }
+    })();
+    return () => { active = false; };
+  }, []);
+
+  const login = useCallback(async (nextUser: User, accessToken = 'mock-token') => {
     if (!nextUser?.username || String(nextUser.username).trim().length < 2) {
       throw new Error('login requires valid username');
     }
-    // Internal only: serverLogin/serverEmailLogin use this to seed local state
-    // before overwriting with real susej_ token. Direct UI calls with mock users
-    // will create an unverified mock-token session that cannot access server.
+    if (accessToken === 'mock-token') {
+      await sessionStorage.saveUser(nextUser);
+      await sessionStorage.saveSession({ accessToken, refreshToken: 'mock-refresh' }, 1);
+    } else {
+      await sessionStorage.saveAuthenticatedSession(nextUser, accessToken);
+    }
+    const perUser = await AsyncStorage.getItem(ONBOARDED_PREFIX + nextUser.username);
+    let nextHasOnboarded = false;
+    if (perUser === null) {
+      const global = await AsyncStorage.getItem(ONBOARDED_KEY);
+      nextHasOnboarded = global === 'true';
+      if (nextHasOnboarded) {
+        await AsyncStorage.setItem(ONBOARDED_PREFIX + nextUser.username, 'true');
+      }
+    } else {
+      nextHasOnboarded = perUser === 'true';
+    }
+    const wPer = await AsyncStorage.getItem(FEED_WELCOME_PREFIX + nextUser.username);
+    let nextHasSeenFeedWelcome = false;
+    if (wPer === null) {
+      const wGlob = await AsyncStorage.getItem(FEED_WELCOME_KEY_BASE);
+      nextHasSeenFeedWelcome = wGlob === 'true';
+      if (nextHasSeenFeedWelcome) {
+        await AsyncStorage.setItem(FEED_WELCOME_PREFIX + nextUser.username, 'true');
+      }
+    } else {
+      nextHasSeenFeedWelcome = wPer === 'true';
+    }
+    setHasOnboarded(nextHasOnboarded);
+    setHasSeenFeedWelcomeState(nextHasSeenFeedWelcome);
     setUser(nextUser);
     setIsLoggedIn(true);
     setSessionSeq((n) => n + 1);
-    await sessionStorage.saveUser(nextUser);
-    await sessionStorage.saveSession(
-      { accessToken: 'mock-token', refreshToken: 'mock-refresh' },
-      1
-    );
-    const perUser = await AsyncStorage.getItem(ONBOARDED_PREFIX + nextUser.username);
-    if (perUser === null) {
-      const global = await AsyncStorage.getItem(ONBOARDED_KEY);
-      if (global === 'true') {
-        await AsyncStorage.setItem(ONBOARDED_PREFIX + nextUser.username, 'true');
-        setHasOnboarded(true);
-      } else {
-        setHasOnboarded(false);
-      }
-    } else {
-      setHasOnboarded(perUser === 'true');
-    }
-    // feed welcome per-user migration
-    const wPer = await AsyncStorage.getItem(FEED_WELCOME_PREFIX + nextUser.username);
-    if (wPer === null) {
-      const wGlob = await AsyncStorage.getItem(FEED_WELCOME_KEY_BASE);
-      if (wGlob === 'true') {
-        await AsyncStorage.setItem(FEED_WELCOME_PREFIX + nextUser.username, 'true');
-        setHasSeenFeedWelcomeState(true);
-      } else {
-        setHasSeenFeedWelcomeState(false);
-      }
-    } else {
-      setHasSeenFeedWelcomeState(wPer === 'true');
-    }
   }, []);
 
   // Identity-bound state must never render as another account's truth when
@@ -222,13 +245,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       '@susej_settings',
     ];
     await AsyncStorage.multiRemove(bases);
-    // Sweep per-user suffixed variants (@key:<username>): same-user re-login
-    // flashed stale rows before server sync; legacy cross forms leak.
-    try {
-      const all = await AsyncStorage.getAllKeys();
-      const suffixed = all.filter((k) => bases.some((b) => k.startsWith(`${b}:`)));
-      if (suffixed.length) await AsyncStorage.multiRemove(suffixed);
-    } catch {}
   }, []);
 
   // Identity reconciliation: once the real token is on disk, pull the
@@ -251,6 +267,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const serverLogin = useCallback(
     async (phone: string, code: string, opts?: { create?: boolean }): Promise<{ ok: boolean; error?: string; needsSignup?: boolean; attemptsLeft?: number; offline?: boolean }> => {
+      await waitForAuthTransition();
       const digits = phone.replace(/\D/g, '');
       // 1. Try the real server first - logs in a REAL user row, or (signup
       //    screens only) creates one with explicit consent. Sign-in typos get
@@ -261,10 +278,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // money state so it can never flash as the new account's truth.
         // Guarded: a storage throw here must never break the login handoff.
         await clearMoneyCache().catch(() => {});
-        await login(res.data.user as unknown as User);
-        // login() writes a mock token — overwrite it with the REAL server token
-        // so every serverApi call authenticates (getToken() only accepts susej_).
-        await sessionStorage.saveSession({ accessToken: res.data.token, refreshToken: '' }, 0);
+        await login(res.data.user as unknown as User, res.data.token);
         // Retry a revoke left pending by an offline logout: that old Bearer
         // is still live server-side until this kills it (new session proves
         // connectivity, so the retry is meaningful now).
@@ -291,16 +305,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       //    sign-in simply fails honestly until connectivity returns.
       return { ok: false, offline: true };
     },
-    [login, clearMoneyCache, reconcileIdentity]
+    [login, clearMoneyCache, reconcileIdentity, waitForAuthTransition]
   );
 
   const serverEmailLogin = useCallback(
     async (action: 'login' | 'register', email: string, password: string, name?: string) => {
+      await waitForAuthTransition();
       const res = await serverApi.emailAuth(action, email.trim().toLowerCase(), password, name);
       if (res.ok && res.data?.token) {
         await clearMoneyCache();
-        await login(res.data.user as unknown as User);
-        await sessionStorage.saveSession({ accessToken: res.data.token, refreshToken: '' }, 0);
+        await login(res.data.user as unknown as User, res.data.token);
         setTokenSeq((n) => n + 1);
         void reconcileIdentity(res.data.token);
         return { ok: true };
@@ -308,16 +322,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (res.error && res.error !== 'offline') return { ok: false, error: res.error };
       return { ok: false, offline: true };
     },
-    [login, clearMoneyCache, reconcileIdentity]
+    [login, clearMoneyCache, reconcileIdentity, waitForAuthTransition]
   );
 
   const serverGoogleLogin = useCallback(
     async (idToken: string, devBypass?: { email: string; name?: string }) => {
+      await waitForAuthTransition();
       const res = await serverApi.googleAuth(idToken, devBypass);
       if (res.ok && res.data?.token) {
         await clearMoneyCache();
-        await login(res.data.user as unknown as User);
-        await sessionStorage.saveSession({ accessToken: res.data.token, refreshToken: '' }, 0);
+        await login(res.data.user as unknown as User, res.data.token);
         setTokenSeq((n) => n + 1);
         void reconcileIdentity(res.data.token);
         return { ok: true };
@@ -325,36 +339,44 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (res.error && res.error !== 'offline') return { ok: false, error: res.error };
       return { ok: false, offline: true };
     },
-    [login, clearMoneyCache, reconcileIdentity]
+    [login, clearMoneyCache, reconcileIdentity, waitForAuthTransition]
   );
 
   const logout = useCallback(async () => {
-    // Revoke the Bearer server-side FIRST so a stolen token dies with the
-    // session instead of lingering for its 30-day TTL. A failed revoke
-    // (offline) is persisted as pending and retried on the next login —
-    // local wipe below still runs so the device never looks logged in.
-    const session = await sessionStorage.getSession().catch(() => null);
-    const token = session?.accessToken && session.accessToken.startsWith('susej_') ? session.accessToken : null;
-    if (token) {
-      try {
-        await serverApi.revokeSession(false, token);
-      } catch {
-        await AsyncStorage.setItem(PENDING_REVOKE_KEY, token).catch(() => {});
+    const existing = authTransitionRef.current;
+    if (existing) return existing;
+
+    const run = (async () => {
+      const session = await sessionStorage.getSession().catch(() => null);
+      const token = session?.accessToken && session.accessToken.startsWith('susej_') ? session.accessToken : null;
+
+      setUser(null);
+      setIsLoggedIn(false);
+      setHasOnboarded(false);
+      setSessionSeq((n) => n + 1);
+      setTokenSeq((n) => n + 1);
+      await sessionStorage.clearSession();
+      await AsyncStorage.removeItem(ONBOARDED_KEY).catch(() => {});
+      await AsyncStorage.multiRemove([ONBOARDING_STEP_KEY_BASE, FEED_WELCOME_KEY_BASE]).catch(() => {});
+
+      if (token) {
+        try {
+          const revoked = await serverApi.revokeSession(false, token);
+          if (!revoked.ok) await AsyncStorage.setItem(PENDING_REVOKE_KEY, token).catch(() => {});
+        } catch {
+          await AsyncStorage.setItem(PENDING_REVOKE_KEY, token).catch(() => {});
+        }
       }
+
+      await clearMoneyCache().catch(() => {});
+    })();
+
+    authTransitionRef.current = run;
+    try {
+      await run;
+    } finally {
+      if (authTransitionRef.current === run) authTransitionRef.current = null;
     }
-    setUser(null);
-    setIsLoggedIn(false);
-    setHasOnboarded(false);
-    setSessionSeq((n) => n + 1);
-    setTokenSeq((n) => n + 1);
-    await sessionStorage.clearSession();
-    await AsyncStorage.removeItem(ONBOARDED_KEY);
-    // Also drop the global onboarding mirrors: otherwise the next account on
-    // this device inherits the previous account's step/welcome/completion via
-    // the login migration (cross-account leak). Per-user keys are namespaced
-    // and safe; globals are the leak vector.
-    await AsyncStorage.multiRemove([ONBOARDING_STEP_KEY_BASE, FEED_WELCOME_KEY_BASE]).catch(() => {});
-    await clearMoneyCache();
   }, [clearMoneyCache]);
 
   /**

@@ -1,9 +1,9 @@
 import '../global.css';
-import { Stack } from 'expo-router';
+import { Stack, router } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { Platform, StyleSheet, View, Text } from 'react-native';
+import { Platform, StyleSheet, View, Text, ActivityIndicator } from 'react-native';
 // react-native-web throws "Cannot manually set color scheme" unless darkMode flag is 'class'.
 // Expo's web bootstrap sets data-color-scheme; this flag makes manual scheme setting legal.
 if (Platform.OS === 'web') {
@@ -20,9 +20,9 @@ import {
   Inter_700Bold,
 } from '@expo-google-fonts/inter';
 import * as SplashScreen from 'expo-splash-screen';
-import { useEffect, useState, Component, type ReactNode } from 'react';
+import { useEffect, useState, useRef, Component, type ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { applyTheme, AppearanceContext, THEME_STORAGE_KEY, type ThemeMode } from '../utils/theme';
+import { applyTheme, AppearanceContext, THEME_STORAGE_KEY, colors, type ThemeMode } from '../utils/theme';
 import { useAuth } from '../contexts/AuthContext';
 import { setLocale, LOCALE_STORAGE_KEY } from '../utils/i18n';
 import { AuthProvider } from '../contexts/AuthContext';
@@ -90,24 +90,61 @@ class RootCrashBoundary extends Component<{ children: ReactNode }, { error: Erro
  * navigate are render-only nulls now.
  */
 function RootNavigator() {
-  const { isLoggedIn, isLoading } = useAuth();
-  if (isLoading) return null;
+  const { isLoggedIn, isLoading, sessionSeq, hasOnboarded } = useAuth();
+  const navigatorKey = `${isLoggedIn ? 'auth' : 'guest'}:${sessionSeq}`;
+  const authBoundary = useRef<{ hasOnboarded: boolean; isLoggedIn: boolean; sessionSeq: number } | null>(null);
+
+  useEffect(() => {
+    if (isLoading) return;
+    const previous = authBoundary.current;
+    const current = { hasOnboarded, isLoggedIn, sessionSeq };
+    authBoundary.current = current;
+    if (!previous) return;
+    if (
+      previous.hasOnboarded === current.hasOnboarded &&
+      previous.isLoggedIn === current.isLoggedIn &&
+      previous.sessionSeq === current.sessionSeq
+    ) {
+      return;
+    }
+    const target = !isLoggedIn
+      ? '/login'
+      : hasOnboarded
+        ? '/(tabs)/feed'
+        : '/(onboarding)/location';
+    const timer = setTimeout(() => router.replace(target), 0);
+    return () => clearTimeout(timer);
+  }, [hasOnboarded, isLoading, isLoggedIn, sessionSeq]);
+
+  if (isLoading) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.surfaceContainerLowest }}>
+        <ActivityIndicator size="large" color={colors.primary} />
+      </View>
+    );
+  }
+
   if (!isLoggedIn) {
     return (
-      <Stack screenOptions={{ headerShown: false }} initialRouteName="login">
+      <Stack key={navigatorKey} screenOptions={{ headerShown: false }} initialRouteName="login">
         <Stack.Screen name="index" />
         <Stack.Screen name="login" />
         <Stack.Screen name="(onboarding)" />
       </Stack>
     );
   }
-  // File-based full app (identical chrome to before — headerless). The tree
-  // swap on the login flip is what kills back-into-account, not options.
-  return <Stack screenOptions={{ headerShown: false }} />;
+
+  return (
+    <Stack
+      key={navigatorKey}
+      screenOptions={{ headerShown: false }}
+      initialRouteName={hasOnboarded ? '(tabs)' : '(onboarding)'}
+    />
+  );
 }
 
 export default function RootLayout() {
-  const [loaded, error] = useFonts({
+  useFonts({
     Inter_400Regular,
     Inter_500Medium,
     Inter_600SemiBold,
@@ -138,63 +175,44 @@ export default function RootLayout() {
   }, [themeMode]);
 
   useEffect(() => {
-    if (loaded || error) {
-      SplashScreen.hideAsync();
-    }
-  }, [loaded, error]);
-
-  // First-paint insurance: slow webfonts must never hold the splash for
-  // seconds on cold start — fall back to system fonts after 2.5s.
-  useEffect(() => {
-    const t = setTimeout(() => {
-      SplashScreen.hideAsync().catch(() => {});
-    }, 2500);
-    return () => clearTimeout(t);
+    SplashScreen.hideAsync().catch(() => {});
   }, []);
-
-  if (!loaded && !error) {
-    return null;
-  }
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-    <SafeAreaProvider>
-      <AppearanceContext.Provider value={{ themeMode, setThemeMode }}>
-      <AuthProvider>
-      <FollowProvider>
-      <BookmarkProvider>
-        <PostProvider>
-          {/* Settings above Notifications: the bell honors the push toggle. */}
-          <SettingsProvider>
-            <NotificationProvider>
-              <CartProvider>
-                <OrderProvider>
-                  <CommunityProvider>
-  <RecentlyViewedProvider>
-  <HashtagProvider>
-<PromotionProvider>
-
-                        {/* Global offline strip — sits above every screen when device is offline */}
-                        <OfflineBanner />
-                        <StatusBar style={themeMode === 'dark' ? 'light' : 'dark'} />
-                        <RootCrashBoundary>
-                          <RootNavigator key={themeMode} />
-                        </RootCrashBoundary>
-</PromotionProvider>
-  </HashtagProvider>
-  </RecentlyViewedProvider>
-
-                  </CommunityProvider>
-                </OrderProvider>
-              </CartProvider>
-            </NotificationProvider>
-          </SettingsProvider>
-        </PostProvider>
-      </BookmarkProvider>
-    </FollowProvider>
-    </AuthProvider>
-      </AppearanceContext.Provider>
-    </SafeAreaProvider>
+      <SafeAreaProvider>
+        <AppearanceContext.Provider value={{ themeMode, setThemeMode }}>
+          <RootCrashBoundary>
+            <AuthProvider>
+              <FollowProvider>
+                <BookmarkProvider>
+                  <PostProvider>
+                    <SettingsProvider>
+                      <NotificationProvider>
+                        <CartProvider>
+                          <OrderProvider>
+                            <CommunityProvider>
+                              <RecentlyViewedProvider>
+                                <HashtagProvider>
+                                  <PromotionProvider>
+                                    <OfflineBanner />
+                                    <StatusBar style={themeMode === 'dark' ? 'light' : 'dark'} />
+                                    <RootNavigator key={themeMode} />
+                                  </PromotionProvider>
+                                </HashtagProvider>
+                              </RecentlyViewedProvider>
+                            </CommunityProvider>
+                          </OrderProvider>
+                        </CartProvider>
+                      </NotificationProvider>
+                    </SettingsProvider>
+                  </PostProvider>
+                </BookmarkProvider>
+              </FollowProvider>
+            </AuthProvider>
+          </RootCrashBoundary>
+        </AppearanceContext.Provider>
+      </SafeAreaProvider>
     </GestureHandlerRootView>
   );
 }

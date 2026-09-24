@@ -56,7 +56,8 @@ function MenuIcon({ icon }: { icon: string }) {
   );
 }
 
-type SettingsItem = { label: string; icon: string; route?: string; subtitle?: string };
+type SettingsToggleKey = 'pushNotifications' | 'emailNotifications';
+type SettingsItem = { label: string; icon: string; route?: string; subtitle?: string; toggleKey?: SettingsToggleKey };
 type SettingsSection = {
   title: string;
   items: SettingsItem[];
@@ -85,8 +86,8 @@ const sections: SettingsSection[] = [
   {
     title: 'NOTIFICATIONS',
     items: [
-      { label: 'Push Notifications', icon: 'bell' },
-      { label: 'Email Notifications', icon: 'email' },
+      { label: 'Push Notifications', icon: 'bell', toggleKey: 'pushNotifications' },
+      { label: 'Email Notifications', icon: 'email', toggleKey: 'emailNotifications' },
     ],
   },
   {
@@ -110,6 +111,16 @@ export default function SettingsScreen() {
   const { settings, updateSetting } = useSettings();
   const { logoutAndReset } = useAuth();
   const insets = useSafeAreaInsets();
+  const normalizedSearch = search.trim().toLowerCase();
+  const visibleSections = sections
+    .map((section) => ({
+      ...section,
+      items: section.items.filter((item) => {
+        if (!normalizedSearch) return true;
+        return `${item.label} ${item.subtitle ?? ''}`.toLowerCase().includes(normalizedSearch);
+      }),
+    }))
+    .filter((section) => section.items.length > 0 || (section.showToggle && normalizedSearch.includes(section.title.toLowerCase())));
 
   // App permissions — live status + tap to fire the OS popup
   const PERMS: Array<{ kind: PermKind; icon: string; title: string; subtitle: string }> = [
@@ -174,7 +185,16 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        {sections.map((section) => (
+        {visibleSections.length === 0 ? (
+          <View className="items-center px-8 py-16">
+            <Text className="font-inter-500 text-textPrimary" style={{ fontSize: 16, lineHeight: 24 }}>
+              No settings found
+            </Text>
+            <Text className="font-inter-400 text-textSecondary mt-1 text-center" style={{ fontSize: 13, lineHeight: 18 }}>
+              Try a different search.
+            </Text>
+          </View>
+        ) : visibleSections.map((section) => (
           <View key={section.title} className="mb-5 mx-5">
             {/* Section Title â€” ALL CAPS, light, letter-spaced (Figma) */}
 <Text
@@ -239,29 +259,64 @@ export default function SettingsScreen() {
               )}
 
               {/* Menu Items */}
-              {section.items.map((item, i, arr) => (
-                <View key={item.label}>
-                  <TouchableOpacity className="flex-row items-center justify-between px-4" style={{ height: 56 }} onPress={() => item.route && router.push(item.route)}>
-                    <View className="flex-row items-center flex-1 mr-4">
-                      <MenuIcon icon={item.icon} />
-                      <View className="ml-4 flex-1">
-                        <Text className="font-inter-500 text-textPrimary" style={{ fontSize: 16, lineHeight: 24 }}>
-                          {tr(item.label)}
-                        </Text>
-                        {item.subtitle && (
-                          <Text className="font-inter-400 text-textSecondary" style={{ fontSize: 12, lineHeight: 18 }}>
-                            {item.subtitle}
+              {section.items.map((item, i, arr) => {
+                const toggleValue = item.toggleKey ? settings[item.toggleKey] : false;
+                return (
+                  <View key={item.label}>
+                    <TouchableOpacity
+                      className="flex-row items-center justify-between px-4"
+                      style={{ height: 56 }}
+                      disabled={!item.route && !item.toggleKey}
+                      accessibilityRole={item.route || item.toggleKey ? 'button' : undefined}
+                      onPress={() => {
+                        if (item.route) router.push(item.route);
+                        else if (item.toggleKey) updateSetting(item.toggleKey, !toggleValue);
+                      }}
+                    >
+                      <View className="flex-row items-center flex-1 mr-4">
+                        <MenuIcon icon={item.icon} />
+                        <View className="ml-4 flex-1">
+                          <Text className="font-inter-500 text-textPrimary" style={{ fontSize: 16, lineHeight: 24 }}>
+                            {tr(item.label)}
                           </Text>
-                        )}
+                          {item.subtitle && (
+                            <Text className="font-inter-400 text-textSecondary" style={{ fontSize: 12, lineHeight: 18 }}>
+                              {item.subtitle}
+                            </Text>
+                          )}
+                        </View>
                       </View>
-                    </View>
-                    <ChevronRightIcon size={14} color={colors.secondary} style={{ opacity: 0.6 } as any} />
-                  </TouchableOpacity>
-                  {i < arr.length - 1 && (
-                    <View className="mx-4" style={{ height: 1, backgroundColor: colors.surfaceContainerHigh, opacity: 0.3 }} />
-                  )}
-                </View>
-              ))}
+                      {item.toggleKey ? (
+                        <View
+                          style={{
+                            width: 44,
+                            height: 24,
+                            borderRadius: 9999,
+                            backgroundColor: toggleValue ? colors.primaryContainer : colors.secondaryContainer,
+                            justifyContent: 'center',
+                            paddingHorizontal: 2,
+                          }}
+                        >
+                          <View
+                            style={{
+                              width: 20,
+                              height: 20,
+                              borderRadius: 9999,
+                              backgroundColor: colors.surfaceContainerLowest,
+                              alignSelf: toggleValue ? 'flex-end' : 'flex-start',
+                            }}
+                          />
+                        </View>
+                      ) : (
+                        <ChevronRightIcon size={14} color={colors.secondary} style={{ opacity: 0.6 } as any} />
+                      )}
+                    </TouchableOpacity>
+                    {i < arr.length - 1 && (
+                      <View className="mx-4" style={{ height: 1, backgroundColor: colors.surfaceContainerHigh, opacity: 0.3 }} />
+                    )}
+                  </View>
+                );
+              })}
             </View>
           </View>
         ))}

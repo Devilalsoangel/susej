@@ -45,16 +45,22 @@ export const DEFAULT_APP_KEY = 'dev-key';
 
 let cachedUrl: string | null = null;
 let cachedKey: string | null = null;
+let urlPromise: Promise<string> | null = null;
+let keyPromise: Promise<string> | null = null;
 
 export async function getAdminUrl(): Promise<string> {
   if (cachedUrl) return cachedUrl;
-  try {
-    const stored = await AsyncStorage.getItem(ADMIN_URL_KEY);
-    cachedUrl = stored && stored.trim() ? stored.trim() : DEFAULT_ADMIN_URL;
-  } catch {
-    cachedUrl = DEFAULT_ADMIN_URL;
-  }
-  return cachedUrl;
+  if (urlPromise) return urlPromise;
+  urlPromise = (async () => {
+    try {
+      const stored = await AsyncStorage.getItem(ADMIN_URL_KEY);
+      cachedUrl = stored && stored.trim() ? stored.trim() : DEFAULT_ADMIN_URL;
+    } catch {
+      cachedUrl = DEFAULT_ADMIN_URL;
+    }
+    return cachedUrl;
+  })().finally(() => { urlPromise = null; });
+  return urlPromise;
 }
 
 export function setAdminUrl(url: string) {
@@ -64,13 +70,17 @@ export function setAdminUrl(url: string) {
 
 export async function getAppKey(): Promise<string> {
   if (cachedKey) return cachedKey;
-  try {
-    const stored = await AsyncStorage.getItem(APP_KEY_KEY);
-    cachedKey = stored && stored.trim() ? stored.trim() : DEFAULT_APP_KEY;
-  } catch {
-    cachedKey = DEFAULT_APP_KEY;
-  }
-  return cachedKey;
+  if (keyPromise) return keyPromise;
+  keyPromise = (async () => {
+    try {
+      const stored = await AsyncStorage.getItem(APP_KEY_KEY);
+      cachedKey = stored && stored.trim() ? stored.trim() : DEFAULT_APP_KEY;
+    } catch {
+      cachedKey = DEFAULT_APP_KEY;
+    }
+    return cachedKey;
+  })().finally(() => { keyPromise = null; });
+  return keyPromise;
 }
 
 /** Resolve the logged-in user so admin rows carry real identity, not "App User". */

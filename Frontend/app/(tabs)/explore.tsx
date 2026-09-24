@@ -1,11 +1,13 @@
 import { useState, useMemo, useCallback } from 'react';
-import { View, Text, TextInput, FlatList, TouchableOpacity, Image, Keyboard, Modal, ScrollView, Switch } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { View, Text, TextInput, FlatList, TouchableOpacity, Image, Keyboard, Modal, ScrollView, Switch, ActivityIndicator } from 'react-native';
 import Svg, { Path, Circle } from 'react-native-svg';
 import { router, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { SearchIcon, CloseIcon, BellIcon, BagIcon } from '../../utils/icons';
 import { colors, formatPrice } from '../../utils/theme';
 import { usePosts } from '../../contexts/PostContext';
+import { useAuth } from '../../contexts/AuthContext';
 import { useCart } from '../../contexts/CartContext';
 import { usePromotions } from '../../contexts/PromotionContext';
 import { hasRealImage, resolveListingImage } from '../../utils/productImages';
@@ -123,6 +125,59 @@ const SORT_OPTIONS = [
 
 type SortKey = (typeof SORT_OPTIONS)[number]['key'];
 
+type ExploreMeta = {
+  at: number;
+  categories: Array<{ name: string; slug: string }>;
+  promotions: any[];
+};
+
+const EXPLORE_META_TTL = 60_000;
+const EXPLORE_META_KEY_BASE = '@susej_explore_meta';
+const exploreMetaMemory = new Map<string, ExploreMeta>();
+const exploreMetaFlights = new Map<string, Promise<ExploreMeta>>();
+
+async function loadExploreMeta(key: string): Promise<ExploreMeta> {
+  const memory = exploreMetaMemory.get(key);
+  if (memory && Date.now() - memory.at < EXPLORE_META_TTL) return memory;
+  const inFlight = exploreMetaFlights.get(key);
+  if (inFlight) return inFlight;
+  const flight = (async () => {
+    let stored: ExploreMeta | null = null;
+    try {
+      const raw = await AsyncStorage.getItem(`${EXPLORE_META_TTL}:${key}`);
+      if (raw) {
+        const parsed = JSON.parse(raw) as ExploreMeta;
+        if (parsed && typeof parsed.at === 'number' && Array.isArray(parsed.categories) && Array.isArray(parsed.promotions)) stored = parsed;
+      }
+    } catch {}
+    if (stored && Date.now() - stored.at < EXPLORE_META_TTL) {
+      exploreMetaMemory.set(key, stored);
+      return stored;
+    }
+    const [catsRes, promosRes] = await Promise.all([serverApi.getCategories(), serverApi.getPromotions()]);
+    const categories = catsRes.ok && catsRes.data?.categories?.length
+      ? catsRes.data.categories.map((item) => ({ name: String(item.name), slug: String(item.slug) }))
+      : stored?.categories || [];
+    const promotions = promosRes.ok && promosRes.data?.promotions
+      ? promosRes.data.promotions
+      : stored?.promotions || [];
+    if (!catsRes.ok && !promosRes.ok && stored) {
+      exploreMetaMemory.set(key, stored);
+      return stored;
+    }
+    const next = { at: Date.now(), categories, promotions };
+    exploreMetaMemory.set(key, next);
+    AsyncStorage.setItem(`${EXPLORE_META_TTL}:${key}`, JSON.stringify(next)).catch(() => {});
+    return next;
+  })();
+  exploreMetaFlights.set(key, flight);
+  try {
+    return await flight;
+  } finally {
+    if (exploreMetaFlights.get(key) === flight) exploreMetaFlights.delete(key);
+  }
+}
+
 interface ExploreFilters {
   price: string;
   condition: string;
@@ -139,34 +194,21 @@ export default function ExploreScreen() {
   const [filterVisible, setFilterVisible] = useState(false);
   const insets = useSafeAreaInsets();
   const { cartCount } = useCart();
-  const { posts, hiddenPostIds = [], mutedSellers = [] } = usePosts() as { posts: import('../../contexts/PostContext').Post[]; hiddenPostIds?: string[]; mutedSellers?: string[] };
+  const { posts, hiddenPostIds = [], mutedSellers = [], serverSettled, serverError, refresh: refreshPosts } = usePosts() as { posts: import('../../contexts/PostContext').Post[]; hiddenPostIds?: string[]; mutedSellers?: string[]; serverSettled: boolean; serverError: boolean; refresh: () => Promise<boolean> };
+  const { user } = useAuth();
+  const metaKey = user?.username?.trim().toLowerCase() || 'guest';
   const [serverPromos, setServerPromos] = useState<any[]>([]);
-  useFocusEffect(useCallback(() => {
-    let alive = true;
-    serverApi.getPromotions().then((res) => {
-      if (!alive) return;
-      setServerPromos(res.ok && res.data?.promotions ? res.data.promotions : []);
-    }).catch(()=>{});
-    return () => { alive = false; };
-  }, []));
-  const activePromos = useMemo(() => serverPromos.filter((p) => p.status === 'active'), [serverPromos]);
-
-  // Admin-owned category catalog (DB). Chips render what admins configured;
-  // 'All' is the only app-local chip. Offline -> All-only (honest).
   const [adminCategories, setAdminCategories] = useState<Array<{ name: string; slug: string }>>([]);
-  useFocusEffect(
-    useCallback(() => {
-      let active = true;
-      serverApi.getCategories().then((res) => {
-        if (!active) return;
-        const cats = res.ok && res.data?.categories?.length ? res.data.categories : [];
-        setAdminCategories(cats.map((c) => ({ name: c.name, slug: c.slug })));
-      });
-      return () => {
-        active = false;
-      };
-    }, [])
-  );
+  useFocusEffect(useCallback(() => {
+    let active = true;
+    loadExploreMeta(metaKey).then((meta) => {
+      if (!active) return;
+      setServerPromos(meta.promotions);
+      setAdminCategories(meta.categories);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [metaKey]));
+  const activePromos = useMemo(() => serverPromos.filter((p: { status?: string }) => p.status === 'active'), [serverPromos]);
   const categories = useMemo(() => ['All', ...adminCategories.map((c) => c.name)], [adminCategories]);
 
   const pricePreset = PRICE_PRESETS.find((p) => p.key === filters.price) ?? PRICE_PRESETS[0];
@@ -209,7 +251,12 @@ export default function ExploreScreen() {
         String(p.title ?? '').toLowerCase().includes(q) ||
         String(p.description ?? '').toLowerCase().includes(q) ||
         String(p.sellerUsername ?? '').toLowerCase().includes(q) ||
-        String(p.category ?? '').toLowerCase().includes(q)
+        String(p.sellerName ?? '').toLowerCase().includes(q) ||
+        String(p.category ?? '').toLowerCase().includes(q) ||
+        String(p.brand ?? '').toLowerCase().includes(q) ||
+        String(p.sellerLocation ?? '').toLowerCase().includes(q) ||
+        String(p.listingLocation ?? '').toLowerCase().includes(q) ||
+        (p.subCategories || []).some((value) => String(value).toLowerCase().includes(q))
       );
     }
     if (selectedCategory !== 'All') out = out.filter((p) => matchesCategory(p.category, selectedCategory));
@@ -282,24 +329,32 @@ export default function ExploreScreen() {
         keyExtractor={(item) => item.id}
         contentContainerClassName="px-5 pb-24"
         columnWrapperClassName="gap-3"
-        ListEmptyComponent={
-          <View className="items-center py-16 px-4">
-            <Text className="font-inter-500 text-textSecondary" style={{ fontSize: 15, lineHeight: 22 }}>
-              {hasActiveFilters ? 'No items match your filters' : 'No items yet'}
-            </Text>
-            {hasActiveFilters ? (
-              <TouchableOpacity
-                className="mt-4 h-11 px-6 items-center justify-center rounded-figma-full"
-                style={{ backgroundColor: colors.surfaceContainerLow }}
-                onPress={clearAllFilters}
-              >
-                <Text className="font-inter-600" style={{ fontSize: 13, lineHeight: 16, color: colors.textPrimary }}>
-                  Clear filters
-                </Text>
-              </TouchableOpacity>
-            ) : null}
-          </View>
-        }
+         ListEmptyComponent={
+           !serverSettled && !serverError && posts.length === 0 ? (
+             <View className="items-center py-16 px-4">
+               <ActivityIndicator color={colors.primary} />
+               <Text className="font-inter-400 text-textSecondary mt-3" style={{ fontSize: 13 }}>Loading marketplace…</Text>
+             </View>
+           ) : serverError ? (
+             <View className="items-center py-16 px-4">
+               <Text className="font-inter-500 text-textSecondary text-center" style={{ fontSize: 15, lineHeight: 22 }}>We couldn't load listings right now.</Text>
+               <TouchableOpacity className="mt-4 h-11 px-6 items-center justify-center rounded-figma-full" style={{ backgroundColor: colors.primaryContainer }} onPress={() => { void refreshPosts(); }}>
+                 <Text className="font-inter-600 text-white" style={{ fontSize: 13 }}>Try again</Text>
+               </TouchableOpacity>
+             </View>
+           ) : (
+             <View className="items-center py-16 px-4">
+               <Text className="font-inter-500 text-textSecondary" style={{ fontSize: 15, lineHeight: 22 }}>
+                 {hasActiveFilters ? 'No items match your filters' : 'No items yet'}
+               </Text>
+               {hasActiveFilters ? (
+                 <TouchableOpacity className="mt-4 h-11 px-6 items-center justify-center rounded-figma-full" style={{ backgroundColor: colors.surfaceContainerLow }} onPress={clearAllFilters}>
+                   <Text className="font-inter-600" style={{ fontSize: 13, lineHeight: 16, color: colors.textPrimary }}>Clear filters</Text>
+                 </TouchableOpacity>
+               ) : null}
+             </View>
+           )
+         }
         ListHeaderComponent={
           <View className="mb-4">
             {/* Search Bar — Figma: light lavender bg, blue search icon, compact height */}
@@ -308,7 +363,7 @@ export default function ExploreScreen() {
               <TextInput
                 className="flex-1 ml-3 font-inter-400 text-textPrimary h-full"
                 style={{ fontSize: 16 }}
-                placeholder="Search for items, brands, or sellers..."
+                 placeholder="Search people, products, places..."
                 placeholderTextColor={colors.secondary}
                 value={search}
                 onChangeText={setSearch}

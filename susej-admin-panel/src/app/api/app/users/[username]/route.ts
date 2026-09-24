@@ -1,35 +1,64 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
-import { getAppUser } from "@/lib/app-auth";
+
+function canonicalUsername(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value
+    .normalize("NFKC")
+    .trim()
+    .replace(/^@+/, "")
+    .trim()
+    .toLowerCase();
+}
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ username: string }> }) {
-  const { username } = await params;
+  const { username: rawUsername } = await params;
+  const username = canonicalUsername(rawUsername);
   const prisma = await getPrisma();
   if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
+  if (!username) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
-  const user = await prisma.user.findUnique({ where: { username } });
-  if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
+  const exactUser = await prisma.user.findFirst({
+    where: { username: { equals: username, mode: "insensitive" } },
+    orderBy: { joinedAt: "desc" },
+  });
+  const user = exactUser ?? await prisma.user.findFirst({
+    where: {
+      username: { not: null },
+      OR: [
+        { username: { contains: username, mode: "insensitive" } },
+        { name: { contains: username, mode: "insensitive" } },
+        { businessName: { contains: username, mode: "insensitive" } },
+        { location: { contains: username, mode: "insensitive" } },
+      ],
+    },
+    orderBy: [{ isSeller: "desc" }, { joinedAt: "desc" }],
+  });
+  if (!user || !user.username) return NextResponse.json({ error: "User not found" }, { status: 404 });
+  const storedUsername = user.username;
+  const publicUsername = canonicalUsername(storedUsername);
+  if (!publicUsername) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
   const [posts, followerCount, followingCount, reviewAgg, sellerOrders, storefrontReviews] = await Promise.all([
     prisma.post.findMany({
-      where: { authorUsername: username, status: "published" },
+      where: { authorUsername: storedUsername, status: "published" },
       orderBy: { createdAt: "desc" },
       take: 50,
     }),
-    prisma.follow.count({ where: { followed: username } }),
-    prisma.follow.count({ where: { follower: username } }),
+    prisma.follow.count({ where: { followed: storedUsername } }),
+    prisma.follow.count({ where: { follower: storedUsername } }),
     prisma.review.aggregate({
-      where: { sellerUsername: username },
+      where: { sellerUsername: storedUsername },
       _avg: { rating: true },
       _count: { id: true },
     }),
     prisma.order.findMany({
-      where: { sellerUsername: username, status: "delivered" },
+      where: { sellerUsername: storedUsername, status: "delivered" },
       select: { itemsList: true },
     }),
     // Real post-delivery buyer reviews shown on the public storefront.
     prisma.review.findMany({
-      where: { sellerUsername: username, status: "approved" },
+      where: { sellerUsername: storedUsername, status: "approved" },
       orderBy: { createdAt: "desc" },
       take: 20,
       select: { id: true, reviewerName: true, rating: true, text: true, productName: true, createdAt: true },
@@ -47,7 +76,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ user
   // Contact + hours are buyer-trust data the storefront renders cross-device.
   let shop: { tagline: string; hours: string; email: string; phone: string; address: string } | undefined;
   try {
-    const sellerRow = await prisma.seller.findUnique({ where: { id: `app_${username}` } }).catch(() => null) as {
+    const sellerRow = await prisma.seller.findUnique({ where: { id: `app_${storedUsername}` } }).catch(() => null) as {
       tagline?: unknown; hours?: unknown; email?: unknown; phone?: unknown; address?: unknown; kycStatus?: unknown;
     } | null;
     if (sellerRow && String(sellerRow.kycStatus ?? "") === "approved") {
@@ -64,7 +93,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ user
   return NextResponse.json({
     user: {
       name: user.name,
-      username: user.username,
+      username: publicUsername,
       avatar: user.avatar,
       bio: user.bio ?? "",
       location: user.location ?? "",
@@ -84,7 +113,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ user
     posts: posts.map((p) => ({
       id: p.id,
       sellerName: p.authorName,
-      sellerUsername: p.authorUsername ?? "",
+      sellerUsername: canonicalUsername(p.authorUsername),
       sellerLocation: p.sellerLocation ?? "",
       verified: p.verified,
       price: p.price ?? 0,

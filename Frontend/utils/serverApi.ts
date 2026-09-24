@@ -90,6 +90,100 @@ export interface ServerComment {
   time: number;
 }
 
+export type SearchMode = 'suggest' | 'results';
+export type SearchKind = 'user' | 'product' | 'category' | 'location';
+
+export interface SearchUserHit {
+  kind: 'user';
+  username: string;
+  name: string;
+  businessName: string;
+  displayName: string;
+  avatar: string | null;
+  location: string;
+  category: string;
+  isSeller: boolean;
+  verified: boolean;
+}
+
+export interface SearchProductVariantValue {
+  label: string;
+  priceDelta?: number;
+  stock?: number;
+}
+
+export interface SearchProductVariant {
+  name: string;
+  values: SearchProductVariantValue[];
+}
+
+export interface SearchProductHit {
+  kind: 'product';
+  id: string;
+  title: string;
+  description: string;
+  sellerName: string;
+  sellerUsername: string;
+  sellerLocation: string;
+  verified: boolean;
+  price: number;
+  mrp: number | null;
+  category: string;
+  subCategories: string[];
+  type: 'product' | 'service' | 'food_item';
+  hashtags: string[];
+  likes: number;
+  comments: number;
+  createdAt: number;
+  isSold: boolean;
+  featured: boolean;
+  condition: string | null;
+  brand: string | null;
+  variants: SearchProductVariant[] | null;
+  stockLeft: number | null;
+  negotiable: boolean | null;
+  deliveryMode: string | null;
+  images: string[];
+  image: string;
+}
+
+export interface SearchCategoryHit {
+  kind: 'category';
+  id: string;
+  name: string;
+  slug: string;
+  icon: string | null;
+  bannerImage: string | null;
+  featured: boolean;
+  parentId: string | null;
+  parentName: string | null;
+  parentSlug: string | null;
+  children: Array<{ id: string; name: string; slug: string }>;
+}
+
+export interface SearchLocationHit {
+  kind: 'location';
+  label: string;
+  count: number;
+  userCount: number;
+  postCount: number;
+}
+
+export type SearchHit = SearchUserHit | SearchProductHit | SearchCategoryHit | SearchLocationHit;
+export type SearchCounts = Record<SearchKind, number> & { total: number };
+
+export interface SearchResponse {
+  query: string;
+  mode: SearchMode;
+  types: SearchKind[];
+  limit: number;
+  hits: SearchHit[];
+  counts: SearchCounts;
+  degraded: boolean;
+  unavailable: SearchKind[];
+  hasMore: boolean;
+}
+
 async function getToken(): Promise<string | null> {
   const session = await sessionStorage.getSession();
   return session?.accessToken && session.accessToken.startsWith('susej_') ? session.accessToken : null;
@@ -104,7 +198,18 @@ export function onSessionExpired(cb: () => void): void {
   expiredListener = cb;
 }
 
-async function request<T>(path: string, options: { method?: string; body?: unknown; timeoutMs?: number; retry?: boolean; authToken?: string } = {}, attempt = 0): Promise<ApiResult<T>> {
+async function expireIfCurrentToken(token: string): Promise<void> {
+  const expired = await sessionStorage.clearSessionIfToken(token);
+  if (!expired) return;
+  try {
+    expiredListener?.();
+  } catch {}
+}
+
+const requestFlights = new Map<string, Promise<ApiResult<unknown>>>();
+const appKeyRequestFlights = new Map<string, Promise<ApiResult<unknown>>>();
+
+async function performRequest<T>(path: string, options: { method?: string; body?: unknown; timeoutMs?: number; retry?: boolean; authToken?: string } = {}, attempt = 0): Promise<ApiResult<T>> {
   try {
     const base = await getAdminUrl();
     // Explicit authToken (pending-revoke of a previous session) bypasses the
@@ -137,10 +242,7 @@ async function request<T>(path: string, options: { method?: string; body?: unkno
       // Dead Bearer (revoked server-side, rotated, or forged): never present
       // cache as live. Wipe the token and tell the app to force re-auth.
       if (res.status === 401 && token && !path.startsWith('/auth')) {
-        await sessionStorage.clearSession().catch(() => {});
-        try {
-          expiredListener?.();
-        } catch {}
+        await expireIfCurrentToken(token);
         return { ok: false, data: null, error: 'session-expired' };
       }
       return { ok: false, data: null, error: err, ...(needsSignup ? { needsSignup: true } : {}), ...(typeof attemptsLeft === 'number' ? { attemptsLeft } : {}) };
@@ -156,16 +258,32 @@ async function request<T>(path: string, options: { method?: string; body?: unkno
     const safeLane = method === 'GET' || (method === 'PATCH' && path === '/users/me');
     if (err === 'server-unreachable' && options.retry !== false && safeLane && attempt < 1) {
       await new Promise((r) => setTimeout(r, 800));
-      return request<T>(path, options, attempt + 1);
+       return performRequest<T>(path, options, attempt + 1);
     }
     return { ok: false, data: null, error: err };
+  }
+}
+
+async function request<T>(path: string, options: { method?: string; body?: unknown; timeoutMs?: number; retry?: boolean; authToken?: string } = {}): Promise<ApiResult<T>> {
+  const method = options.method ?? 'GET';
+  if (method !== 'GET' || options.authToken !== undefined) return performRequest<T>(path, options);
+  const token = await getToken();
+  const key = `${token || ''}|${path}|${options.timeoutMs ?? ''}|${options.retry === false ? '0' : '1'}|${JSON.stringify(options.body ?? null)}`;
+  const existing = requestFlights.get(key) as Promise<ApiResult<T>> | undefined;
+  if (existing) return existing;
+  const flight = performRequest<T>(path, { ...options, authToken: token ?? '' });
+  requestFlights.set(key, flight as Promise<ApiResult<unknown>>);
+  try {
+    return await flight;
+  } finally {
+    if (requestFlights.get(key) === flight) requestFlights.delete(key);
   }
 }
 
 // App-key request against the admin /api/v1/* surface (platform-curated home
 // content). Carries BOTH x-app-key AND a Bearer token so the server's
 // parseWriteSession can resolve the real user identity.
-async function requestWithAppKey<T>(path: string, options: { method?: string; body?: unknown; timeoutMs?: number; retry?: boolean } = {}, attempt = 0): Promise<ApiResult<T>> {
+async function performRequestWithAppKey<T>(path: string, options: { method?: string; body?: unknown; timeoutMs?: number; retry?: boolean } = {}, attempt = 0): Promise<ApiResult<T>> {
   try {
     const [base, key, token] = await Promise.all([getAdminUrl(), getAppKey(), getToken()]);
     const controller = new AbortController();
@@ -200,10 +318,7 @@ async function requestWithAppKey<T>(path: string, options: { method?: string; bo
       // and /api/data/* checks the key first (ambiguous). No /auth exclusion:
       // this lane carries no auth routes.
       if (res.status === 401 && token && path.startsWith("/api/app/")) {
-        await sessionStorage.clearSession().catch(() => {});
-        try {
-          expiredListener?.();
-        } catch {}
+        await expireIfCurrentToken(token);
         return { ok: false, data: null, error: 'session-expired' };
       }
       return { ok: false, data: null, error: err };
@@ -215,9 +330,24 @@ async function requestWithAppKey<T>(path: string, options: { method?: string; bo
     // PUTs and banner syncs must never double-apply).
     if (err === 'server-unreachable' && options.retry !== false && (options.method ?? 'GET') === 'GET' && attempt < 1) {
       await new Promise((r) => setTimeout(r, 800));
-      return requestWithAppKey<T>(path, options, attempt + 1);
+       return performRequestWithAppKey<T>(path, options, attempt + 1);
     }
     return { ok: false, data: null, error: err };
+  }
+}
+
+async function requestWithAppKey<T>(path: string, options: { method?: string; body?: unknown; timeoutMs?: number; retry?: boolean } = {}): Promise<ApiResult<T>> {
+  if ((options.method ?? 'GET') !== 'GET') return performRequestWithAppKey<T>(path, options);
+  const token = await getToken();
+  const key = `${token || ''}|${path}|${options.timeoutMs ?? ''}|${options.retry === false ? '0' : '1'}|${JSON.stringify(options.body ?? null)}`;
+  const existing = appKeyRequestFlights.get(key) as Promise<ApiResult<T>> | undefined;
+  if (existing) return existing;
+  const flight = performRequestWithAppKey<T>(path, options);
+  appKeyRequestFlights.set(key, flight as Promise<ApiResult<unknown>>);
+  try {
+    return await flight;
+  } finally {
+    if (appKeyRequestFlights.get(key) === flight) appKeyRequestFlights.delete(key);
   }
 }
 
@@ -256,6 +386,14 @@ export const serverApi = {
     if (params.q) qs.set('q', params.q);
     const suffix = qs.toString() ? `?${qs.toString()}` : '';
     return request<{ posts: any[] }>(`/posts${suffix}`);
+  },
+  searchMarketplace: (params: { q: string; mode?: SearchMode; types?: SearchKind[]; limit?: number }) => {
+    const qs = new URLSearchParams();
+    qs.set('q', params.q);
+    if (params.mode) qs.set('mode', params.mode);
+    if (params.types?.length) qs.set('types', params.types.join(','));
+    if (typeof params.limit === 'number') qs.set('limit', String(params.limit));
+    return request<SearchResponse>(`/search?${qs.toString()}`, { timeoutMs: 10000 });
   },
   createPost: (post: Record<string, unknown>) => request<{ post: any }>('/posts', { method: 'POST', body: post }),
   getPost: (id: string) => request<{ post: any }>(`/posts/${encodeURIComponent(id)}`),
