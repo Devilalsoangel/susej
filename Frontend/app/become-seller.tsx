@@ -7,7 +7,6 @@ import { colors } from '../utils/theme';
 import { BackIcon, CheckIcon, CameraIcon, ShopIcon, StarIcon, LockArrowIcon, ArrowRightIcon } from '../utils/icons';
 import { useAuth } from '../contexts/AuthContext';
 import { isApprovedSeller } from '../utils/marketplace';
-import { sellerImages } from '../utils/screenImages';
 import { CATEGORY_TREE } from '../utils/categories';
 import { serverApi } from '../utils/serverApi';
 import { resolveImageUrl, shrinkForUpload } from '../utils/mediaUpload';
@@ -41,6 +40,15 @@ type SellerType = 'individual' | 'business';
 type IdType = 'aadhaar' | 'pan' | 'passport';
 
 const SHOP_CATEGORIES_FALLBACK = CATEGORY_TREE.map((c) => c.label);
+const EXACT_TEXT_PROPS = {
+  autoCorrect: false,
+  spellCheck: false,
+  autoComplete: 'off' as const,
+};
+
+function normalizeIdInput(value: string, maxLength: number) {
+  return value.toUpperCase().replace(/[^0-9A-Z]/g, '').slice(0, maxLength);
+}
 
 const BENEFITS = [
   { icon: 'post', title: 'Product Posts', desc: 'Your items become social posts with likes and comments.' },
@@ -62,6 +70,14 @@ function ImageIcon({ size = 24, color = colors.primaryContainer }: { size?: numb
       <Rect x="3" y="3" width="18" height="18" rx="3" stroke={color} strokeWidth="2" fill="none" />
       <Circle cx="8.5" cy="8.5" r="1.5" stroke={color} strokeWidth="2" fill="none" />
       <Path d="M21 15.5l-5-5L5 21" stroke={color} strokeWidth="2" fill="none" strokeLinejoin="round" />
+    </Svg>
+  );
+}
+
+function ChevronDownIcon({ size = 18, color = colors.textSecondary }: { size?: number; color?: string }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path d="M6 9l6 6 6-6" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
     </Svg>
   );
 }
@@ -143,6 +159,7 @@ export default function BecomeSellerScreen() {
   const [sellerType, setSellerType] = useState<SellerType | null>(null);
   const [businessName, setBusinessName] = useState('');
   const [category, setCategory] = useState('');
+  const [categoryOpen, setCategoryOpen] = useState(false);
   const [about, setAbout] = useState('');
   const [city, setCity] = useState('');
   const [pincode, setPincode] = useState('');
@@ -180,6 +197,7 @@ export default function BecomeSellerScreen() {
   const [gstCertUri, setGstCertUri] = useState<string | null>(null);
   const [gstCertUploaded, setGstCertUploaded] = useState(false);
   const [logoUri, setLogoUri] = useState<string | null>(null);
+  const [submittedLogoUrl, setSubmittedLogoUrl] = useState<string | null>(null);
   const [selfieAdded, setSelfieAdded] = useState(false);
   const [selfieUri, setSelfieUri] = useState<string | null>(null);
   const [agreeVerify, setAgreeVerify] = useState(false);
@@ -505,7 +523,10 @@ export default function BecomeSellerScreen() {
   };
 
   const pickLogo = async () => {
-    await pickImage((uri) => { setLogoUri(uri); });
+    await pickImage((uri) => {
+      setLogoUri(uri);
+      setSubmittedLogoUrl(null);
+    });
   };
 
   const takeSelfie = async () => {
@@ -570,8 +591,8 @@ export default function BecomeSellerScreen() {
     if (city.trim().length < 2) errs.shopCity = 'Enter your city';
     if (!/^\d{6}$/.test(pincode.trim())) errs.shopPin = 'Pincode must be exactly 6 digits';
     if (sellerType === 'business') {
-      if (!/^[0-9A-Z]{15}$/i.test(gstin.trim())) errs.shopGstin = 'GSTIN looks like 27ABCDE1234F1Z5 (15 characters)';
-      if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/i.test(pan.trim())) errs.shopPan = 'PAN looks like ABCDE1234F';
+      if (!/^[0-9A-Z]{15}$/i.test(gstin.trim())) errs.shopGstin = 'Enter a valid 15-character GSTIN';
+      if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/i.test(pan.trim())) errs.shopPan = 'Enter a valid 10-character PAN';
       if (!/^\d{9,18}$/.test(bankAccount.trim())) errs.shopBank = 'Bank account must be 9–18 digits';
     }
     if (!agreeTerms) errs.shopTerms = 'Please agree to the Seller Terms to continue';
@@ -621,10 +642,10 @@ export default function BecomeSellerScreen() {
       return null;
     }
     if (idType === 'pan') {
-      if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(num)) return 'PAN looks like ABCDE1234F (5 letters, 4 digits, 1 letter)';
+      if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(num)) return 'Enter a valid PAN number';
       return null;
     }
-    if (!/^[A-Z][0-9]{7}$/.test(num)) return 'Passport looks like M0000000 (1 letter + 7 digits)';
+    if (!/^[A-Z][0-9]{7}$/.test(num)) return 'Enter a valid passport number';
     return null;
   };
 
@@ -633,7 +654,7 @@ export default function BecomeSellerScreen() {
     if (nameOnId.trim().length < 3) errs.nameOnId = 'Enter your full name exactly as printed on the ID';
     const birth = parseDob(dob);
     if (!birth) {
-      errs.dob = 'Enter date of birth as DD-MM-YYYY';
+      errs.dob = 'Enter your date of birth';
     } else if (birth.getTime() > Date.now()) {
       errs.dob = 'Date of birth cannot be in the future';
     } else if (ageOn(birth, new Date()) < 18) {
@@ -782,6 +803,7 @@ export default function BecomeSellerScreen() {
           // against the admin base so documents render in every surface.
           const base = await getAdminUrl();
           const abs = (p: string) => resolveImageUrl(p, base);
+          if (logoUp?.ok && logoUp.data?.url) setSubmittedLogoUrl(abs(logoUp.data.url));
           updateUser({
             isSeller: true,
             verification: 'pending',
@@ -997,7 +1019,19 @@ export default function BecomeSellerScreen() {
 
   const showErr = (key: string) => (showFieldErrors ? fieldErrors[key] : undefined);
 
-  const SectionHead = ({ index, title, sub }: { index: string; title: string; sub: string }) => (
+  const FieldLabel = ({ label, required = false }: { label: string; required?: boolean }) => (
+    <Text
+      accessible
+      accessibilityLabel={required ? `${label}, required` : label}
+      className="font-inter-500 text-textSecondary mb-2"
+      style={{ fontSize: 13, lineHeight: 18 }}
+    >
+      {label}
+      {required ? <Text style={{ color: colors.error }}> *</Text> : null}
+    </Text>
+  );
+
+  const SectionHead = ({ index, title, sub, required = false }: { index: string; title: string; sub: string; required?: boolean }) => (
     <View className="flex-row items-start mt-6 mb-4">
       <View className="w-7 h-7 rounded-full items-center justify-center mr-3" style={{ backgroundColor: colors.primaryContainer }}>
         <Text className="font-inter-700 text-white" style={{ fontSize: 13, lineHeight: 18 }}>
@@ -1005,8 +1039,14 @@ export default function BecomeSellerScreen() {
         </Text>
       </View>
       <View className="flex-1">
-        <Text className="font-inter-600 text-textPrimary" style={{ fontSize: 15, lineHeight: 20 }}>
+        <Text
+          accessible
+          accessibilityLabel={required ? `${title}, required` : title}
+          className="font-inter-600 text-textPrimary"
+          style={{ fontSize: 15, lineHeight: 20 }}
+        >
           {title}
+          {required ? <Text style={{ color: colors.error }}> *</Text> : null}
         </Text>
         <Text className="font-inter-400 text-textSecondary mt-0.5" style={{ fontSize: 12, lineHeight: 16 }}>
           {sub}
@@ -1299,44 +1339,76 @@ export default function BecomeSellerScreen() {
               This becomes your public storefront
             </Text>
 
-            <Text className="font-inter-500 text-textSecondary mb-2" style={{ fontSize: 13, lineHeight: 18 }}>
-              Official Store Name · Required
-            </Text>
+            <FieldLabel label="Official store name" required />
             <View onLayout={(e) => { sectionY.current.sec_shop = e.nativeEvent.layout.y; }}>
               <View className="flex-row items-center px-4" style={{ height: 52, borderRadius: 16, backgroundColor: colors.surfaceContainer, borderWidth: showErr('shopName') ? 1 : 0, borderColor: colors.error }}>
                 <TextInput
+                  {...EXACT_TEXT_PROPS}
+                  autoCapitalize="none"
                   className="flex-1 font-inter-400 text-textPrimary"
                   style={{ fontSize: 14 }}
-                  placeholder="Elara Finds"
+                  placeholder="Enter your store name"
                   placeholderTextColor={colors.secondary}
                   value={businessName}
                   onChangeText={(t) => { setBusinessName(t); clearFieldError('shopName'); }}
+                  maxLength={80}
+                  returnKeyType="next"
                 />
               </View>
             </View>
             <FieldErr msg={showErr('shopName')} />
 
-            <Text className="font-inter-500 text-textSecondary mb-2" style={{ fontSize: 13, lineHeight: 18 }}>
-              Shop Category (one category per shop) · Required{isCategoryLocked ? ' · Locked' : ''}
+            <FieldLabel label="Shop category" required />
+            <Text className="font-inter-400 text-textSecondary mb-2" style={{ fontSize: 12, lineHeight: 16 }}>
+              One category per shop{isCategoryLocked ? ' · Locked' : ''}
             </Text>
             {isCategoryLocked ? (
-              <Text className="font-inter-400 mb-5" style={{ fontSize: 12, lineHeight: 16, color: colors.textSecondary }}>
-                Approved as {lockedCategory} — one category per shop. Contact support to change.
+              <Text className="font-inter-400 mb-3" style={{ fontSize: 12, lineHeight: 16, color: colors.textSecondary }}>
+                Approved as {lockedCategory} — contact support to change it.
               </Text>
             ) : null}
-            <View className="flex-row flex-wrap" style={{ gap: 8 }}>
-              {shopCategories.map((c) => {
-                const on = category === c;
-                const disabled = isCategoryLocked && c !== lockedCategory;
-                return (
-                  <TouchableOpacity key={c} onPress={() => { if (!disabled) { setCategory(c); clearFieldError('shopCategory'); } }} disabled={disabled} className="px-4 py-2.5 rounded-full" style={{ backgroundColor: on ? colors.primaryContainer : colors.surfaceContainer, opacity: disabled ? 0.45 : 1 }}>
-                    <Text className="font-inter-500" style={{ fontSize: 13, lineHeight: 18, color: on ? colors.onPrimary : colors.textPrimary }}>
-                      {c}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel="Shop category"
+              accessibilityState={{ expanded: categoryOpen, disabled: isCategoryLocked }}
+              disabled={isCategoryLocked}
+              onPress={() => setCategoryOpen((open) => !open)}
+              className="flex-row items-center px-4"
+              style={{ height: 52, borderRadius: 16, backgroundColor: colors.surfaceContainer, borderWidth: showErr('shopCategory') ? 1 : 0, borderColor: colors.error, opacity: isCategoryLocked ? 0.7 : 1 }}
+            >
+              <Text className="flex-1 font-inter-400 text-textPrimary" style={{ fontSize: 14 }}>
+                {category || 'Select a category'}
+              </Text>
+              <ChevronDownIcon size={18} color={isCategoryLocked ? colors.textSecondary : colors.primaryContainer} />
+            </TouchableOpacity>
+            {categoryOpen && !isCategoryLocked ? (
+              <View className="mt-2 overflow-hidden" style={{ borderRadius: 14, borderWidth: 1, borderColor: colors.outlineVariant, backgroundColor: colors.surfaceContainer }}>
+                <ScrollView nestedScrollEnabled style={{ maxHeight: 240 }}>
+                  {shopCategories.map((c) => {
+                    const selected = category === c;
+                    return (
+                      <TouchableOpacity
+                        key={c}
+                        accessibilityRole="menuitem"
+                        accessibilityState={{ selected }}
+                        onPress={() => {
+                          setCategory(c);
+                          setCategoryOpen(false);
+                          clearFieldError('shopCategory');
+                        }}
+                        className="flex-row items-center px-4 py-3"
+                        style={{ backgroundColor: selected ? colors.primaryContainer : 'transparent' }}
+                      >
+                        <Text className="flex-1 font-inter-500" style={{ fontSize: 14, lineHeight: 20, color: selected ? colors.onPrimary : colors.textPrimary }}>
+                          {c}
+                        </Text>
+                        {selected ? <CheckIcon size={16} color={colors.onPrimary} /> : null}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+            ) : null}
             <View className="mb-5">
               <FieldErr msg={showErr('shopCategory')} />
             </View>
@@ -1346,12 +1418,15 @@ export default function BecomeSellerScreen() {
             </Text>
             <View className="px-4 py-3 mb-5" style={{ borderRadius: 16, backgroundColor: colors.surfaceContainer }}>
               <TextInput
+                {...EXACT_TEXT_PROPS}
+                autoCapitalize="sentences"
                 className="font-inter-400 text-textPrimary"
                 style={{ fontSize: 14, minHeight: 70, textAlignVertical: 'top' }}
-                placeholder="Sustainable fashion and handcrafted accessories"
+                placeholder="Describe what you sell"
                 placeholderTextColor={colors.secondary}
                 value={about}
                 onChangeText={setAbout}
+                maxLength={300}
                 multiline
               />
             </View>
@@ -1359,20 +1434,16 @@ export default function BecomeSellerScreen() {
             <View onLayout={(e) => { sectionY.current.sec_shoploc = e.nativeEvent.layout.y; }}>
               <View className="flex-row" style={{ gap: 12 }}>
                 <View className="flex-1">
-                  <Text className="font-inter-500 text-textSecondary mb-2" style={{ fontSize: 13, lineHeight: 18 }}>
-                    City · Required
-                  </Text>
+                  <FieldLabel label="City" required />
                   <View className="flex-row items-center px-4" style={{ height: 52, borderRadius: 16, backgroundColor: colors.surfaceContainer, borderWidth: showErr('shopCity') ? 1 : 0, borderColor: colors.error }}>
-                    <TextInput className="flex-1 font-inter-400 text-textPrimary" style={{ fontSize: 14 }} placeholder="Mumbai" placeholderTextColor={colors.secondary} value={city} onChangeText={(t) => { setCity(t); clearFieldError('shopCity'); }} />
+                    <TextInput {...EXACT_TEXT_PROPS} autoCapitalize="words" className="flex-1 font-inter-400 text-textPrimary" style={{ fontSize: 14 }} placeholder="Enter your city" placeholderTextColor={colors.secondary} value={city} onChangeText={(t) => { setCity(t); clearFieldError('shopCity'); }} maxLength={80} />
                   </View>
                   <FieldErr msg={showErr('shopCity')} />
                 </View>
                 <View className="flex-1">
-                  <Text className="font-inter-500 text-textSecondary mb-2" style={{ fontSize: 13, lineHeight: 18 }}>
-                    Pincode · Required
-                  </Text>
+                  <FieldLabel label="Pincode" required />
                   <View className="flex-row items-center px-4" style={{ height: 52, borderRadius: 16, backgroundColor: colors.surfaceContainer, borderWidth: showErr('shopPin') ? 1 : 0, borderColor: colors.error }}>
-                    <TextInput className="flex-1 font-inter-400 text-textPrimary" style={{ fontSize: 14 }} placeholder="400001" placeholderTextColor={colors.secondary} value={pincode} onChangeText={(t) => { setPincode(t.replace(/[^0-9]/g, '').slice(0, 6)); clearFieldError('shopPin'); }} keyboardType="number-pad" />
+                    <TextInput {...EXACT_TEXT_PROPS} className="flex-1 font-inter-400 text-textPrimary" style={{ fontSize: 14 }} placeholder="Enter 6-digit pincode" placeholderTextColor={colors.secondary} value={pincode} onChangeText={(t) => { setPincode(t.replace(/[^0-9]/g, '').slice(0, 6)); clearFieldError('shopPin'); }} keyboardType="number-pad" maxLength={6} />
                   </View>
                   <FieldErr msg={showErr('shopPin')} />
                 </View>
@@ -1410,27 +1481,43 @@ export default function BecomeSellerScreen() {
 
             {sellerType === 'business' && (
               <View onLayout={(e) => { sectionY.current.sec_shopbiz = e.nativeEvent.layout.y; }}>
-                <Text className="font-inter-500 text-textSecondary mb-2" style={{ fontSize: 13, lineHeight: 18 }}>
-                  GSTIN · Required
-                </Text>
+                <FieldLabel label="GSTIN" required />
                 <View className="flex-row items-center px-4 mb-1" style={{ height: 52, borderRadius: 16, backgroundColor: colors.surfaceContainer, borderWidth: showErr('shopGstin') ? 1 : 0, borderColor: colors.error }}>
-                  <TextInput className="flex-1 font-inter-400 text-textPrimary" style={{ fontSize: 14 }} placeholder="27ABCDE1234F1Z5" placeholderTextColor={colors.secondary} value={gstin} onChangeText={(t) => { setGstin(t.toUpperCase().replace(/[^0-9A-Z]/g, '').slice(0, 15)); clearFieldError('shopGstin'); }} autoCapitalize="characters" />
+                  <TextInput
+                    {...EXACT_TEXT_PROPS}
+                    className="flex-1 font-inter-400 text-textPrimary"
+                    style={{ fontSize: 14 }}
+                    placeholder="Enter GSTIN"
+                    placeholderTextColor={colors.secondary}
+                    value={gstin}
+                    onChangeText={(t) => { setGstin(t.slice(0, 15)); clearFieldError('shopGstin'); }}
+                    onBlur={() => setGstin((value) => normalizeIdInput(value, 15))}
+                    autoCapitalize="characters"
+                    maxLength={15}
+                  />
                 </View>
                 <FieldErr msg={showErr('shopGstin')} />
 
-                <Text className="font-inter-500 text-textSecondary mb-2" style={{ fontSize: 13, lineHeight: 18 }}>
-                  PAN · Required
-                </Text>
+                <FieldLabel label="PAN" required />
                 <View className="flex-row items-center px-4 mb-1" style={{ height: 52, borderRadius: 16, backgroundColor: colors.surfaceContainer, borderWidth: showErr('shopPan') ? 1 : 0, borderColor: colors.error }}>
-                  <TextInput className="flex-1 font-inter-400 text-textPrimary" style={{ fontSize: 14 }} placeholder="ABCDE1234F" placeholderTextColor={colors.secondary} value={pan} onChangeText={(t) => { setPan(t.toUpperCase().replace(/[^0-9A-Z]/g, '').slice(0, 10)); clearFieldError('shopPan'); }} autoCapitalize="characters" />
+                  <TextInput
+                    {...EXACT_TEXT_PROPS}
+                    className="flex-1 font-inter-400 text-textPrimary"
+                    style={{ fontSize: 14 }}
+                    placeholder="Enter PAN"
+                    placeholderTextColor={colors.secondary}
+                    value={pan}
+                    onChangeText={(t) => { setPan(t.slice(0, 10)); clearFieldError('shopPan'); }}
+                    onBlur={() => setPan((value) => normalizeIdInput(value, 10))}
+                    autoCapitalize="characters"
+                    maxLength={10}
+                  />
                 </View>
                 <FieldErr msg={showErr('shopPan')} />
 
-                <Text className="font-inter-500 text-textSecondary mb-2" style={{ fontSize: 13, lineHeight: 18 }}>
-                  Bank account (for payouts) · Required
-                </Text>
+                <FieldLabel label="Bank account (for payouts)" required />
                 <View className="flex-row items-center px-4" style={{ height: 52, borderRadius: 16, backgroundColor: colors.surfaceContainer, borderWidth: showErr('shopBank') ? 1 : 0, borderColor: colors.error }}>
-                  <TextInput className="flex-1 font-inter-400 text-textPrimary" style={{ fontSize: 14 }} placeholder="Account number" placeholderTextColor={colors.secondary} value={bankAccount} onChangeText={(t) => { setBankAccount(t.replace(/[^0-9]/g, '').slice(0, 18)); clearFieldError('shopBank'); }} keyboardType="number-pad" />
+                  <TextInput {...EXACT_TEXT_PROPS} className="flex-1 font-inter-400 text-textPrimary" style={{ fontSize: 14 }} placeholder="Enter bank account number" placeholderTextColor={colors.secondary} value={bankAccount} onChangeText={(t) => { setBankAccount(t.replace(/[^0-9]/g, '').slice(0, 18)); clearFieldError('shopBank'); }} keyboardType="number-pad" maxLength={18} />
                 </View>
                 <FieldErr msg={showErr('shopBank')} />
                 <Text className="font-inter-400 text-textSecondary mt-1 mb-5" style={{ fontSize: 11, lineHeight: 15 }}>
@@ -1447,13 +1534,19 @@ export default function BecomeSellerScreen() {
             </Text>
 
             <View onLayout={(e) => { sectionY.current.sec_feeterms = e.nativeEvent.layout.y; }}>
-              <TouchableOpacity className="flex-row items-start mb-2" onPress={() => { setAgreeTerms(!agreeTerms); clearFieldError('shopTerms'); }}>
+              <TouchableOpacity
+                accessibilityRole="checkbox"
+                accessibilityLabel="Seller Terms agreement, required"
+                accessibilityState={{ checked: agreeTerms }}
+                className="flex-row items-start mb-2"
+                onPress={() => { setAgreeTerms(!agreeTerms); clearFieldError('shopTerms'); }}
+              >
                 <View className="w-5 h-5 rounded-md items-center justify-center mt-0.5" style={{ backgroundColor: agreeTerms ? colors.primaryContainer : colors.surfaceContainer, borderWidth: showErr('shopTerms') ? 1 : 0, borderColor: colors.error }}>
                   {agreeTerms && <CheckIcon size={13} color={colors.onPrimary} />}
                 </View>
                 <View className="flex-1 ml-2.5">
                   <Text className="font-inter-400 text-textSecondary" style={{ fontSize: 12, lineHeight: 17 }}>
-                    I agree to the Seller Terms — 8% commission per sale, pay-per-use promotions · Required
+                    I agree to the Seller Terms — 8% commission per sale, pay-per-use promotions
                   </Text>
                   <Text className="font-inter-600" style={{ fontSize: 11, lineHeight: 15, color: agreeTerms ? colors.primaryContainer : colors.error }}>
                     {agreeTerms ? 'Agreed' : 'Not agreed yet — tap the box to agree'}
@@ -1463,11 +1556,6 @@ export default function BecomeSellerScreen() {
               <FieldErr msg={showErr('shopTerms')} />
             </View>
 
-            <TouchableOpacity className="mt-4 self-start" onPress={() => setStep(1)}>
-              <Text className="font-inter-500" style={{ fontSize: 13, lineHeight: 18, color: colors.primaryContainer }}>
-                ← Back
-              </Text>
-            </TouchableOpacity>
           </>
         )}
 
@@ -1492,31 +1580,31 @@ export default function BecomeSellerScreen() {
 
             {/* Section 1 — who you are (CKYC personal details) */}
             <View onLayout={(e) => { sectionY.current.sec_who = e.nativeEvent.layout.y; }}>
-              <SectionHead index="1" title="Your details" sub="Name exactly as printed on the ID" />
+              <SectionHead index="1" title="Your details" sub="Name exactly as printed on the ID" required />
             </View>
-            <Text className="font-inter-500 text-textSecondary mb-2" style={{ fontSize: 13, lineHeight: 18 }}>
-              Full name (as on ID)
-            </Text>
+            <FieldLabel label="Full name (as on ID)" required />
             <View className="flex-row items-center px-4" style={{ height: 52, borderRadius: 16, backgroundColor: colors.surfaceContainer, borderWidth: showErr('nameOnId') ? 1 : 0, borderColor: colors.error }}>
               <TextInput
+                {...EXACT_TEXT_PROPS}
+                autoCapitalize="words"
                 className="flex-1 font-inter-400 text-textPrimary"
                 style={{ fontSize: 14 }}
-                placeholder="Aarav Sharma"
+                placeholder="Enter your full name"
                 placeholderTextColor={colors.secondary}
                 value={nameOnId}
                 onChangeText={(t) => { setNameOnId(t); clearFieldError('nameOnId'); }}
+                maxLength={100}
               />
             </View>
             <FieldErr msg={showErr('nameOnId')} />
 
-            <Text className="font-inter-500 text-textSecondary mb-2" style={{ fontSize: 13, lineHeight: 18 }}>
-              Date of birth
-            </Text>
+            <FieldLabel label="Date of birth" required />
             <View className="flex-row items-center px-4 mb-2" style={{ height: 52, borderRadius: 16, backgroundColor: colors.surfaceContainer, borderWidth: showErr('dob') ? 1 : 0, borderColor: colors.error }}>
               <TextInput
+                {...EXACT_TEXT_PROPS}
                 className="flex-1 font-inter-400 text-textPrimary"
                 style={{ fontSize: 14, letterSpacing: 2 }}
-                placeholder="DD-MM-YYYY"
+                placeholder="Enter date of birth"
                 placeholderTextColor={colors.secondary}
                 value={dob}
                 onChangeText={(t) => { setDob(formatDobInput(t)); clearFieldError('dob'); }}
@@ -1528,7 +1616,7 @@ export default function BecomeSellerScreen() {
 
             {/* Section 2 — ID proof */}
             <View onLayout={(e) => { sectionY.current.sec_iddoc = e.nativeEvent.layout.y; }}>
-              <SectionHead index="2" title="ID proof" sub="Choose a document and enter its number" />
+              <SectionHead index="2" title="ID proof" sub="Choose a document and enter its number" required />
             </View>
             {/* Segmented control */}
             <View className="flex-row p-1 mb-5" style={{ borderRadius: 14, backgroundColor: colors.surfaceContainer }}>
@@ -1560,20 +1648,20 @@ export default function BecomeSellerScreen() {
               })}
             </View>
 
-            <Text className="font-inter-500 text-textSecondary mb-2" style={{ fontSize: 13, lineHeight: 18 }}>
-              {idType === 'aadhaar' ? 'Aadhaar Number' : idType === 'pan' ? 'PAN Number' : 'Passport Number'}
-            </Text>
+            <FieldLabel label={idType === 'aadhaar' ? 'Aadhaar number' : idType === 'pan' ? 'PAN number' : 'Passport number'} required />
             <View className="flex-row items-center px-4" style={{ height: 52, borderRadius: 16, backgroundColor: colors.surfaceContainer, borderWidth: showErr('idNumber') ? 1 : 0, borderColor: colors.error }}>
               <TextInput
+                {...EXACT_TEXT_PROPS}
                 className="flex-1 font-inter-400 text-textPrimary tracking-widest"
                 style={{ fontSize: 14, letterSpacing: 2 }}
-                placeholder={idType === 'aadhaar' ? '0000 0000 0000' : idType === 'pan' ? 'ABCDE1234F' : 'M0000000'}
+                placeholder={idType === 'aadhaar' ? 'Enter Aadhaar number' : idType === 'pan' ? 'Enter PAN' : 'Enter passport number'}
                 placeholderTextColor={colors.secondary}
                 value={aadhaar}
                 onChangeText={(t) => {
-                  setAadhaar(t.replace(/[^0-9A-Za-z]/g, '').toUpperCase().slice(0, idType === 'pan' ? 10 : idType === 'passport' ? 8 : 12));
+                  setAadhaar(t.slice(0, idType === 'pan' ? 10 : idType === 'passport' ? 8 : 12));
                   clearFieldError('idNumber');
                 }}
+                onBlur={() => setAadhaar((value) => normalizeIdInput(value, idType === 'pan' ? 10 : idType === 'passport' ? 8 : 12))}
                 autoCapitalize="characters"
                 maxLength={idType === 'aadhaar' ? 12 : idType === 'pan' ? 10 : 8}
               />
@@ -1581,7 +1669,7 @@ export default function BecomeSellerScreen() {
             <FieldErr msg={showErr('idNumber')} />
 
             {/* Section 3 — document photos: front + back, both required */}
-            <SectionHead index="3" title="Document photos" sub="Front and back, clearly readable" />
+            <SectionHead index="3" title="Document photos" sub="Front and back, clearly readable" required />
             <DocBox
               title={`Front of ${idType === 'aadhaar' ? 'Aadhaar' : 'ID'}`}
               hint={`Front photo of your ${idType === 'aadhaar' ? 'Aadhaar' : idType === 'pan' ? 'PAN card' : 'passport'}`}
@@ -1601,7 +1689,7 @@ export default function BecomeSellerScreen() {
 
             {/* Section 4 — address proof (CKYC PoA) */}
             <View onLayout={(e) => { sectionY.current.sec_address = e.nativeEvent.layout.y; }}>
-              <SectionHead index="4" title="Address proof" sub={idType === 'aadhaar' ? 'Your Aadhaar back already covers this' : 'PAN and passport carry no address — upload a proof'} />
+              <SectionHead index="4" title="Address proof" sub={idType === 'aadhaar' ? 'Your Aadhaar back already covers this' : 'PAN and passport carry no address — upload a proof'} required={needsAddrUpload} />
             </View>
             {idType === 'aadhaar' ? (
               <TouchableOpacity className="flex-row items-start mb-2" onPress={() => setUseAadhaarAsAddress(!useAadhaarAsAddress)}>
@@ -1626,7 +1714,7 @@ export default function BecomeSellerScreen() {
 
             {sellerType === 'business' ? (
               <View onLayout={(e) => { sectionY.current.sec_business = e.nativeEvent.layout.y; }}>
-                <SectionHead index="5" title="Business documents" sub="Required for brand & company sellers" />
+                <SectionHead index="5" title="Business documents" sub="For brand and company sellers" required />
                 <DocBox
                   title="GST certificate"
                   hint="Photo or scan of your GST registration certificate"
@@ -1640,7 +1728,7 @@ export default function BecomeSellerScreen() {
 
             {/* Section — selfie + consent */}
             <View onLayout={(e) => { sectionY.current.sec_selfie = e.nativeEvent.layout.y; }}>
-              <SectionHead index={sellerType === 'business' ? '6' : '5'} title="Selfie check" sub="Hold your ID next to your face" />
+              <SectionHead index={sellerType === 'business' ? '6' : '5'} title="Selfie check" sub="Hold your ID next to your face" required />
             </View>
             <Text className="font-inter-500 text-textSecondary mb-2" style={{ fontSize: 13, lineHeight: 18 }}>
               Selfie with ID
@@ -1684,11 +1772,6 @@ export default function BecomeSellerScreen() {
               Documents are reviewed by our team before your store goes live
             </Text>
 
-            <TouchableOpacity className="self-start" onPress={() => setStep(2)}>
-              <Text className="font-inter-500" style={{ fontSize: 13, lineHeight: 18, color: colors.primaryContainer }}>
-                ← Back
-              </Text>
-            </TouchableOpacity>
           </>
         )}
 
@@ -1707,11 +1790,6 @@ export default function BecomeSellerScreen() {
 
             <MapLocationPicker value={storeLoc} onChange={setStoreLoc} />
 
-            <TouchableOpacity className="mt-5 self-start" onPress={() => setStep(3)}>
-              <Text className="font-inter-500" style={{ fontSize: 13, lineHeight: 18, color: colors.primaryContainer }}>
-                ← Back
-              </Text>
-            </TouchableOpacity>
           </>
         )}
 
@@ -1719,7 +1797,13 @@ export default function BecomeSellerScreen() {
           <>
             {/* Success — 245:2627 */}
             <View className="items-center mt-10 mb-6">
-              <Image source={sellerImages.avatar} className="w-28 h-28 rounded-full mb-3" />
+              {submittedLogoUrl ? (
+                <Image source={{ uri: submittedLogoUrl }} className="w-28 h-28 rounded-full mb-3" />
+              ) : (
+                <View className="w-28 h-28 rounded-full items-center justify-center mb-3" style={{ backgroundColor: colors.surfaceContainer }}>
+                  <ShopIcon size={48} color={colors.primaryContainer} />
+                </View>
+              )}
               <View className="w-9 h-9 rounded-full items-center justify-center" style={{ backgroundColor: colors.primaryContainer, marginTop: -18, borderWidth: 3, borderColor: colors.surface }}>
                 <CheckIcon size={18} color={colors.onPrimary} />
               </View>
