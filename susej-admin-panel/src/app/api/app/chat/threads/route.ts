@@ -3,6 +3,12 @@ import { getPrisma } from "@/lib/db";
 import { getAppUser } from "@/lib/app-auth";
 import { cachedRead, cacheKey, invalidateCache } from "@/lib/cache";
 
+function epoch(value: unknown): number {
+  if (value instanceof Date) return value.getTime();
+  const parsed = typeof value === "number" ? value : Date.parse(String(value ?? ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 export async function GET(req: NextRequest) {
   const auth = await getAppUser(req);
   if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
@@ -69,10 +75,10 @@ export async function GET(req: NextRequest) {
       otherName: displayName,
       otherAvatar: otherUser?.avatar ?? undefined,
       lastMessage: t.lastMessage ?? "",
-      lastAt: t.lastAt.getTime(),
+       lastAt: epoch(t.lastAt),
       unread: unreadMap.get(t.id) ?? 0,
       hasPendingOffer: pendingSet.has(t.id),
-      pinnedUntil: t.pinnedUntil ? t.pinnedUntil.getTime() : null,
+       pinnedUntil: t.pinnedUntil ? epoch(t.pinnedUntil) : null,
     };
   });
   };

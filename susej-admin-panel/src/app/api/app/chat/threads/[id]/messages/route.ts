@@ -5,6 +5,12 @@ import { getClientIp } from "@/lib/auth";
 import { checkWriteRate } from "@/lib/rate-limit";
 import { cachedRead, cacheKey, invalidateCache } from "@/lib/cache";
 
+function epoch(value: unknown): number {
+  if (value instanceof Date) return value.getTime();
+  const parsed = typeof value === "number" ? value : Date.parse(String(value ?? ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const auth = await getAppUser(req);
@@ -52,7 +58,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       receiver: m.receiver,
       body: m.body,
       status: m.receiver === username ? "seen" : m.status,
-      createdAt: m.createdAt.getTime(),
+       createdAt: epoch(m.createdAt),
       offer:
         typeof (m as unknown as { offerAmount?: number }).offerAmount === "number"
           ? {
