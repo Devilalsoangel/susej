@@ -357,6 +357,7 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
           try {
             const parsed = JSON.parse(data);
             if (Array.isArray(parsed)) {
+              if (serverAuthoritative.current) return;
               const real = (parsed as Order[]).filter(
                 (o) => o && !String(o.id).startsWith('seed_')
               );
@@ -385,11 +386,13 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
       return;
     }
     const key = `${user.username}:${tokenSeq}`;
+    let cancelled = false;
     if (loadedOrdersFor.current === key) return;
     loadedOrdersFor.current = key;
     // mine=all: one pull returns BOTH purchase history and sales — every
     // screen (buyer orders, seller dashboard/orders) filters locally.
      serverApi.getOrders('all').then((res) => {
+       if (cancelled) return;
        if (!res.ok || !res.data?.orders) {
          setLoaded(true);
          return;
@@ -567,10 +570,10 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
       persist(serverOrders);
       setLoaded(true);
     }).catch(() => {
-      // Offline/failed pull: cached rows (if any) are already rendered; an
-      // empty cache is now a settled state, not a loading flash.
+      if (cancelled) return;
       setLoaded(true);
     });
+    return () => { cancelled = true; };
   }, [user?.username, tokenSeq]);
 
   const persist = useCallback((next: Order[]) => {

@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 export type DbResource =
   | "address-book"
@@ -61,7 +62,6 @@ export type DbResource =
 export type DbResourceOptions = {
   q?: string;
   status?: string;
-  /** Single-row mode (?id=): detail pages fetch the exact row, never the table. */
   id?: string;
   take?: number;
   skip?: number;
@@ -69,89 +69,68 @@ export type DbResourceOptions = {
   orderBy?: string;
   orderDir?: "asc" | "desc";
 };
+
+type DbResponse<T> = { rows?: T[]; total?: number; error?: string };
+
+function resourceUrl(resource: DbResource, opts?: DbResourceOptions): string {
+  if (!opts || (!opts.q && !opts.status && !opts.id && !opts.take && !opts.skip && !opts.page && !opts.orderBy)) {
+    return `/api/data/${resource}?take=100`;
+  }
+  const params = new URLSearchParams();
+  if (opts.q) params.set("q", opts.q);
+  if (opts.status) params.set("status", opts.status);
+  if (opts.id) params.set("id", opts.id);
+  if (opts.take) params.set("take", String(opts.take));
+  if (opts.skip) params.set("skip", String(opts.skip));
+  if (opts.page) params.set("page", String(opts.page));
+  if (opts.orderBy) params.set("orderBy", opts.orderBy);
+  if (opts.orderDir) params.set("orderDir", opts.orderDir);
+  const query = params.toString();
+  return query ? `/api/data/${resource}?${query}` : `/api/data/${resource}`;
+}
+
 export function useDbResource<T>(resource: DbResource, opts?: DbResourceOptions) {
-  const [data, setData] = useState<T[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [total, setTotal] = useState<number | null>(null);
-  const resourceRef = useRef(resource);
-  const optsRef = useRef(opts);
-
-  // Keep refs in sync if caller switches resource or query (e.g. tab / filter change).
-  useEffect(() => {
-    resourceRef.current = resource;
-    optsRef.current = opts;
-  }, [resource, opts]);
-
-  const buildUrl = useCallback(() => {
-    const o = optsRef.current;
-    // Scale guard (single choke point): a desk that passes NO pagination opts
-    // used to pull the FULL table (server only bounds when take/skip/q/status
-    // is present). Default take=100 — the server clamps to 100 max anyway, so
-    // this changes nothing under 100 rows and bounds everything above it.
-    // Detail pages use { id } (single-row mode, unaffected).
-    if (!o || (!o.q && !o.status && !o.id && !o.take && !o.skip && !o.page && !o.orderBy)) {
-      return `/api/data/${resourceRef.current}?take=100`;
-    }
-    const p = new URLSearchParams();
-    if (o.q) p.set("q", o.q);
-    if (o.status) p.set("status", o.status);
-    if (o.id) p.set("id", o.id);
-    if (o.take) p.set("take", String(o.take));
-    if (o.skip) p.set("skip", String(o.skip));
-    if (o.page) p.set("page", String(o.page));
-    if (o.orderBy) p.set("orderBy", o.orderBy);
-    if (o.orderDir) p.set("orderDir", o.orderDir);
-    const qs = p.toString();
-    return qs ? `/api/data/${resourceRef.current}?${qs}` : `/api/data/${resourceRef.current}`;
-  }, []);
-
-  const refresh = useCallback(async () => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
-    setLoading(true);
-    try {
-      const res = await fetch(buildUrl(), { cache: "no-store", credentials: "include", signal: controller.signal });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body?.error ?? "Failed to load");
-      setData(Array.isArray(body.rows) ? (body.rows as T[]) : []);
-      if (typeof body.total === "number") setTotal(body.total);
-      else setTotal(null);
-      setError(null);
-    } catch (e) {
-      if ((e as Error).name === "AbortError") {
-        setError("Request timed out — database may be unavailable");
-      } else {
-        setError(e instanceof Error ? e.message : "Failed to load data");
+  const optionsKey = useMemo(() => JSON.stringify(opts ?? null), [opts]);
+  const url = useMemo(() => resourceUrl(resource, opts ? JSON.parse(optionsKey) as DbResourceOptions : undefined), [resource, optionsKey]);
+  const query = useQuery<DbResponse<T>>({
+    queryKey: ["db-resource", resource, optionsKey],
+    queryFn: async ({ signal }) => {
+      const controller = new AbortController();
+      let timedOut = false;
+      const onAbort = () => controller.abort();
+      if (signal.aborted) controller.abort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+      const timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, 8000);
+      try {
+        const response = await fetch(url, { cache: "no-store", credentials: "include", signal: controller.signal });
+        const body = (await response.json()) as DbResponse<T>;
+        if (!response.ok) throw new Error(body.error ?? "Failed to load");
+        return { rows: Array.isArray(body.rows) ? body.rows : [], total: typeof body.total === "number" ? body.total : undefined };
+      } catch (error) {
+        if (timedOut) throw new Error("Request timed out — database may be unavailable");
+        throw error;
+      } finally {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", onAbort);
       }
-      // Industry-standard: a failed refresh NEVER wipes last-good rows.
-      // The table keeps showing stale truth under an error banner instead
-      // of flashing an empty state on every transient failure.
-    } finally {
-      clearTimeout(timeout);
-      setLoading(false);
-    }
-  }, [buildUrl]);
+    },
+    staleTime: 30_000,
+    gcTime: 5 * 60_000,
+    retry: 1,
+    refetchOnWindowFocus: false,
+  });
+  const refresh = useCallback(async () => {
+    await query.refetch();
+  }, [query.refetch]);
 
-  useEffect(() => {
-    refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refresh, resource, JSON.stringify(opts ?? null)]);
-
-  // Refetch when the tab/window regains focus so an admin sitting on this
-  // page sees mutations (e.g. seller accepted an order) without having to
-  // navigate away and back.
-  useEffect(() => {
-    const onFocus = () => {
-      if (document.visibilityState === "visible") void refresh();
-    };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onFocus);
-    return () => {
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onFocus);
-    };
-  }, [refresh]);
-
-  return { data, error, loading, total, refresh };
+  return {
+    data: query.data?.rows ?? null,
+    error: query.error ? (query.error instanceof Error ? query.error.message : "Failed to load data") : null,
+    loading: query.isFetching,
+    total: query.data?.total ?? null,
+    refresh,
+  };
 }

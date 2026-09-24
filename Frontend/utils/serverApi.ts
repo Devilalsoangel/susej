@@ -208,6 +208,98 @@ async function expireIfCurrentToken(token: string): Promise<void> {
 
 const requestFlights = new Map<string, Promise<ApiResult<unknown>>>();
 const appKeyRequestFlights = new Map<string, Promise<ApiResult<unknown>>>();
+type ReadCacheEntry = { result: ApiResult<unknown>; freshUntil: number; staleUntil: number };
+type ReadCacheSpec = { freshMs: number; staleMs: number };
+const readCache = new Map<string, ReadCacheEntry>();
+const readCacheFlights = new Map<string, Promise<ApiResult<unknown>>>();
+const READ_CACHE_PREFIX = '@susej_server_read_v1:';
+let readCacheGeneration = 0;
+
+function tokenFingerprint(token: string | null): string {
+  if (!token) return 'anonymous';
+  let hash = 2166136261;
+  for (let i = 0; i < token.length; i += 1) {
+    hash ^= token.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function readCacheKey(path: string, token: string | null): string {
+  return `${READ_CACHE_PREFIX}${readCacheGeneration}:${tokenFingerprint(token)}:${path}`;
+}
+
+function readCacheSpec(path: string): ReadCacheSpec | null {
+  if (path === '/posts' || path.startsWith('/posts/') || path.startsWith('/search') || path === '/stories' || path === '/promotions' || path === '/bundles' || path === '/reels' || path === '/live' || path === '/broadcasts' || path === '/communities' || path === '/auctions' || path === '/coupons' || /^\/users\/[^/]+$/.test(path)) {
+    return { freshMs: 15_000, staleMs: 120_000 };
+  }
+  if (path === '/chat/threads' || path.startsWith('/chat/threads/') && path.endsWith('/messages') || path === '/notifications' || path === '/follows') {
+    return { freshMs: 3_000, staleMs: 20_000 };
+  }
+  if (path === '/api/v1/home' || path === '/api/v1/config' || path === '/api/app/categories') {
+    return { freshMs: 15_000, staleMs: 120_000 };
+  }
+  return null;
+}
+
+function bumpReadCacheGeneration(): void {
+  readCacheGeneration += 1;
+  readCache.clear();
+  readCacheFlights.clear();
+}
+
+async function readStoredReadCache(key: string): Promise<ReadCacheEntry | null> {
+  try {
+    const raw = await AsyncStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as ReadCacheEntry;
+    if (!parsed?.result || typeof parsed.freshUntil !== 'number' || typeof parsed.staleUntil !== 'number') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+async function writeReadCache(key: string, entry: ReadCacheEntry): Promise<void> {
+  if (JSON.stringify(entry).length > 512_000) return;
+  readCache.set(key, entry);
+  try { await AsyncStorage.setItem(key, JSON.stringify(entry)); } catch {}
+}
+
+async function cachedReadRequest<T>(key: string, spec: ReadCacheSpec, load: () => Promise<ApiResult<T>>): Promise<ApiResult<T>> {
+  const now = Date.now();
+  let entry = readCache.get(key) ?? await readStoredReadCache(key);
+  if (entry) {
+    readCache.set(key, entry);
+    if (now < entry.freshUntil) return entry.result as ApiResult<T>;
+    if (now < entry.staleUntil) {
+      void refreshReadCache(key, spec, load);
+      return entry.result as ApiResult<T>;
+    }
+  }
+  return refreshReadCache(key, spec, load);
+}
+
+async function refreshReadCache<T>(key: string, spec: ReadCacheSpec, load: () => Promise<ApiResult<T>>): Promise<ApiResult<T>> {
+  const existing = readCacheFlights.get(key);
+  if (existing) return existing as Promise<ApiResult<T>>;
+  let flight: Promise<ApiResult<T>>;
+  flight = load().then(async (result) => {
+    if (result.ok) await writeReadCache(key, { result, freshUntil: Date.now() + spec.freshMs, staleUntil: Date.now() + spec.staleMs });
+    return result;
+  }).finally(() => {
+    if (readCacheFlights.get(key) === flight) readCacheFlights.delete(key);
+  });
+  readCacheFlights.set(key, flight as Promise<ApiResult<unknown>>);
+  try {
+    return await flight;
+  } catch (error) {
+    const stale = readCache.get(key);
+    if (stale && Date.now() < stale.staleUntil) return stale.result as ApiResult<T>;
+    throw error;
+  }
+}
+
 
 async function performRequest<T>(path: string, options: { method?: string; body?: unknown; timeoutMs?: number; retry?: boolean; authToken?: string } = {}, attempt = 0): Promise<ApiResult<T>> {
   try {
@@ -266,8 +358,15 @@ async function performRequest<T>(path: string, options: { method?: string; body?
 
 async function request<T>(path: string, options: { method?: string; body?: unknown; timeoutMs?: number; retry?: boolean; authToken?: string } = {}): Promise<ApiResult<T>> {
   const method = options.method ?? 'GET';
-  if (method !== 'GET' || options.authToken !== undefined) return performRequest<T>(path, options);
+  if (method !== 'GET') {
+    const result = await performRequest<T>(path, options);
+    if (result.ok) bumpReadCacheGeneration();
+    return result;
+  }
+  if (options.authToken !== undefined) return performRequest<T>(path, options);
   const token = await getToken();
+  const spec = readCacheSpec(path);
+  if (spec) return cachedReadRequest(readCacheKey(path, token), spec, () => performRequest<T>(path, { ...options, authToken: token ?? '' }));
   const key = `${token || ''}|${path}|${options.timeoutMs ?? ''}|${options.retry === false ? '0' : '1'}|${JSON.stringify(options.body ?? null)}`;
   const existing = requestFlights.get(key) as Promise<ApiResult<T>> | undefined;
   if (existing) return existing;
@@ -283,9 +382,10 @@ async function request<T>(path: string, options: { method?: string; body?: unkno
 // App-key request against the admin /api/v1/* surface (platform-curated home
 // content). Carries BOTH x-app-key AND a Bearer token so the server's
 // parseWriteSession can resolve the real user identity.
-async function performRequestWithAppKey<T>(path: string, options: { method?: string; body?: unknown; timeoutMs?: number; retry?: boolean } = {}, attempt = 0): Promise<ApiResult<T>> {
+async function performRequestWithAppKey<T>(path: string, options: { method?: string; body?: unknown; timeoutMs?: number; retry?: boolean; authToken?: string } = {}, attempt = 0): Promise<ApiResult<T>> {
   try {
-    const [base, key, token] = await Promise.all([getAdminUrl(), getAppKey(), getToken()]);
+    const [base, key, currentToken] = await Promise.all([getAdminUrl(), getAppKey(), getToken()]);
+    const token = options.authToken ?? currentToken;
     const controller = new AbortController();
     // Uploads carry multi-MB base64 bodies: the default 6s budget aborts
     // them mid-flight and misreports "couldn't reach the server".
@@ -336,13 +436,20 @@ async function performRequestWithAppKey<T>(path: string, options: { method?: str
   }
 }
 
-async function requestWithAppKey<T>(path: string, options: { method?: string; body?: unknown; timeoutMs?: number; retry?: boolean } = {}): Promise<ApiResult<T>> {
-  if ((options.method ?? 'GET') !== 'GET') return performRequestWithAppKey<T>(path, options);
-  const token = await getToken();
+async function requestWithAppKey<T>(path: string, options: { method?: string; body?: unknown; timeoutMs?: number; retry?: boolean; authToken?: string } = {}): Promise<ApiResult<T>> {
+  const method = options.method ?? 'GET';
+  if (method !== 'GET') {
+    const result = await performRequestWithAppKey<T>(path, options);
+    if (result.ok) bumpReadCacheGeneration();
+    return result;
+  }
+  const token = options.authToken ?? await getToken();
+  const spec = readCacheSpec(path);
+  if (spec) return cachedReadRequest(readCacheKey(path, token), spec, () => performRequestWithAppKey<T>(path, { ...options, authToken: token ?? '' }));
   const key = `${token || ''}|${path}|${options.timeoutMs ?? ''}|${options.retry === false ? '0' : '1'}|${JSON.stringify(options.body ?? null)}`;
   const existing = appKeyRequestFlights.get(key) as Promise<ApiResult<T>> | undefined;
   if (existing) return existing;
-  const flight = performRequestWithAppKey<T>(path, options);
+  const flight = performRequestWithAppKey<T>(path, { ...options, authToken: token ?? '' });
   appKeyRequestFlights.set(key, flight as Promise<ApiResult<unknown>>);
   try {
     return await flight;
