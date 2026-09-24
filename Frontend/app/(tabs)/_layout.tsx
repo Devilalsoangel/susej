@@ -165,14 +165,12 @@ export default function TabLayout() {
   // chrome without a session. Suppressed while an intentional boundary
   // transition drives (logoutAndReset/kill-switch own the nav then — a
   // second competing reset is what corrupted the stack blue). Bounces with
-  // dismissTo so no authed route survives beneath login for back to reach.
+  // dismissAll+replace issued back-to-back (atomic while this effect is the
+  // only actor) so no authed route survives beneath login for back to reach.
   useEffect(() => {
     if (!isLoading && !isLoggedIn && !isBoundaryNavigating()) {
-      try {
-        router.dismissTo('/login');
-      } catch {
-        router.replace('/login');
-      }
+      router.dismissAll();
+      router.replace('/login');
     }
   }, [isLoading, isLoggedIn]);
   if (!isLoading && !isLoggedIn) return null;

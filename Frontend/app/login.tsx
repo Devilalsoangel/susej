@@ -174,11 +174,8 @@ export default function LoginScreen() {
         const verifyRes = await serverLogin(fullPhone(), res.data.devCode);
         if (verifyRes.ok) {
           await completeOnboarding();
-          try {
-            router.dismissTo('/(tabs)/feed');
-          } catch {
-            router.replace('/(tabs)/feed');
-          }
+          router.dismissAll();
+          router.replace('/(tabs)/feed');
         } else if (verifyRes.needsSignup) {
           // Unknown number even in dev → signup flow, same as requestOtp.
           router.push({ pathname: '/(onboarding)/otp', params: { phone: nationalDigits(), cc: countryCode } });
@@ -227,14 +224,10 @@ export default function LoginScreen() {
       const res = await serverLogin(fullPhone(), finalCode);
       if (res.ok) {
         await completeOnboarding();
-        // Fresh stack root: ONE atomic dismissTo (never a dismissAll+replace
-        // pair — the gate's own navigation landing between the two corrupts
-        // the stack into a blank window, proven on logout).
-        try {
-          router.dismissTo('/(tabs)/feed');
-        } catch {
-          router.replace('/(tabs)/feed');
-        }
+        // Fresh stack root: dismissAll + replace back-to-back (gate idle on
+        // login). Never dismissTo: POP_TO an absent route empties the stack.
+        router.dismissAll();
+        router.replace('/(tabs)/feed');
       } else if (res.error) {
         if (res.needsSignup) {
           router.push({ pathname: '/(onboarding)/otp', params: { phone: nationalDigits(), cc: countryCode } });
@@ -263,14 +256,8 @@ export default function LoginScreen() {
       const res = await serverEmailLogin(emailRegister ? 'register' : 'login', email, password, name);
       if (res.ok) {
         await completeOnboarding();
-        // Fresh stack root: ONE atomic dismissTo (never a dismissAll+replace
-        // pair — the gate's own navigation landing between the two corrupts
-        // the stack into a blank window, proven on logout).
-        try {
-          router.dismissTo('/(tabs)/feed');
-        } catch {
-          router.replace('/(tabs)/feed');
-        }
+        router.dismissAll();
+        router.replace('/(tabs)/feed');
       } else if (res.error) {
         setError(authErrorMessage(res.error, 'try again'));
       } else {

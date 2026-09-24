@@ -365,10 +365,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   /**
    * Full logout + nav-stack reset (see type docs). ONE actor drives: the
-   * boundary flag suppresses the tab gate for the whole transition, the
-   * re-entry guard collapses double-taps/unmounted re-fires, and the nav
-   * itself is a SINGLE atomic dismissTo (retried as dismissTo — never a
-   * dismissAll+replace pair, which the gate could land inside of).
+   * boundary flag suppresses the tab gate for the whole transition, and the
+   * re-entry guard collapses double-taps. The nav is dismissAll() +
+   * replace() issued BACK-TO-BACK synchronously (no await between): with the
+   * gate suppressed nothing can interleave, which is what makes the pair
+   * atomic. (dismissTo() alone was tried: POP_TO a route absent from history
+   * leaves an empty stack = the same blue window.)
    */
   const logoutAndReset = useCallback(async (expired = false) => {
     if (resetInFlight) return;
@@ -377,11 +379,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       await logout();
       const target = (expired ? { pathname: '/login', params: { expired: '1' } } : '/login') as never;
-      try {
-        router.dismissTo(target as never);
-      } catch {
-        router.dismissTo(target as never);
-      }
+      router.dismissAll();
+      router.replace(target as never);
     } finally {
       // Settle window: the gate stays suppressed until the stack lands.
       setTimeout(() => {
@@ -475,7 +474,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Dead-Bearer kill-switch: any non-auth lane proving a 401 means the token
   // is revoked/rotated server-side. Same single-actor discipline as logout:
-  // suppress the gate, wipe, ONE atomic dismissTo (retried as dismissTo).
+  // suppress the gate, wipe, dismissAll+replace back-to-back (atomic while
+  // suppressed — see logoutAndReset).
   useEffect(() => {
     onSessionExpired(() => {
       if (resetInFlight) return;
@@ -486,13 +486,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setSessionSeq((n) => n + 1);
       setTokenSeq((n) => n + 1);
       void clearMoneyCache();
-      try {
-        router.dismissTo({ pathname: '/login', params: { expired: '1' } } as never);
-      } catch {
-        try {
-          router.dismissTo({ pathname: '/login', params: { expired: '1' } } as never);
-        } catch {}
-      }
+      router.dismissAll();
+      router.replace({ pathname: '/login', params: { expired: '1' } });
       setTimeout(() => {
         resetInFlight = false;
         boundaryNavActive = false;

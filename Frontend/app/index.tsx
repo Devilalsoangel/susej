@@ -30,11 +30,9 @@ export default function SplashScreen() {
     redirected.current = true;
     const target = hasOnboarded && isLoggedIn ? '/(tabs)/feed' : '/(onboarding)/welcome';
     const timer = setTimeout(() => {
-      try {
-        router.dismissTo(target);
-      } catch {
-        router.replace(target);
-      }
+      // Plain replace: index is the only route in the stack, so there is
+      // nothing beneath to clear and nothing dismissTo can empty.
+      router.replace(target);
     }, 2000);
     return () => clearTimeout(timer);
   }, [isLoading]);

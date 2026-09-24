@@ -42,15 +42,12 @@ export default function FirstFeedScreen() {
           style={{ backgroundColor: colors.primaryContainer }}
           onPress={async () => {
             // Onboarding complete: flags FIRST (awaited — the splash router
-            // reads them), then ONE atomic dismissTo so no auth screen
-            // survives beneath feed for back to reach.
+            // reads them), then dismissAll+replace back-to-back so no auth
+            // screen survives beneath feed for back to reach.
             await completeOnboarding();
             await setHasSeenFeedWelcome();
-            try {
-              router.dismissTo('/(tabs)/feed');
-            } catch {
-              router.replace('/(tabs)/feed');
-            }
+            router.dismissAll();
+            router.replace('/(tabs)/feed');
           }}
         >
           <Text
