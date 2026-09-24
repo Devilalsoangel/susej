@@ -3,7 +3,7 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { Platform, StyleSheet } from 'react-native';
+import { Platform, StyleSheet, View, Text } from 'react-native';
 // react-native-web throws "Cannot manually set color scheme" unless darkMode flag is 'class'.
 // Expo's web bootstrap sets data-color-scheme; this flag makes manual scheme setting legal.
 if (Platform.OS === 'web') {
@@ -20,7 +20,7 @@ import {
   Inter_700Bold,
 } from '@expo-google-fonts/inter';
 import * as SplashScreen from 'expo-splash-screen';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, Component, type ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { applyTheme, AppearanceContext, THEME_STORAGE_KEY, type ThemeMode } from '../utils/theme';
 import { useAuth } from '../contexts/AuthContext';
@@ -40,6 +40,45 @@ import { PromotionProvider } from '../contexts/PromotionContext';
 import { OfflineBanner } from '../components/OfflineBanner';
 
 SplashScreen.preventAutoHideAsync();
+
+/**
+ * Root crash boundary (industry standard): ANY render crash anywhere in the
+ * app lands here with the error NAMED on screen + restart — never a dead
+ * blank window. Added to diagnose the post-logout blank: whatever throws on
+ * the session flip names itself instead of vanishing.
+ */
+class RootCrashBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error) {
+    try {
+      // eslint-disable-next-line no-console
+      console.error('[root-crash]', error?.message, error?.stack);
+    } catch {}
+  }
+
+  render() {
+    const { error } = this.state;
+    if (!error) return this.props.children;
+    return (
+      <View style={{ flex: 1, backgroundColor: '#ffffff', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+        <Text style={{ fontSize: 17, fontWeight: '700', color: '#1a1a2e', textAlign: 'center', marginBottom: 8 }}>
+          Something went wrong
+        </Text>
+        <Text style={{ fontSize: 12, color: '#464555', textAlign: 'center', marginBottom: 4 }}>
+          The app hit an error. Restart to continue.
+        </Text>
+        <Text style={{ fontSize: 10, color: '#8a8899', textAlign: 'center' }}>
+          {String(error?.message ?? error).slice(0, 300)}
+        </Text>
+      </View>
+    );
+  }
+}
 
 /**
  * Boundary-proof root navigator (industry standard: Instagram/WhatsApp).
@@ -138,7 +177,9 @@ export default function RootLayout() {
                         {/* Global offline strip — sits above every screen when device is offline */}
                         <OfflineBanner />
                         <StatusBar style={themeMode === 'dark' ? 'light' : 'dark'} />
-                        <RootNavigator key={themeMode} />
+                        <RootCrashBoundary>
+                          <RootNavigator key={themeMode} />
+                        </RootCrashBoundary>
 </PromotionProvider>
   </HashtagProvider>
   </RecentlyViewedProvider>
