@@ -670,7 +670,7 @@ export async function GET(req: NextRequest) {
   const payload = await cachedRead(
     cacheKey("search", query, mode, types.join(","), limit),
     () => executeSearch(query, mode, types, limit),
-    { freshMs: 10_000, staleMs: 60_000 },
+    { freshMs: 10_000, staleMs: 120_000 },
   );
   return NextResponse.json(payload);
 }

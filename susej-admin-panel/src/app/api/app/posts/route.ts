@@ -226,7 +226,7 @@ export async function GET(req: NextRequest) {
   }
 
     return { posts: visible.map((p) => toAppPost({ ...p, likedByMe: likedSet.has(p.id) }, authorNames.get(p.authorUsername ?? ""))) };
-  }, { freshMs: 5_000, staleMs: 20_000 }).catch(() => null);
+  }, { freshMs: 5_000, staleMs: 300_000 }).catch(() => null);
   if (!payload) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
   return NextResponse.json(payload);
 }

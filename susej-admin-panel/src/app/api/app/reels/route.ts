@@ -38,7 +38,7 @@ export async function GET(req: NextRequest) {
           createdAt: r.createdAt.getTime(),
         })),
       };
-    }, { freshMs: 30_000, staleMs: 120_000 });
+    }, { freshMs: 30_000, staleMs: 600_000 });
     return NextResponse.json(payload);
   } catch {
     return NextResponse.json({ error: "Database unavailable" }, { status: 503 });

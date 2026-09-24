@@ -133,7 +133,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ user
         createdAt: r.createdAt.getTime(),
       })),
     };
-  }, { freshMs: 30_000, staleMs: 120_000 });
+  }, { freshMs: 30_000, staleMs: 600_000 });
 
   return NextResponse.json(payload);
 }

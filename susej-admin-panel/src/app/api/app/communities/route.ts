@@ -32,7 +32,7 @@ export async function GET(req: NextRequest) {
           })
         : [];
       return { rows, wanted, profiles };
-    }, { freshMs: 30_000, staleMs: 120_000 });
+    }, { freshMs: 30_000, staleMs: 600_000 });
     const profiles = new Map(base.profiles.filter((u) => u.username).map((u) => [u.username!, { username: u.username!, name: u.businessName || u.name, avatar: u.avatar, verified: u.verification === "approved" }]));
     return NextResponse.json({
       communities: base.rows.map((c) => {

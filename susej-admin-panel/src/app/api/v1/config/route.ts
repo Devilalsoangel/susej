@@ -78,7 +78,7 @@ export async function GET(request: NextRequest) {
         days: DEFAULT_CHAT_PIN.days,
       },
     };
-  }, { freshMs: 30_000, staleMs: 300_000 });
+  }, { freshMs: 30_000, staleMs: 600_000 });
 
   return NextResponse.json(payload);
 }

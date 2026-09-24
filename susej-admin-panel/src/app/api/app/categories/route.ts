@@ -51,7 +51,7 @@ export async function GET() {
           };
         }),
       };
-    }, { freshMs: 30_000, staleMs: 300_000 });
+    }, { freshMs: 30_000, staleMs: 600_000 });
     return NextResponse.json(payload);
   } catch {
     return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
