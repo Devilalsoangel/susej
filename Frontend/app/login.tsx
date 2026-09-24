@@ -57,6 +57,10 @@ export default function LoginScreen() {
   const [emailRegister, setEmailRegister] = useState(false);
   const [countryCode, setCountryCode] = useState('+91');
   const [showCountryPicker, setShowCountryPicker] = useState(false);
+  // Transition state: set the instant verify succeeds, cleared only by
+  // unmount (tree swap) or failure. If the user ever sits on "Signing you
+  // in…" the handoff itself hung — visible proof instead of a silent stuck.
+  const [signingIn, setSigningIn] = useState(false);
   // Auto-submit guard: each keystroke bumps the id; a scheduled submit only
   // fires if nothing changed since (no stale-code verify after delete).
   const autoSubmitId = useRef(0);
@@ -221,6 +225,7 @@ export default function LoginScreen() {
       // (same fork as the pre-check above).
       const res = await serverLogin(fullPhone(), finalCode);
       if (res.ok) {
+        setSigningIn(true);
         await completeOnboarding();
         // No navigation: the root tree swaps on the login flip by itself.
       } else if (res.error) {
@@ -547,6 +552,13 @@ export default function LoginScreen() {
             )}
           </View>
         </ScrollView>
+        {signingIn ? (
+          <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: colors.surface, alignItems: 'center', justifyContent: 'center' }}>
+            <Text className="font-inter-600" style={{ fontSize: 16, color: colors.textPrimary }}>
+              Signing you in…
+            </Text>
+          </View>
+        ) : null}
       </SafeAreaView>
       <Modal visible={showCountryPicker} transparent animationType="fade" onRequestClose={() => setShowCountryPicker(false)}>
         <TouchableOpacity style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' }} activeOpacity={1} onPress={() => setShowCountryPicker(false)}>
