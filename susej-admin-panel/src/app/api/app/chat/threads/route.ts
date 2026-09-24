@@ -76,7 +76,7 @@ export async function GET(req: NextRequest) {
     };
   });
   };
-  const out = await cachedRead(cacheKey("chat", "threads", username), loadThreads, { freshMs: 5_000, staleMs: 30_000, maxBytes: 256_000 });
+  const out = await cachedRead(cacheKey("chat", "threads", username), loadThreads, { freshMs: 5_000, staleMs: 300_000, maxBytes: 256_000 });
   return NextResponse.json({ threads: out });
 }
 

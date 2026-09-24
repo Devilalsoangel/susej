@@ -27,7 +27,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     });
     return latestDesc.reverse();
   };
-  const messages = await cachedRead(cacheKey("chat", "messages", id), loadMessages, { freshMs: 2_000, staleMs: 15_000, maxBytes: 512_000 });
+  const messages = await cachedRead(cacheKey("chat", "messages", id), loadMessages, { freshMs: 2_000, staleMs: 60_000, maxBytes: 512_000 });
   // Seen-marks scope to exactly what we return: marking the whole thread
   // would fake read-receipts for history the user never saw.
   await prisma.chatMessage.updateMany({

@@ -1,7 +1,7 @@
 /**
  * Unified server API client — the app talks to the shared PostgreSQL backend
  * (admin panel Next.js server on :3000) for real multi-user data.
- * Offline-first: every call fails silently (6s timeout) and callers fall back
+ * Offline-first: every call fails silently (12s timeout) and callers fall back
  * to their AsyncStorage cache. The token comes from the app session.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -238,7 +238,7 @@ function readCacheSpec(path: string): ReadCacheSpec | null {
     return { freshMs: 15_000, staleMs: 120_000 };
   }
   if (path === '/chat/threads' || (path.startsWith('/chat/threads/') && path.endsWith('/messages')) || path === '/notifications' || path === '/follows' || path === '/blocks' || path === '/watches' || path === '/sellers/me' || (path.startsWith('/communities/') && (path.endsWith('/messages') || path.endsWith('/polls')))) {
-    return { freshMs: 3_000, staleMs: 20_000 };
+    return { freshMs: 3_000, staleMs: 60_000 };
   }
   if (path === '/api/v1/home' || path === '/api/v1/config' || path === '/api/app/categories') {
     return { freshMs: 15_000, staleMs: 120_000 };
@@ -313,7 +313,7 @@ async function performRequest<T>(path: string, options: { method?: string; body?
     const token = options.authToken ?? await getToken();
     const controller = new AbortController();
     // Neon cold queries outlast tight budgets: profile lanes carry 20s.
-    const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 6000);
+    const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 12_000);
     const res = await fetch(`${base}/api/app${path}`, {
       method: options.method ?? 'GET',
       headers: {
@@ -393,7 +393,7 @@ async function performRequestWithAppKey<T>(path: string, options: { method?: str
     const controller = new AbortController();
     // Uploads carry multi-MB base64 bodies: the default 6s budget aborts
     // them mid-flight and misreports "couldn't reach the server".
-    const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 6000);
+    const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 12_000);
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'x-app-key': key,
