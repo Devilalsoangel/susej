@@ -194,6 +194,7 @@ export default function ChatScreen() {
   }, [activeChat]);
   useEffect(() => () => setImmersiveNav(false), []);
   const [threadMessages, setThreadMessages] = useState<ThreadMessage[]>([]);
+  const [threadLoading, setThreadLoading] = useState(false);
   const [serverChats, setServerChats] = useState<ChatItem[]>([]);
   const [threadsLoading, setThreadsLoading] = useState(true);
   const threadsServerLoaded = useRef(false);
@@ -735,17 +736,23 @@ export default function ChatScreen() {
     if (chat.serverThreadId) {
       // Real thread: load the server history (offline -> empty thread, local send still works).
       setThreadMessages([]);
+      setThreadLoading(true);
       serverApi
         .getMessages(chat.serverThreadId)
         .then((res) => {
-          if (!res.ok || !res.data?.messages) return;
+          if (!res.ok || !res.data?.messages) {
+            setThreadLoading(false);
+            return;
+          }
           setThreadMessages(res.data.messages.map((m) => mapServerMessage(m, user?.username)));
+          setThreadLoading(false);
         })
-        .catch(() => {});
+        .catch(() => setThreadLoading(false));
       return;
     }
     // No server thread and no history: start the thread honestly EMPTY.
     setThreadMessages([]);
+    setThreadLoading(false);
   };
 
   const sendMessage = () => {
@@ -821,10 +828,14 @@ export default function ChatScreen() {
     if (!threadId) return;
     let cancelled = false;
     const pull = () => {
+      if (threadMessages.length === 0) setThreadLoading(true);
       serverApi
         .getMessages(threadId)
         .then((res) => {
-          if (cancelled || !res.ok || !res.data?.messages) return;
+          if (cancelled || !res.ok || !res.data?.messages) {
+            if (!cancelled) setThreadLoading(false);
+            return;
+          }
           const mine = user?.username;
           setThreadMessages((prev) => {
             const server = (res.data as { messages: unknown[] }).messages.map((m) =>
@@ -863,12 +874,13 @@ export default function ChatScreen() {
               return prev;
             return merged;
           });
+          if (!cancelled) setThreadLoading(false);
         })
-        .catch(() => {});
+        .catch(() => { if (!cancelled) setThreadLoading(false); });
     };
     const t = setInterval(pull, 6000);
     return () => { cancelled = true; clearInterval(t); };
-  }, [activeChat?.serverThreadId, user?.username]);
+  }, [activeChat?.serverThreadId, user?.username, threadMessages.length]);
 
   const productName = offerProduct ?? 'Product offer';
 
@@ -1243,6 +1255,19 @@ export default function ChatScreen() {
               </View>
             );
           }}
+          ListEmptyComponent={
+            threadLoading ? (
+              <View className="px-5 py-4">
+                {[0, 1, 2, 3].map((key) => (
+                  <View key={`message-skeleton-${key}`} className="mb-3 h-12 rounded-2xl" style={{ width: key % 2 === 0 ? '72%' : '58%', alignSelf: key % 2 === 0 ? 'flex-start' : 'flex-end', backgroundColor: colors.surfaceContainerLow }} />
+                ))}
+              </View>
+            ) : (
+              <View className="items-center px-8 py-16">
+                <Text className="font-inter-400 text-textSecondary text-center" style={{ fontSize: 14, lineHeight: 20 }}>No messages yet. Start the conversation.</Text>
+              </View>
+            )
+          }
         />
 
         {/* Offer input panel */}

@@ -17,7 +17,7 @@ import { useAuth } from '../contexts/AuthContext';
 
 export default function CheckoutScreen() {
   const insets = useSafeAreaInsets();
-  const { cart: storeCart, subtotal: storeSubtotal, clearCart, updatePrices } = useCart();
+  const { cart: storeCart, subtotal: storeSubtotal, clearCart, updatePrices, loaded: cartLoaded } = useCart();
   // Accepted-offer mode (chat deal → checkout): route params carry the struck
   // deal. The synthetic single-item cart ISOLATES the deal — the stored cart
   // is never touched, mixed, or cleared by an offer purchase (BUYER-C1).
@@ -578,10 +578,13 @@ export default function CheckoutScreen() {
     router.replace(`/order/${created[0].id}`);
   };
 
-  if (!loaded) {
+  if (!loaded || (!offerMode && !cartLoaded)) {
     return (
-      <View className="flex-1 bg-surface items-center justify-center">
-        <ActivityIndicator size="large" color={colors.primaryContainer} />
+      <View className="flex-1 bg-surface px-5 pt-8" style={{ paddingTop: insets.top + 8 }}>
+        <View style={{ width: 120, height: 20, borderRadius: 10, backgroundColor: colors.surfaceContainer }} />
+        <View style={{ width: '100%', height: 90, borderRadius: 20, marginTop: 24, backgroundColor: colors.surfaceContainerLow }} />
+        <View style={{ width: '100%', height: 68, borderRadius: 18, marginTop: 14, backgroundColor: colors.surfaceContainerLow }} />
+        <View style={{ width: '100%', height: 68, borderRadius: 18, marginTop: 14, backgroundColor: colors.surfaceContainerLow }} />
       </View>
     );
   }

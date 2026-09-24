@@ -20,7 +20,7 @@ export default function CartScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const savedKey = user?.username ? `${SAVED_KEY_BASE}:${user.username}` : SAVED_KEY_BASE;
-  const { cart, updateQuantity, removeFromCart, restoreSavedItem, subtotal } = useCart();
+  const { cart, updateQuantity, removeFromCart, restoreSavedItem, subtotal, loaded: cartLoaded } = useCart();
   const { posts } = usePosts();
   // Single-push checkout: a double-tap stacked two /checkout screens (the
   // second a dead empty-cart shell after the first placed + cleared).
@@ -532,6 +532,13 @@ const [promo, setPromo] = useState<AppliedPromo | null>(null);
           ) : null
         }
         ListEmptyComponent={
+          !cartLoaded ? (
+            <View className="px-5 py-4">
+              {[0, 1, 2].map((key) => (
+                <View key={`cart-skeleton-${key}`} className="h-[92px] mb-3 rounded-2xl" style={{ backgroundColor: colors.surfaceContainerLow }} />
+              ))}
+            </View>
+          ) : (
           <View className="flex-1 items-center justify-center py-20 px-5">
             <View style={{ opacity: 0.35 }}>
               <ShopIcon size={44} color={colors.textSecondary} />
@@ -590,6 +597,7 @@ const [promo, setPromo] = useState<AppliedPromo | null>(null);
               </View>
             )}
           </View>
+          )
         }
       />
 

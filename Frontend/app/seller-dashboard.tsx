@@ -79,8 +79,8 @@ function ClockIcon({ size = 16, color = colors.tertiary }: { size?: number; colo
 export default function SellerDashboardScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
-  const { posts, deletePost, toggleSold } = usePosts();
-  const { orders } = useOrders();
+  const { posts, deletePost, toggleSold, loaded: postsLoaded } = usePosts();
+  const { orders, loaded: ordersLoaded } = useOrders();
 
   // Logged-out fallback is '' (matches nobody): 'user' previously rendered
   // seller "user"'s listings + orders to logged-out viewers (cross-account leak).
@@ -175,6 +175,16 @@ export default function SellerDashboardScreen() {
   // Approved sellers only (SELLER-C1): buyers/pending deep-links get status,
   // never tools. Matches server 403s. After all hooks (rules-of-hooks safe).
   if (!isApprovedSeller(user)) return <SellerGate title="Seller dashboard" user={user} />;
+  if (!postsLoaded || !ordersLoaded) {
+    return (
+      <View className="flex-1 bg-surface px-4 pt-8" style={{ paddingTop: insets.top + 8 }}>
+        <View style={{ width: 150, height: 22, borderRadius: 11, backgroundColor: colors.surfaceContainer }} />
+        <View style={{ flexDirection: 'row', gap: 10, marginTop: 24 }}>{[0, 1, 2].map((key) => <View key={key} style={{ flex: 1, height: 82, borderRadius: 16, backgroundColor: colors.surfaceContainerLow }} />)}</View>
+        <View style={{ width: '100%', height: 140, borderRadius: 20, marginTop: 16, backgroundColor: colors.surfaceContainerLow }} />
+        <View style={{ width: '100%', height: 90, borderRadius: 18, marginTop: 14, backgroundColor: colors.surfaceContainerLow }} />
+      </View>
+    );
+  }
 
   return (
     <View className="flex-1 bg-surface">

@@ -37,6 +37,7 @@ interface CartContextType {
   cart: CartItem[];
   cartCount: number;
   subtotal: number;
+  loaded: boolean;
   /** Returns false when rejected by the single-seller guard so callers can
    *  explain (industry-standard: never silently ignore an add-to-cart tap). */
   addToCart: (item: Omit<CartItem, 'quantity'>, quantity?: number) => boolean;
@@ -67,6 +68,7 @@ export function cartLineKey(item: { listingId: string; bundleId?: string; varian
 
 export function CartProvider({ children }: { children: React.ReactNode }) {
   const [cart, setCart] = useState<CartItem[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const { user, tokenSeq } = useAuth();
   const username = user?.username ?? null;
   const cartKey = username ? `${CART_KEY_BASE}:${username}` : CART_KEY_BASE;
@@ -78,6 +80,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
+    setLoaded(false);
     AsyncStorage.getItem(cartKey)
       .then((data) => {
         if (cancelled) return;
@@ -89,7 +92,8 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
           setCart([]);
         }
       })
-      .catch(() => { if (!cancelled) setCart([]); });
+      .catch(() => { if (!cancelled) setCart([]); })
+      .finally(() => { if (!cancelled) setLoaded(true); });
     return () => { cancelled = true; };
   }, [cartKey, tokenSeq]);
 
@@ -249,7 +253,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <CartContext.Provider
-      value={{ cart, cartCount, subtotal, addToCart, updatePrices, removeFromCart, updateQuantity, restoreSavedItem, clearCart }}
+      value={{ cart, cartCount, subtotal, loaded, addToCart, updatePrices, removeFromCart, updateQuantity, restoreSavedItem, clearCart }}
     >
       {children}
     </CartContext.Provider>
