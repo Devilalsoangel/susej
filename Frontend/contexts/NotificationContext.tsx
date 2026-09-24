@@ -46,6 +46,11 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   const [serverSettled, setServerSettled] = useState(false);
   const [loadedAccount, setLoadedAccount] = useState<string | null>(null);
   const accountKey = user?.username ?? null;
+  const activeAccount = useRef<string | null>(accountKey);
+
+  useEffect(() => {
+    activeAccount.current = accountKey;
+  }, [accountKey]);
   // Re-seed per account switch (tokenSeq) so a new login never inherits
   // the previous account's cached notifications.
   const serverSeeded = useRef<string | null>(null);
@@ -128,8 +133,9 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   const unreadCount = pushOn ? visibleNotifications.filter((n) => !n.read).length : 0;
 
   const refreshFromServer = useCallback(() => {
+    const requestAccount = accountKey;
     serverApi.getNotifications().then((res) => {
-      if (!res.ok) return;
+      if (activeAccount.current !== requestAccount || !res.ok) return;
       const serverRows = ((res.data?.notifications ?? []) as any[])
         .filter((n: any) => n && n.id)
         .map((n: any) => ({
@@ -146,7 +152,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       setNotifications([...serverRows].sort((a, b) => b.timestamp - a.timestamp));
       setHasMore(serverRows.length >= 100);
     }).catch(() => {});
-  }, []);
+  }, [accountKey]);
 
   const markAsRead = useCallback((id: string) => {
     setNotifications((prev) => {
@@ -175,10 +181,11 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
 
   const loadMore = useCallback(() => {
     if (!pushOn || notifications.length === 0) return;
+    const requestAccount = accountKey;
     const oldest = Math.min(...notifications.map((n) => n.timestamp));
     if (!Number.isFinite(oldest)) return;
     serverApi.getNotifications(oldest).then((res) => {
-      if (!res.ok) return;
+      if (activeAccount.current !== requestAccount || !res.ok) return;
       const rows = ((res.data?.notifications ?? []) as any[])
         .filter((n: any) => n && n.id)
         .map((n: any) => ({
@@ -200,7 +207,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       });
       setHasMore(rows.length >= 100);
     }).catch(() => {});
-  }, [pushOn, notifications, persist]);
+  }, [accountKey, pushOn, notifications, persist]);
 
   const addNotification = useCallback((input: Omit<AppNotification, 'id' | 'timestamp' | 'read'>) => {
     // Gated by the push toggle like everything else in this provider.
