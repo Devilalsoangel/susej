@@ -230,10 +230,10 @@ function readCacheKey(path: string, token: string | null): string {
 }
 
 function readCacheSpec(path: string): ReadCacheSpec | null {
-  if (path === '/posts' || path.startsWith('/posts/') || path.startsWith('/search') || path === '/stories' || path === '/promotions' || path === '/bundles' || path === '/reels' || path === '/live' || path === '/broadcasts' || path === '/communities' || path === '/auctions' || path === '/coupons' || /^\/users\/[^/]+$/.test(path)) {
+  if (path === '/posts' || path.startsWith('/posts/') || path.startsWith('/search') || path === '/stories' || path === '/promotions' || path === '/bundles' || path === '/reels' || path === '/live' || path === '/broadcasts' || path === '/communities' || path === '/auctions' || path.startsWith('/auctions/') || path.startsWith('/categories') || path.startsWith('/storefront-banners') || path === '/coupons' || /^\/users\/[^/]+$/.test(path)) {
     return { freshMs: 15_000, staleMs: 120_000 };
   }
-  if (path === '/chat/threads' || path.startsWith('/chat/threads/') && path.endsWith('/messages') || path === '/notifications' || path === '/follows') {
+  if (path === '/chat/threads' || (path.startsWith('/chat/threads/') && path.endsWith('/messages')) || path === '/notifications' || path === '/follows' || path === '/blocks' || path === '/watches' || path === '/sellers/me' || (path.startsWith('/communities/') && (path.endsWith('/messages') || path.endsWith('/polls')))) {
     return { freshMs: 3_000, staleMs: 20_000 };
   }
   if (path === '/api/v1/home' || path === '/api/v1/config' || path === '/api/app/categories') {
