@@ -40,10 +40,17 @@ export default function FirstFeedScreen() {
         <TouchableOpacity
           className="w-full h-14 flex-row items-center justify-center rounded-figma-16"
           style={{ backgroundColor: colors.primaryContainer }}
-          onPress={() => {
-            completeOnboarding();
-            setHasSeenFeedWelcome();
-            router.replace('/(tabs)/feed');
+          onPress={async () => {
+            // Onboarding complete: flags FIRST (awaited — the splash router
+            // reads them), then ONE atomic dismissTo so no auth screen
+            // survives beneath feed for back to reach.
+            await completeOnboarding();
+            await setHasSeenFeedWelcome();
+            try {
+              router.dismissTo('/(tabs)/feed');
+            } catch {
+              router.replace('/(tabs)/feed');
+            }
           }}
         >
           <Text

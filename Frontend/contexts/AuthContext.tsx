@@ -6,6 +6,19 @@ import { serverApi, onSessionExpired } from '../utils/serverApi';
 
 const PENDING_REVOKE_KEY = '@susej_pending_revoke';
 
+// Boundary-navigation guard: while an intentional logged-in/logged-out
+// transition is driving, the tab gate must NOT fire its own replace — two
+// competing resets corrupt the stack into the blank blue window (proven on
+// Switch-account: state-flip → gate replace → reset dismissTo racing).
+// Screens read it; only logoutAndReset / kill-switch set it.
+let boundaryNavActive = false;
+export function isBoundaryNavigating(): boolean {
+  return boundaryNavActive;
+}
+// Re-entry guard for logoutAndReset (double-tap, unmounted Alert re-fire):
+// module scope so it survives renders.
+let resetInFlight = false;
+
 const ONBOARDED_KEY = '@susej_has_onboarded';
 const ONBOARDED_PREFIX = '@susej_has_onboarded:';
 const FEED_WELCOME_KEY_BASE = '@susej_feed_welcome_seen';
@@ -351,21 +364,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [clearMoneyCache]);
 
   /**
-   * Full logout + nav-stack reset (see type docs). Awaited wipe FIRST, then
-   * ONE atomic dismissTo('/login'): the earlier dismissAll+replace pair let
-   * the tab gate's own replace land between the two calls, corrupting the
-   * stack into a permanently blank (blue window) state.
+   * Full logout + nav-stack reset (see type docs). ONE actor drives: the
+   * boundary flag suppresses the tab gate for the whole transition, the
+   * re-entry guard collapses double-taps/unmounted re-fires, and the nav
+   * itself is a SINGLE atomic dismissTo (retried as dismissTo — never a
+   * dismissAll+replace pair, which the gate could land inside of).
    */
   const logoutAndReset = useCallback(async (expired = false) => {
-    await logout();
-    const target = (expired ? { pathname: '/login', params: { expired: '1' } } : '/login') as never;
+    if (resetInFlight) return;
+    resetInFlight = true;
+    boundaryNavActive = true;
     try {
-      router.dismissTo(target as never);
-    } catch {
+      await logout();
+      const target = (expired ? { pathname: '/login', params: { expired: '1' } } : '/login') as never;
       try {
-        router.dismissAll();
-      } catch {}
-      router.replace(target as never);
+        router.dismissTo(target as never);
+      } catch {
+        router.dismissTo(target as never);
+      }
+    } finally {
+      // Settle window: the gate stays suppressed until the stack lands.
+      setTimeout(() => {
+        resetInFlight = false;
+        boundaryNavActive = false;
+      }, 800);
     }
   }, [logout]);
 
@@ -452,11 +474,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   // Dead-Bearer kill-switch: any non-auth lane proving a 401 means the token
-  // is revoked/rotated server-side. Wipe LOCAL state only (no revoke call —
-  // nothing to revoke) + drop cached rows + RESET the stack to login with
-  // the expired notice — sitting on authed screens as a ghost is the bug.
+  // is revoked/rotated server-side. Same single-actor discipline as logout:
+  // suppress the gate, wipe, ONE atomic dismissTo (retried as dismissTo).
   useEffect(() => {
     onSessionExpired(() => {
+      if (resetInFlight) return;
+      resetInFlight = true;
+      boundaryNavActive = true;
       setUser(null);
       setIsLoggedIn(false);
       setSessionSeq((n) => n + 1);
@@ -465,8 +489,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         router.dismissTo({ pathname: '/login', params: { expired: '1' } } as never);
       } catch {
-        router.replace({ pathname: '/login', params: { expired: '1' } });
+        try {
+          router.dismissTo({ pathname: '/login', params: { expired: '1' } } as never);
+        } catch {}
       }
+      setTimeout(() => {
+        resetInFlight = false;
+        boundaryNavActive = false;
+      }, 800);
     });
   }, [clearMoneyCache]);
 

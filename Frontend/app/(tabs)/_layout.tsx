@@ -5,7 +5,7 @@ import { View, Text } from 'react-native';
 import Svg, { Path, Circle } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNotifications } from '../../contexts/NotificationContext';
-import { useAuth } from '../../contexts/AuthContext';
+import { useAuth, isBoundaryNavigating } from '../../contexts/AuthContext';
 import { isApprovedSeller } from '../../utils/marketplace';
 import { colors } from '../../utils/theme';
 import { subscribeImmersiveNav, getImmersiveNav } from '../../utils/immersiveNav';
@@ -162,11 +162,18 @@ export default function TabLayout() {
   const { user, isLoading, isLoggedIn } = useAuth();
   const isSeller = isApprovedSeller(user);
   // Auth gate (industry standard): the tab group never renders account
-  // chrome without a session. A back-navigation landing here logged-out is
-  // bounced to login WITHOUT rendering (kills the @-ghost flash); the
-  // replace keeps no authed route for back to return to.
+  // chrome without a session. Suppressed while an intentional boundary
+  // transition drives (logoutAndReset/kill-switch own the nav then — a
+  // second competing reset is what corrupted the stack blue). Bounces with
+  // dismissTo so no authed route survives beneath login for back to reach.
   useEffect(() => {
-    if (!isLoading && !isLoggedIn) router.replace('/login');
+    if (!isLoading && !isLoggedIn && !isBoundaryNavigating()) {
+      try {
+        router.dismissTo('/login');
+      } catch {
+        router.replace('/login');
+      }
+    }
   }, [isLoading, isLoggedIn]);
   if (!isLoading && !isLoggedIn) return null;
   // Immersive surfaces (DM thread, community room) hide the tab bar via the

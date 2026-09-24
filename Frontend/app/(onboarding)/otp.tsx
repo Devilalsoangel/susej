@@ -164,7 +164,7 @@ export default function OtpScreen() {
         // Signup screen: explicit creation consent.
         const verifyRes = await serverLogin(full, res.data.devCode, { create: true });
         if (verifyRes.ok) {
-          router.push('/(onboarding)/location');
+          router.replace('/(onboarding)/location');
         } else {
           setError('Dev bypass failed');
         }
@@ -190,7 +190,9 @@ export default function OtpScreen() {
       // screen). Sign-in typos elsewhere get needsSignup, never ghosts.
       const res = await serverLogin(fullPhone(), finalCode, { create: true });
       if (res.ok) {
-        router.push('/(onboarding)/location');
+        // Forward within onboarding: replace (never push) — back to a
+        // consumed OTP screen after login makes no sense.
+        router.replace('/(onboarding)/location');
       } else {
         setError(authErrorMessage(res.error, 'try again'));
       }

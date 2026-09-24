@@ -174,7 +174,11 @@ export default function LoginScreen() {
         const verifyRes = await serverLogin(fullPhone(), res.data.devCode);
         if (verifyRes.ok) {
           await completeOnboarding();
-          router.replace('/(tabs)/feed');
+          try {
+            router.dismissTo('/(tabs)/feed');
+          } catch {
+            router.replace('/(tabs)/feed');
+          }
         } else if (verifyRes.needsSignup) {
           // Unknown number even in dev → signup flow, same as requestOtp.
           router.push({ pathname: '/(onboarding)/otp', params: { phone: nationalDigits(), cc: countryCode } });

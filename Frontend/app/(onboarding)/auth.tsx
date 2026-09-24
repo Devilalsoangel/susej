@@ -51,7 +51,7 @@ export default function AuthScreen() {
       serverGoogleLogin(idToken)
         .then((res) => {
           if (res.ok) {
-            router.push('/(onboarding)/location');
+            router.replace('/(onboarding)/location');
           } else {
             setGoogleError(res.error ?? 'Google sign-in failed. Try again.');
           }
