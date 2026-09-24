@@ -590,8 +590,10 @@ export const serverApi = {
   getThreads: () => request<{ threads: any[] }>('/chat/threads'),
   createThread: (participant: string) =>
     request<{ thread: any }>('/chat/threads', { method: 'POST', body: { participant } }),
-  getMessages: (threadId: string) =>
-    request<{ threadId: string; messages: any[] }>(`/chat/threads/${encodeURIComponent(threadId)}/messages`),
+  getMessages: (threadId: string, before?: number) =>
+    request<{ threadId: string; messages: any[]; hasMore?: boolean }>(
+      `/chat/threads/${encodeURIComponent(threadId)}/messages${typeof before === 'number' && Number.isFinite(before) ? `?before=${Math.trunc(before)}` : ''}`
+    ),
   sendMessage: (threadId: string, body: string, offer?: { amount: number; productId: string; productName: string }) =>
     request<{ message: any }>(`/chat/threads/${encodeURIComponent(threadId)}/messages`, {
       method: 'POST',

@@ -19,15 +19,23 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     return NextResponse.json({ error: "Not your thread" }, { status: 403 });
   }
 
+  const beforeRaw = req.nextUrl.searchParams.get("before");
+  const beforeMs = beforeRaw ? Number(beforeRaw) : NaN;
+  const beforeDate = Number.isFinite(beforeMs) && beforeMs > 0 ? new Date(beforeMs) : null;
   const loadMessages = async () => {
     const latestDesc = await prisma.chatMessage.findMany({
-      where: { threadId: id },
+      where: {
+        threadId: id,
+        ...(beforeDate ? { createdAt: { lt: beforeDate } } : {}),
+      },
       orderBy: { createdAt: "desc" },
-      take: 100,
+      take: 101,
     });
-    return latestDesc.reverse();
+    const hasMore = latestDesc.length > 100;
+    return { messages: latestDesc.slice(0, 100).reverse(), hasMore };
   };
-  const messages = await cachedRead(cacheKey("chat", "messages", id), loadMessages, { freshMs: 2_000, staleMs: 60_000, maxBytes: 512_000 });
+  const page = await cachedRead(cacheKey("chat", "messages", id, beforeDate ? beforeMs : "latest"), loadMessages, { freshMs: 2_000, staleMs: 60_000, maxBytes: 512_000 });
+  const messages = page.messages;
   // Seen-marks scope to exactly what we return: marking the whole thread
   // would fake read-receipts for history the user never saw.
   const seenResult = await prisma.chatMessage.updateMany({
@@ -37,6 +45,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   if (seenResult.count > 0) await invalidateCache(cacheKey("chat", "threads", username));
   return NextResponse.json({
     threadId: id,
+    hasMore: page.hasMore,
     messages: messages.map((m) => ({
       id: m.id,
       sender: m.sender,
@@ -115,7 +124,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     data: { lastMessage: text, lastAt: new Date() },
   });
   await invalidateCache(
-    cacheKey("chat", "messages", id),
+    cacheKey("chat", "messages", id, "latest"),
     cacheKey("chat", "threads", username),
     cacheKey("chat", "threads", receiver),
   );
@@ -178,7 +187,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   }
   await prisma.chatMessage.update({ where: { id: messageId }, data: { offerStatus: next } });
   await invalidateCache(
-    cacheKey("chat", "messages", id),
+    cacheKey("chat", "messages", id, "latest"),
     cacheKey("chat", "threads", thread.participantA),
     cacheKey("chat", "threads", thread.participantB),
   );

@@ -59,6 +59,7 @@ interface ThreadMessage {
   system?: boolean;
   offer?: ThreadOffer;
   status?: 'sent' | 'delivered' | 'seen';
+  createdAt?: number;
 }
 
 /** Relative time for server thread timestamps (ms epoch -> "2m ago"). */
@@ -117,8 +118,16 @@ function mapServerMessage(m: any, myUsername?: string): ThreadMessage {
     text: m.body,
     mine: m.sender === myUsername,
     status: (m.status === 'seen' ? 'seen' : m.status === 'delivered' ? 'delivered' : 'sent') as ThreadMessage['status'],
+    createdAt: Number(m.createdAt ?? 0) || undefined,
     ...(offer ? { offer } : {}),
   };
+}
+
+function mergeThreadMessages(previous: ThreadMessage[], incoming: ThreadMessage[]): ThreadMessage[] {
+  const byId = new Map<string, ThreadMessage>();
+  for (const message of previous) byId.set(message.id, message);
+  for (const message of incoming) byId.set(message.id, message);
+  return [...byId.values()].sort((a, b) => (a.createdAt ?? Number.MAX_SAFE_INTEGER) - (b.createdAt ?? Number.MAX_SAFE_INTEGER));
 }
 
 function BlockIcon({ size = 18, color = colors.textSecondary }: { size?: number; color?: string }) {
@@ -196,6 +205,8 @@ export default function ChatScreen() {
   useEffect(() => () => setImmersiveNav(false), []);
   const [threadMessages, setThreadMessages] = useState<ThreadMessage[]>([]);
   const [threadLoading, setThreadLoading] = useState(false);
+  const [olderLoading, setOlderLoading] = useState(false);
+  const [hasOlderMessages, setHasOlderMessages] = useState(false);
   const [serverChats, setServerChats] = useState<ChatItem[]>([]);
   const [threadsLoading, setThreadsLoading] = useState(true);
   const threadsServerLoaded = useRef(false);
@@ -598,7 +609,9 @@ export default function ChatScreen() {
         .getMessages(existing.serverThreadId)
         .then((res) => {
           if (!res.ok || !res.data?.messages) return;
-          setThreadMessages(res.data.messages.map((m) => mapServerMessage(m, user?.username)));
+          const data = res.data;
+          setThreadMessages((prev) => mergeThreadMessages(prev, data.messages.map((m) => mapServerMessage(m, user?.username))));
+          setHasOlderMessages(data.hasMore === true);
         })
         .catch(() => {});
       return;
@@ -737,6 +750,8 @@ export default function ChatScreen() {
     if (chat.serverThreadId) {
       // Real thread: load the server history (offline -> empty thread, local send still works).
       setThreadMessages([]);
+      setHasOlderMessages(false);
+      setOlderLoading(false);
       setThreadLoading(true);
       serverApi
         .getMessages(chat.serverThreadId)
@@ -745,7 +760,9 @@ export default function ChatScreen() {
             setThreadLoading(false);
             return;
           }
-          setThreadMessages(res.data.messages.map((m) => mapServerMessage(m, user?.username)));
+          const mapped = res.data.messages.map((m) => mapServerMessage(m, user?.username));
+          setThreadMessages((prev) => mergeThreadMessages(prev, mapped));
+          setHasOlderMessages(res.data.hasMore === true);
           setThreadLoading(false);
         })
         .catch(() => setThreadLoading(false));
@@ -753,6 +770,8 @@ export default function ChatScreen() {
     }
     // No server thread and no history: start the thread honestly EMPTY.
     setThreadMessages([]);
+    setHasOlderMessages(false);
+    setOlderLoading(false);
     setThreadLoading(false);
   };
 
@@ -841,39 +860,9 @@ export default function ChatScreen() {
             const server = (res.data as { messages: unknown[] }).messages.map((m) =>
               mapServerMessage(m, mine)
             );
-            const serverIds = new Set(server.map((s) => s.id));
-            const localOnly = prev.filter((p) => {
-              // Fresh server row replaces any local with the same id (kills
-              // the ack-race twin where the poll beat the send ack).
-              if (serverIds.has(p.id)) return false;
-              if (p.id.startsWith('offer_') && p.offer) {
-                const represented = server.some(
-                  (s) => s.mine && s.offer && s.offer.amount === p.offer!.amount && s.offer.productId === p.offer!.productId
-                );
-                // Unsynced offer echoes stay (offline/composer state); synced
-                // ones drop — the server card renders instead. Never two cards.
-                return !represented;
-              }
-              // Unacked text echoes stay visible (the send may have failed
-              // silently); ack-swapped rows carry server ids and drop above.
-              if (p.mine && !p.system && !p.offer) return true;
-              return false;
-            });
-            const merged = [...server, ...localOnly];
-            if (
-              merged.length === prev.length &&
-              merged.every(
-                (m, i) =>
-                  m.id === prev[i]?.id &&
-                  m.status === prev[i]?.status &&
-                  m.text === prev[i]?.text &&
-                  (m.offer?.status ?? null) === (prev[i]?.offer?.status ?? null) &&
-                  (m.offer?.amount ?? null) === (prev[i]?.offer?.amount ?? null)
-              )
-            )
-              return prev;
-            return merged;
+            return mergeThreadMessages(prev, server);
           });
+          setHasOlderMessages(res.data.hasMore === true);
           if (!cancelled) setThreadLoading(false);
         })
         .catch(() => { if (!cancelled) setThreadLoading(false); });
@@ -881,6 +870,26 @@ export default function ChatScreen() {
     const t = setInterval(pull, 6000);
     return () => { cancelled = true; clearInterval(t); };
   }, [activeChat?.serverThreadId, user?.username, isFocused]);
+
+  const loadOlderMessages = useCallback(async () => {
+    const threadId = activeChat?.serverThreadId;
+    if (!threadId || olderLoading || !hasOlderMessages) return;
+    const oldest = threadMessages.reduce((value, message) => {
+      if (!message.createdAt) return value;
+      return value === Number.POSITIVE_INFINITY ? message.createdAt : Math.min(value, message.createdAt);
+    }, Number.POSITIVE_INFINITY);
+    if (!Number.isFinite(oldest)) return;
+    setOlderLoading(true);
+    try {
+      const res = await serverApi.getMessages(threadId, oldest);
+      if (!res.ok || !res.data?.messages) return;
+      const mapped = res.data.messages.map((m) => mapServerMessage(m, user?.username));
+      setThreadMessages((prev) => mergeThreadMessages(prev, mapped));
+      setHasOlderMessages(res.data.hasMore === true);
+    } finally {
+      setOlderLoading(false);
+    }
+  }, [activeChat?.serverThreadId, hasOlderMessages, olderLoading, threadMessages, user?.username]);
 
   const productName = offerProduct ?? 'Product offer';
 
@@ -1213,6 +1222,8 @@ export default function ChatScreen() {
         >
         <FlatList
           data={threadMessages}
+          onEndReached={loadOlderMessages}
+          onEndReachedThreshold={0.4}
           keyExtractor={(item) => item.id}
           contentContainerClassName="px-5 py-4"
           renderItem={({ item }) => {
@@ -1255,6 +1266,15 @@ export default function ChatScreen() {
               </View>
             );
           }}
+          ListFooterComponent={
+            olderLoading ? (
+              <View style={{ height: 36, marginVertical: 8, backgroundColor: colors.surfaceContainerLow, borderRadius: 12 }} />
+            ) : hasOlderMessages ? (
+              <TouchableOpacity onPress={loadOlderMessages} className="items-center py-3">
+                <Text className="font-inter-500 text-primary" style={{ fontSize: 12, lineHeight: 16 }}>Load older messages</Text>
+              </TouchableOpacity>
+            ) : null
+          }
           ListEmptyComponent={
             threadLoading ? (
               <View className="px-5 py-4">
