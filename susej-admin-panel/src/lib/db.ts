@@ -4,8 +4,21 @@ import { PrismaClient } from "@/generated/prisma/client";
 
 let clientPromise: Promise<PrismaClient | null> | null = null;
 
+function runtimeDatabaseUrl(): string | undefined {
+  const value = process.env.DATABASE_URL;
+  if (!value) return value;
+  try {
+    const parsed = new URL(value);
+    if (parsed.hostname.endsWith(".neon.tech") && !parsed.hostname.includes("-pooler.")) {
+      parsed.hostname = parsed.hostname.replace(/^([^.]+)(?=\.)/, "$1-pooler");
+      return parsed.toString();
+    }
+  } catch {}
+  return value;
+}
+
 function createAdapter(): unknown {
-  const url = process.env.DATABASE_URL;
+  const url = runtimeDatabaseUrl();
   if (!url || !url.startsWith("postgres")) {
     // No silent SQLite fallback - a missing/bad DATABASE_URL must be loud,
     // not quietly spin up an empty demo database.
