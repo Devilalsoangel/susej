@@ -1,3 +1,4 @@
+import { unstable_cache } from "next/cache";
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
 import { Prisma, type PrismaClient } from "@/generated/prisma/client";
@@ -617,26 +618,9 @@ function parseTypes(params: URLSearchParams): SearchKind[] | null {
   return selected.length ? selected : null;
 }
 
-export async function GET(req: NextRequest) {
-  const params = req.nextUrl.searchParams;
-  const rawQuery = params.get("q") ?? "";
-  const query = normalizeSearchQuery(rawQuery);
-  if (rawQuery.trim().length > 100) return NextResponse.json({ error: "q must be 100 characters or fewer" }, { status: 400 });
-  if (!query) return NextResponse.json({ error: "q is required" }, { status: 400 });
-
-  const modeValue = (params.get("mode") ?? "suggest").trim().toLowerCase();
-  if (modeValue !== "suggest" && modeValue !== "results") return NextResponse.json({ error: "mode must be suggest or results" }, { status: 400 });
-  const mode: SearchMode = modeValue;
-
-  const types = parseTypes(params);
-  if (!types) return NextResponse.json({ error: "types must contain user, product, category, or location" }, { status: 400 });
-
-  const rawLimit = params.get("limit");
-  const limit = rawLimit === null ? 10 : Number(rawLimit);
-  if (!Number.isInteger(limit) || limit < 1 || limit > 20) return NextResponse.json({ error: "limit must be between 1 and 20" }, { status: 400 });
-
+async function executeSearch(query: string, mode: SearchMode, types: SearchKind[], limit: number): Promise<SearchResponse> {
   const prisma = await getPrisma({ probe: false });
-  if (!prisma) return NextResponse.json(responseFor(query, mode, types, limit, types, true));
+  if (!prisma) return responseFor(query, mode, types, limit, types, true);
 
   const settled = await Promise.allSettled(types.map((kind) => searchKind(prisma, kind, query, limit)));
   const counts = emptyCounts();
@@ -662,5 +646,28 @@ export async function GET(req: NextRequest) {
     if (value.partial) degraded = true;
   }
 
-  return NextResponse.json(responseFor(query, mode, types, limit, unavailable, degraded, hits, counts, hasMore));
+  return responseFor(query, mode, types, limit, unavailable, degraded, hits, counts, hasMore);
+}
+
+const getCachedSearch = unstable_cache(executeSearch, ["susej-search-v1"], { revalidate: 15 });
+
+export async function GET(req: NextRequest) {
+  const params = req.nextUrl.searchParams;
+  const rawQuery = params.get("q") ?? "";
+  const query = normalizeSearchQuery(rawQuery);
+  if (rawQuery.trim().length > 100) return NextResponse.json({ error: "q must be 100 characters or fewer" }, { status: 400 });
+  if (!query) return NextResponse.json({ error: "q is required" }, { status: 400 });
+
+  const modeValue = (params.get("mode") ?? "suggest").trim().toLowerCase();
+  if (modeValue !== "suggest" && modeValue !== "results") return NextResponse.json({ error: "mode must be suggest or results" }, { status: 400 });
+  const mode: SearchMode = modeValue;
+
+  const types = parseTypes(params);
+  if (!types) return NextResponse.json({ error: "types must contain user, product, category, or location" }, { status: 400 });
+
+  const rawLimit = params.get("limit");
+  const limit = rawLimit === null ? 10 : Number(rawLimit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 20) return NextResponse.json({ error: "limit must be between 1 and 20" }, { status: 400 });
+
+  return NextResponse.json(await getCachedSearch(query, mode, types, limit));
 }
