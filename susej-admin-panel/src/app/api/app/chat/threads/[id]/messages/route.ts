@@ -34,6 +34,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     where: { id: { in: messages.map((m) => m.id) }, receiver: username, status: { not: "seen" } },
     data: { status: "seen" },
   });
+  await invalidateCache(cacheKey("chat", "threads", username));
   return NextResponse.json({
     threadId: id,
     messages: messages.map((m) => ({

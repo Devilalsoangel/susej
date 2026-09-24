@@ -3,6 +3,7 @@ import { getPrisma } from "@/lib/db";
 import { getAppUser } from "@/lib/app-auth";
 import { getClientIp } from "@/lib/auth";
 import { checkWriteRate } from "@/lib/rate-limit";
+import { cacheKey, invalidateCache } from "@/lib/cache";
 
 const MAX_CONCURRENT_PINS = 3;
 
@@ -47,6 +48,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   if (thread.participantA !== username && thread.participantB !== username) {
     return NextResponse.json({ error: "Not a participant of this thread" }, { status: 403 });
   }
+  const invalidateThreadCaches = () => invalidateCache(cacheKey("chat", "threads", thread.participantA), cacheKey("chat", "threads", thread.participantB));
 
   const now = new Date();
   // activePins check moved inside $transaction to prevent concurrent bypass (race → 4 pins). See below.
@@ -93,7 +95,8 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
         const livePin = await prisma.chatThread.findUnique({ where: { id: thread.id }, select: { pinnedUntil: true, pinnedBy: true } }).catch(() => null);
         const pinTs = livePin?.pinnedUntil instanceof Date ? livePin.pinnedUntil.getTime() : Number(livePin?.pinnedUntil ?? NaN);
         if (String((livePin as { pinnedBy?: unknown } | null)?.pinnedBy ?? "") === username && Number.isFinite(pinTs) && (pinTs as number) > Date.now()) {
-          return NextResponse.json({ pinnedUntil: pinTs, days, charged: 0, deduped: true }, { status: 200 });
+           await invalidateThreadCaches();
+           return NextResponse.json({ pinnedUntil: pinTs, days, charged: 0, deduped: true }, { status: 200 });
         }
         return NextResponse.json({ error: "Pin price changed since this attempt — retry with a fresh request, never the same ref" }, { status: 409 });
       }
@@ -155,19 +158,22 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
           && String(winner.detail ?? "").includes(thread.id);
         if (winnerOk) {
           const cur = await prisma.chatThread.findUnique({ where: { id: thread.id }, select: { pinnedUntil: true } });
-          return NextResponse.json({ pinnedUntil: cur?.pinnedUntil?.getTime() ?? Date.now() + days * 864e5, days, charged: 0, deduped: true }, { status: 200 });
+           await invalidateThreadCaches();
+           return NextResponse.json({ pinnedUntil: cur?.pinnedUntil?.getTime() ?? Date.now() + days * 864e5, days, charged: 0, deduped: true }, { status: 200 });
         }
         const livePin = await prisma.chatThread.findUnique({ where: { id: thread.id }, select: { pinnedUntil: true, pinnedBy: true } }).catch(() => null);
         const pinTs = livePin?.pinnedUntil instanceof Date ? livePin.pinnedUntil.getTime() : Number((livePin as { pinnedUntil?: unknown } | null)?.pinnedUntil ?? NaN);
         if (String((livePin as { pinnedBy?: unknown } | null)?.pinnedBy ?? "") === username && Number.isFinite(pinTs) && (pinTs as number) > Date.now()) {
-          return NextResponse.json({ pinnedUntil: pinTs, days, charged: 0, deduped: true }, { status: 200 });
+           await invalidateThreadCaches();
+           return NextResponse.json({ pinnedUntil: pinTs, days, charged: 0, deduped: true }, { status: 200 });
         }
         return NextResponse.json({ error: "Pin conflict — retry with a fresh request, never the same ref" }, { status: 409 });
       }
       throw e;
     }
     if (!debited) return NextResponse.json({ error: "Insufficient wallet balance" }, { status: 400 });
-    return NextResponse.json({ pinnedUntil: debited.getTime(), days, charged: pinPrice }, { status: 200 });
+     await invalidateThreadCaches();
+     return NextResponse.json({ pinnedUntil: debited.getTime(), days, charged: pinPrice }, { status: 200 });
   }
 
   // Free pin path (pinPrice 0) still needs atomic limit check — same
@@ -186,7 +192,8 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       await tx.chatThread.update({ where: { id: thread.id }, data: { pinnedUntil: until, pinnedBy: username } });
       return until;
     });
-    return NextResponse.json({ pinnedUntil: pinnedUntil.getTime(), days }, { status: 200 });
+     await invalidateThreadCaches();
+     return NextResponse.json({ pinnedUntil: pinnedUntil.getTime(), days }, { status: 200 });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     if (msg.startsWith("LIMIT:")) return NextResponse.json({ error: `Pinned-chat limit reached (${MAX_CONCURRENT_PINS}). Wait for one to expire or unpin one (unpin forfeits remaining time).` }, { status: 403 });
@@ -213,8 +220,10 @@ export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: stri
     where: { id, pinnedBy: username, pinnedUntil: { gt: new Date() } },
     data: { pinnedUntil: new Date(0), pinnedBy: null },
   }).catch(() => null);
-  if (!cleared || cleared.count !== 1) {
-    return NextResponse.json({ error: "No live pin of yours on this thread." }, { status: 404 });
-  }
-  return NextResponse.json({ ok: true, unpinned: true });
+   if (!cleared || cleared.count !== 1) {
+     return NextResponse.json({ error: "No live pin of yours on this thread." }, { status: 404 });
+   }
+   const thread = await prisma.chatThread.findUnique({ where: { id }, select: { participantA: true, participantB: true } });
+   await invalidateCache(cacheKey("chat", "threads", thread?.participantA ?? username), cacheKey("chat", "threads", thread?.participantB ?? username));
+   return NextResponse.json({ ok: true, unpinned: true });
 }
