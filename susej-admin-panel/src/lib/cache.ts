@@ -136,8 +136,9 @@ export async function cachedRead<T>(key: string, loader: Loader<T>, input: Cache
     return local.value;
   }
 
+  const readEpoch = cacheEpochs.get(key) ?? 0;
   const remote = await readRedis<T>(key);
-  if (remote) {
+  if (remote && readEpoch === (cacheEpochs.get(key) ?? 0)) {
     localCache.set(key, remote as CacheRecord<unknown>);
     if (now < remote.freshUntil) return remote.value;
     if (now < remote.staleUntil) {
