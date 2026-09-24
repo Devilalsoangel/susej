@@ -212,7 +212,7 @@ type ReadCacheEntry = { result: ApiResult<unknown>; freshUntil: number; staleUnt
 type ReadCacheSpec = { freshMs: number; staleMs: number };
 const readCache = new Map<string, ReadCacheEntry>();
 const readCacheFlights = new Map<string, Promise<ApiResult<unknown>>>();
-const READ_CACHE_PREFIX = '@susej_server_read_v1:';
+const READ_CACHE_PREFIX = '@susej_server_read_v2:';
 let readCacheGeneration = 0;
 
 function tokenFingerprint(token: string | null): string {
