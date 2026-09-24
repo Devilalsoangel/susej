@@ -40,7 +40,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const hasMore = latestDesc.length > 100;
     return { messages: latestDesc.slice(0, 100).reverse(), hasMore };
   };
-  const page = await cachedRead(cacheKey("chat", "messages", id, beforeDate ? beforeMs : "latest"), loadMessages, { freshMs: 2_000, staleMs: 60_000, maxBytes: 512_000 });
+  const page = await cachedRead(cacheKey("chat", "messages-v2", id, beforeDate ? beforeMs : "latest"), loadMessages, { freshMs: 2_000, staleMs: 60_000, maxBytes: 512_000 });
   const messages = page.messages;
   // Seen-marks scope to exactly what we return: marking the whole thread
   // would fake read-receipts for history the user never saw.
@@ -48,7 +48,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     where: { id: { in: messages.map((m) => m.id) }, receiver: username, status: { not: "seen" } },
     data: { status: "seen" },
   });
-  if (seenResult.count > 0) await invalidateCache(cacheKey("chat", "threads", username));
+  if (seenResult.count > 0) await invalidateCache(cacheKey("chat", "threads-v2", username));
   return NextResponse.json({
     threadId: id,
     hasMore: page.hasMore,
@@ -130,9 +130,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     data: { lastMessage: text, lastAt: new Date() },
   });
   await invalidateCache(
-    cacheKey("chat", "messages", id, "latest"),
-    cacheKey("chat", "threads", username),
-    cacheKey("chat", "threads", receiver),
+    cacheKey("chat", "messages-v2", id, "latest"),
+    cacheKey("chat", "threads-v2", username),
+    cacheKey("chat", "threads-v2", receiver),
   );
   return NextResponse.json(
     {
@@ -193,9 +193,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   }
   await prisma.chatMessage.update({ where: { id: messageId }, data: { offerStatus: next } });
   await invalidateCache(
-    cacheKey("chat", "messages", id, "latest"),
-    cacheKey("chat", "threads", thread.participantA),
-    cacheKey("chat", "threads", thread.participantB),
+    cacheKey("chat", "messages-v2", id, "latest"),
+    cacheKey("chat", "threads-v2", thread.participantA),
+    cacheKey("chat", "threads-v2", thread.participantB),
   );
   return NextResponse.json({ ok: true, status: next });
 }

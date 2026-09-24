@@ -58,7 +58,7 @@ export async function POST(req: NextRequest) {
     // Already blocked → idempotent ok. Missing table (pre-migration) →
     // client keeps its device-local list (current behavior).
     if (code === "P2002") {
-      await invalidateCache(cacheKey("chat", "threads", me), cacheKey("chat", "threads", other));
+      await invalidateCache(cacheKey("chat", "threads-v2", me), cacheKey("chat", "threads-v2", other));
       return NextResponse.json({ ok: true, deduped: true });
     }
     if (/relation .* does not exist|does not exist|no such table/i.test(msg)) {
@@ -66,7 +66,7 @@ export async function POST(req: NextRequest) {
     }
     throw e;
   }
-  await invalidateCache(cacheKey("chat", "threads", me), cacheKey("chat", "threads", other));
+  await invalidateCache(cacheKey("chat", "threads-v2", me), cacheKey("chat", "threads-v2", other));
   return NextResponse.json({ ok: true }, { status: 201 });
 }
 
@@ -90,6 +90,6 @@ export async function DELETE(req: NextRequest) {
   } catch {
     // Missing table → nothing server-side to remove; client list stands.
   }
-  await invalidateCache(cacheKey("chat", "threads", auth.user.username!), cacheKey("chat", "threads", other));
+  await invalidateCache(cacheKey("chat", "threads-v2", auth.user.username!), cacheKey("chat", "threads-v2", other));
   return NextResponse.json({ ok: true });
 }

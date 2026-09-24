@@ -48,7 +48,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   if (thread.participantA !== username && thread.participantB !== username) {
     return NextResponse.json({ error: "Not a participant of this thread" }, { status: 403 });
   }
-  const invalidateThreadCaches = () => invalidateCache(cacheKey("chat", "threads", thread.participantA), cacheKey("chat", "threads", thread.participantB));
+  const invalidateThreadCaches = () => invalidateCache(cacheKey("chat", "threads-v2", thread.participantA), cacheKey("chat", "threads-v2", thread.participantB));
 
   const now = new Date();
   // activePins check moved inside $transaction to prevent concurrent bypass (race → 4 pins). See below.
@@ -224,6 +224,6 @@ export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: stri
      return NextResponse.json({ error: "No live pin of yours on this thread." }, { status: 404 });
    }
    const thread = await prisma.chatThread.findUnique({ where: { id }, select: { participantA: true, participantB: true } });
-   await invalidateCache(cacheKey("chat", "threads", thread?.participantA ?? username), cacheKey("chat", "threads", thread?.participantB ?? username));
+   await invalidateCache(cacheKey("chat", "threads-v2", thread?.participantA ?? username), cacheKey("chat", "threads-v2", thread?.participantB ?? username));
    return NextResponse.json({ ok: true, unpinned: true });
 }

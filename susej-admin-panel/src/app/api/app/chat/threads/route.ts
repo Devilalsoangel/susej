@@ -82,7 +82,7 @@ export async function GET(req: NextRequest) {
     };
   });
   };
-  const out = await cachedRead(cacheKey("chat", "threads", username), loadThreads, { freshMs: 5_000, staleMs: 300_000, maxBytes: 256_000 });
+  const out = await cachedRead(cacheKey("chat", "threads-v2", username), loadThreads, { freshMs: 5_000, staleMs: 300_000, maxBytes: 256_000 });
   return NextResponse.json({ threads: out });
 }
 
@@ -145,6 +145,6 @@ export async function POST(req: NextRequest) {
       if (!thread) throw e;
     }
   }
-  await invalidateCache(cacheKey("chat", "threads", username));
+  await invalidateCache(cacheKey("chat", "threads-v2", username));
   return NextResponse.json({ thread: { id: thread.id, otherUsername: other } }, { status: 201 });
 }
