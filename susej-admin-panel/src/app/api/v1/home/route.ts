@@ -1,3 +1,4 @@
+import { unstable_cache } from "next/cache";
 import { NextRequest, NextResponse } from "next/server";
 import { checkAppKeyAsync, unauthorized } from "@/lib/promotions/api-auth";
 import { getPrisma } from "@/lib/db";
@@ -9,30 +10,19 @@ const ACTIVE = "active";
 // serve instantly with zero DB load. Cold instances recompute.
 let homeMemo: { at: number; body: unknown } | null = null;
 
-export async function GET(request: NextRequest) {
-  if (!await checkAppKeyAsync(request)) return unauthorized();
-
-  const memoNow = Date.now();
-  if (homeMemo && memoNow - homeMemo.at < 30_000) {
-    const memoRes = NextResponse.json(homeMemo.body);
-    memoRes.headers.set("Cache-Control", "private, max-age=30, stale-while-revalidate=60");
-    return memoRes;
-  }
-  const prisma = await getPrisma();
+async function buildHomePayload() {
+  const prisma = await getPrisma({ probe: false });
   // FAIL HONEST: DB unreachable → empty payload + degraded flag. No mock data.
   if (!prisma) {
-    return NextResponse.json(
-      {
-        topSellers: [],
-        hotDeals: [],
-        marketingBanners: [],
-        featuredPosts: [],
-        spotlight: null,
-        spotlights: [],
-        degraded: true,
-      },
-      { status: 200 }
-    );
+    return {
+      topSellers: [],
+      hotDeals: [],
+      marketingBanners: [],
+      featuredPosts: [],
+      spotlight: null,
+      spotlights: [],
+      degraded: true,
+    };
   }
 
   // A mid-read DB blip must degrade to partial rails, never a bare 500
@@ -423,6 +413,22 @@ export async function GET(request: NextRequest) {
           imageUrl: s.imageUrl,
         })),
   };
+  return payload;
+}
+
+const getCachedHomePayload = unstable_cache(buildHomePayload, ["susej-home-v2"], { revalidate: 30 });
+
+export async function GET(request: NextRequest) {
+  if (!await checkAppKeyAsync(request)) return unauthorized();
+
+  const memoNow = Date.now();
+  if (homeMemo && memoNow - homeMemo.at < 30_000) {
+    const memoRes = NextResponse.json(homeMemo.body);
+    memoRes.headers.set("Cache-Control", "private, max-age=30, stale-while-revalidate=60");
+    return memoRes;
+  }
+
+  const payload = await getCachedHomePayload();
   homeMemo = { at: Date.now(), body: payload };
   const response = NextResponse.json(payload);
   response.headers.set("Cache-Control", "private, max-age=30, stale-while-revalidate=60");

@@ -635,7 +635,7 @@ export async function GET(req: NextRequest) {
   const limit = rawLimit === null ? 10 : Number(rawLimit);
   if (!Number.isInteger(limit) || limit < 1 || limit > 20) return NextResponse.json({ error: "limit must be between 1 and 20" }, { status: 400 });
 
-  const prisma = await getPrisma();
+  const prisma = await getPrisma({ probe: false });
   if (!prisma) return NextResponse.json(responseFor(query, mode, types, limit, types, true));
 
   const settled = await Promise.allSettled(types.map((kind) => searchKind(prisma, kind, query, limit)));

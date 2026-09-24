@@ -27,22 +27,38 @@ function createAdapter(): unknown {
   );
 }
 
-// Live DB mode (migrate deploy + seed applied Aug 14). Probe re-runs on module recompile.
-export function getPrisma(): Promise<PrismaClient | null> {
+let probePromise: Promise<PrismaClient | null> | null = null;
+
+async function getClient(): Promise<PrismaClient | null> {
   if (!clientPromise) {
     clientPromise = (async () => {
       try {
-        const client = new PrismaClient({ adapter: createAdapter() as never });
-        await client.user.count();
-        return client;
+        return new PrismaClient({ adapter: createAdapter() as never });
       } catch (err) {
-        // Do NOT cache a failed probe - the DB may come up later (seeded while
-        // the server runs). Reset so the next request re-probes and recovers.
         clientPromise = null;
-        console.error("[db] probe failed, will retry on next request:", err);
+        console.error("[db] client initialization failed:", err);
         return null;
       }
     })();
   }
   return clientPromise;
+}
+
+export function getPrisma(options: { probe?: boolean } = {}): Promise<PrismaClient | null> {
+  if (options.probe === false) return getClient();
+  if (!probePromise) {
+    probePromise = (async () => {
+      const client = await getClient();
+      if (!client) return null;
+      try {
+        await client.user.count();
+        return client;
+      } catch (err) {
+        probePromise = null;
+        console.error("[db] probe failed, will retry on next request:", err);
+        return null;
+      }
+    })();
+  }
+  return probePromise;
 }
