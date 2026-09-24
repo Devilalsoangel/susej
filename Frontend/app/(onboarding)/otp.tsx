@@ -194,6 +194,14 @@ export default function OtpScreen() {
         // consumed OTP screen after login makes no sense.
         router.replace('/(onboarding)/location');
       } else {
+        // Expired code: row is gone server-side — issue a fresh one instead
+        // of stranding the user on "no code requested" (same as login).
+        if (typeof res.error === 'string' && res.error.toLowerCase().includes('expired')) {
+          setError('That code expired — fresh code sent, type the new one.');
+          setCode(Array(OTP_LENGTH).fill(''));
+          await handleSendOtp();
+          return;
+        }
         setError(authErrorMessage(res.error, 'try again'));
       }
     } catch (e) {

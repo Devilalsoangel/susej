@@ -228,6 +228,22 @@ export default function LoginScreen() {
           router.push({ pathname: '/(onboarding)/otp', params: { phone: nationalDigits(), cc: countryCode } });
           return;
         }
+        // Expired code: the server deleted the row, so a retry would say
+        // "no code requested". Industry behavior: silently issue a FRESH
+        // code and say so (the user typed too slowly — their fault in no
+        // reading of it, never punish with a dead end).
+        if (typeof res.error === 'string' && res.error.toLowerCase().includes('expired')) {
+          setError('That code expired — fresh code sent, type the new one.');
+          setCode(Array(OTP_LENGTH).fill(''));
+          try {
+            const fresh = await serverApi.sendOtp(fullPhone());
+            if (fresh.ok) {
+              setResendIn(45);
+              setDevHint(fresh.data?.devCode ? `Dev code: ${fresh.data.devCode}` : '');
+            }
+          } catch {}
+          return;
+        }
         const tries = typeof res.attemptsLeft === 'number' && res.attemptsLeft >= 0
           ? ` ${res.attemptsLeft} ${res.attemptsLeft === 1 ? 'try' : 'tries'} left — check the SMS and retry.`
           : '';
