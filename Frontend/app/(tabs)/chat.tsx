@@ -37,7 +37,9 @@ interface ChatItem {
   pinnedUntil?: number;
 }
 
-// No demo chats — every conversation in the list is a REAL server thread
+const THREADS_CACHE_KEY_BASE = '@susej_server_threads';
+
+
 // shared between actual registered users (offline shows an honest empty state).
 
 type OfferStatus = 'pending' | 'accepted' | 'declined' | 'countered' | 'consumed';
@@ -193,6 +195,7 @@ export default function ChatScreen() {
   useEffect(() => () => setImmersiveNav(false), []);
   const [threadMessages, setThreadMessages] = useState<ThreadMessage[]>([]);
   const [serverChats, setServerChats] = useState<ChatItem[]>([]);
+  const threadsServerLoaded = useRef(false);
   const threadsInFlight = useRef(false);
   const [composer, setComposer] = useState('');
   const [offerMode, setOfferMode] = useState(false);
@@ -307,13 +310,29 @@ export default function ChatScreen() {
     AsyncStorage.setItem(key, JSON.stringify(readChatIds)).catch(() => {});
   }, [readChatIds, readLoaded, user?.username]);
 
-  // Server-backed threads: pull real multi-user conversations (silent offline fallback).
+  useEffect(() => {
+    let cancelled = false;
+    const key = user?.username ? `${THREADS_CACHE_KEY_BASE}:${user.username}` : THREADS_CACHE_KEY_BASE;
+    threadsServerLoaded.current = false;
+    setServerChats([]);
+    AsyncStorage.getItem(key).then((raw) => {
+      if (cancelled || !raw || threadsServerLoaded.current) return;
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) setServerChats(parsed as ChatItem[]);
+      } catch {}
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [user?.username, tokenSeq]);
+
+
   // Refetches on EVERY tab focus (cheap idempotent GET) so threads appear as soon as
   // the session/token is ready and stay live across devices. The ref guards
   // duplicate IN-FLIGHT fetches only — never a one-shot latch (the old
   // identity-keyed latch starved refocuses for 8s+ on unchanged identity).
   const fetchServerThreads = () => {
     if (!user?.username || threadsInFlight.current) return;
+    const key = `${THREADS_CACHE_KEY_BASE}:${user.username}`;
     threadsInFlight.current = true;
     serverApi
       .getThreads()
@@ -336,7 +355,9 @@ export default function ChatScreen() {
           serverThreadId: t.id,
           pinnedUntil: typeof t.pinnedUntil === 'number' ? t.pinnedUntil : undefined,
         }));
+        threadsServerLoaded.current = true;
         setServerChats(items);
+        AsyncStorage.setItem(key, JSON.stringify(items)).catch(() => {});
       })
       .catch(() => {})
       .finally(() => {

@@ -225,11 +225,19 @@ function FeedContent() {
   // non-scary state (config outage, not a dying server).
   const fetchHomeRails = useCallback(async (isActive: () => boolean) => {
     const homeRequest = serverApi.getHome();
-    const auxiliaryRequest = Promise.all([
-      serverApi.getCategories(),
-      serverApi.getStories(),
-      serverApi.getPromotions(),
-    ]);
+    void serverApi.getCategories().then((catsRes) => {
+      if (!isActive() || !catsRes.ok) return;
+      const cats = catsRes.data?.categories?.length ? catsRes.data.categories : [];
+      setWorldCats(cats.slice(0, 6).map((c) => ({ name: c.name, slug: c.slug, bannerImage: c.bannerImage ?? null })));
+    }).catch(() => {});
+    void serverApi.getStories().then((storiesRes) => {
+      if (!isActive() || !storiesRes.ok) return;
+      setServerStories(storiesRes.data?.stories ? (storiesRes.data.stories as AppStory[]) : []);
+    }).catch(() => {});
+    void serverApi.getPromotions().then((promosRes) => {
+      if (!isActive() || !promosRes.ok) return;
+      setServerPromos(promosRes.data?.promotions ? (promosRes.data.promotions as any[]) : []);
+    }).catch(() => {});
     const homeRes = await homeRequest;
     if (!isActive()) return false;
     if (!homeRes.ok) {
@@ -253,21 +261,6 @@ function FeedContent() {
         await AsyncStorage.setItem(HOME_RAILS_CACHE_KEY, JSON.stringify({ at: Date.now(), data }));
       } catch {}
     }
-    void auxiliaryRequest
-      .then(([catsRes, storiesRes, promosRes]) => {
-        if (!isActive()) return;
-        if (catsRes.ok) {
-          const cats = catsRes.data?.categories?.length ? catsRes.data.categories : [];
-          setWorldCats(cats.slice(0, 6).map((c) => ({ name: c.name, slug: c.slug, bannerImage: c.bannerImage ?? null })));
-        }
-        if (storiesRes.ok) {
-          setServerStories(storiesRes.data?.stories ? (storiesRes.data.stories as AppStory[]) : []);
-        }
-        if (promosRes.ok) {
-          setServerPromos(promosRes.data?.promotions ? (promosRes.data.promotions as any[]) : []);
-        }
-      })
-      .catch(() => {});
     return true;
   }, [applyHomePayload]);
 

@@ -5,7 +5,7 @@ import { getAppUser } from "@/lib/app-auth";
 export async function GET(req: NextRequest) {
   const auth = await getAppUser(req);
   if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-  const prisma = await getPrisma();
+  const prisma = await getPrisma({ probe: false });
   if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
 
   const username = auth.user.username!;
@@ -49,27 +49,30 @@ export async function GET(req: NextRequest) {
   });
   const pendingSet = new Set(pendingRows.map((r) => r.threadId));
 
-  const out = await Promise.all(
-    threads.map(async (t) => {
-      const other = t.participantA === username ? t.participantB : t.participantA;
-      const otherUser = await prisma.user.findUnique({ where: { username: other } });
-      // Display identity consistent with feed/storefront: sellers show their
-      // business name, everyone else falls back to their profile name.
-      const displayName = otherUser?.businessName?.trim() || otherUser?.name || other;
-      return {
-        id: t.id,
-        otherUsername: other,
-        otherName: displayName,
-        otherAvatar: otherUser?.avatar ?? undefined,
-        lastMessage: t.lastMessage ?? "",
-        lastAt: t.lastAt.getTime(),
-        unread: unreadMap.get(t.id) ?? 0,
-        hasPendingOffer: pendingSet.has(t.id),
-        // Pinned-chat VAS: ms epoch while an active paid pin exists, else null.
-        pinnedUntil: t.pinnedUntil ? t.pinnedUntil.getTime() : null,
-      };
-    })
-  );
+  const otherUsernames = [...new Set(threads.map((t) => t.participantA === username ? t.participantB : t.participantA))];
+  const profiles = otherUsernames.length
+    ? await prisma.user.findMany({
+        where: { username: { in: otherUsernames } },
+        select: { username: true, name: true, businessName: true, avatar: true },
+      })
+    : [];
+  const profileByUsername = new Map(profiles.filter((u) => u.username).map((u) => [u.username!, u]));
+  const out = threads.map((t) => {
+    const other = t.participantA === username ? t.participantB : t.participantA;
+    const otherUser = profileByUsername.get(other);
+    const displayName = otherUser?.businessName?.trim() || otherUser?.name || other;
+    return {
+      id: t.id,
+      otherUsername: other,
+      otherName: displayName,
+      otherAvatar: otherUser?.avatar ?? undefined,
+      lastMessage: t.lastMessage ?? "",
+      lastAt: t.lastAt.getTime(),
+      unread: unreadMap.get(t.id) ?? 0,
+      hasPendingOffer: pendingSet.has(t.id),
+      pinnedUntil: t.pinnedUntil ? t.pinnedUntil.getTime() : null,
+    };
+  });
   return NextResponse.json({ threads: out });
 }
 
