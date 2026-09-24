@@ -117,6 +117,21 @@ function PublicReadWarmup() {
   return null;
 }
 
+function AuthenticatedReadWarmup() {
+  const { user, tokenSeq } = useAuth();
+  const startedFor = useRef<string | null>(null);
+  useEffect(() => {
+    const username = user?.username?.trim();
+    const key = username ? `${username}:${tokenSeq}` : null;
+    if (!key || startedFor.current === key) return;
+    startedFor.current = key;
+    void serverApi.getThreads();
+    void serverApi.getNotifications();
+    void serverApi.getFollows();
+  }, [tokenSeq, user?.username]);
+  return null;
+}
+
 function SessionDataTree() {
   const { isLoading, isLoggedIn } = useAuth();
   if (isLoading) return <LaunchSkeleton />;
@@ -125,6 +140,7 @@ function SessionDataTree() {
     <FollowProvider>
       <BookmarkProvider>
         <PostProvider>
+          <AuthenticatedReadWarmup />
           <SettingsProvider>
             <NotificationProvider>
               <CartProvider>
