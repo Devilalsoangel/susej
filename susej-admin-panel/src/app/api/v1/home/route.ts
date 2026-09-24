@@ -413,7 +413,7 @@ export async function GET(request: NextRequest) {
     return memoRes;
   }
 
-  const payload = await cachedRead(cacheKey("home"), buildHomePayload, { freshMs: 15_000, staleMs: 600_000 });
+  const payload = await cachedRead(cacheKey("home-v2"), buildHomePayload, { freshMs: 15_000, staleMs: 600_000 });
   homeMemo = { at: Date.now(), body: payload };
   const response = NextResponse.json(payload);
   response.headers.set("Cache-Control", "private, max-age=30, stale-while-revalidate=60");
