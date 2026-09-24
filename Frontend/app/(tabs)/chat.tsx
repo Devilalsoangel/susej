@@ -37,7 +37,7 @@ interface ChatItem {
   pinnedUntil?: number;
 }
 
-const THREADS_CACHE_KEY_BASE = '@susej_server_threads_v2';
+const THREADS_CACHE_KEY_BASE = '@susej_server_threads';
 
 
 // shared between actual registered users (offline shows an honest empty state).
