@@ -10,6 +10,7 @@ type RedisEnvelope<T> = { result?: T; error?: string };
 const localCache = new Map<string, CacheRecord<unknown>>();
 const inFlight = new Map<string, Promise<unknown>>();
 const nextLoaders = new Map<string, () => Promise<unknown>>();
+const cacheEpochs = new Map<string, number>();
 
 function redisConfig(): RedisConfig | null {
   const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
@@ -67,29 +68,37 @@ async function writeRedis<T>(key: string, record: CacheRecord<T>, staleMs: numbe
   await redisCommand(config, ["SET", key, JSON.stringify(record), "EX", String(Math.max(1, Math.ceil(staleMs / 1000)))]);
 }
 
-function nextLoader<T>(key: string, loader: Loader<T>): () => Promise<T> {
-  const existing = nextLoaders.get(key);
+async function deleteRedis(key: string): Promise<void> {
+  const config = redisConfig();
+  if (config) await redisCommand(config, ["DEL", key]);
+}
+
+function nextLoader<T>(key: string, loader: Loader<T>, epoch: number): () => Promise<T> {
+  const loaderKey = `${key}@${epoch}`;
+  const existing = nextLoaders.get(loaderKey);
   if (existing) return existing as () => Promise<T>;
-  const cached = unstable_cache(loader, ["susej-db-cache-v1", key], {
+  const cached = unstable_cache(loader, ["susej-db-cache-v2", loaderKey], {
     revalidate: 60,
     tags: [tagFor(key)],
   });
-  nextLoaders.set(key, cached as () => Promise<unknown>);
+  nextLoaders.set(loaderKey, cached as () => Promise<unknown>);
   return cached as () => Promise<T>;
 }
 
 async function refresh<T>(key: string, loader: Loader<T>, options: Required<CacheOptions>): Promise<T> {
   const existing = inFlight.get(key);
   if (existing) return existing as Promise<T>;
+  const epoch = cacheEpochs.get(key) ?? 0;
   let promise: Promise<T>;
   promise = (async () => {
     let value: T;
     try {
-      value = await nextLoader(key, loader)();
+      value = await nextLoader(key, loader, epoch)();
     } catch (error) {
       if (error instanceof Error && error.message.includes("incrementalCache missing")) value = await loader();
       else throw error;
     }
+    if ((cacheEpochs.get(key) ?? 0) !== epoch) return value;
     const serialized = JSON.stringify(value);
     if (serialized.length <= options.maxBytes) {
       const now = Date.now();
@@ -100,6 +109,10 @@ async function refresh<T>(key: string, loader: Loader<T>, options: Required<Cach
       };
       localCache.set(key, record as CacheRecord<unknown>);
       await writeRedis(key, record, options.staleMs);
+      if ((cacheEpochs.get(key) ?? 0) !== epoch) {
+        localCache.delete(key);
+        await deleteRedis(key);
+      }
     }
     return value;
   })().finally(() => {
@@ -145,8 +158,12 @@ export async function cachedRead<T>(key: string, loader: Loader<T>, input: Cache
 export async function invalidateCache(...keys: string[]): Promise<void> {
   const config = redisConfig();
   await Promise.all(keys.map(async (key) => {
+    cacheEpochs.set(key, (cacheEpochs.get(key) ?? 0) + 1);
     localCache.delete(key);
-    nextLoaders.delete(key);
+    inFlight.delete(key);
+    for (const loaderKey of nextLoaders.keys()) {
+      if (loaderKey.startsWith(`${key}@`)) nextLoaders.delete(loaderKey);
+    }
     revalidateTag(tagFor(key), { expire: 0 });
     if (config) await redisCommand(config, ["DEL", key]);
   }));

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useIsFocused } from 'expo-router';
 import { resolveAvatar } from '../../utils/productImages';
 import { View, Text, FlatList, TouchableOpacity, TextInput, Alert, Image, ScrollView, KeyboardAvoidingView, Platform, BackHandler } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -178,6 +178,7 @@ export default function ChatScreen() {
   const [readLoaded, setReadLoaded] = useState(false);
   const [tab, setTab] = useState<TabType>('messages');
   const insets = useSafeAreaInsets();
+  const isFocused = useIsFocused();
   const { user, tokenSeq } = useAuth();
   const { communities, joinedCommunities } = useCommunities();
   const [activeChat, setActiveChat] = useState<ChatItem | null>(null);
@@ -825,10 +826,9 @@ export default function ChatScreen() {
   // server represents the same deal (same side + amount + listing).
   useEffect(() => {
     const threadId = activeChat?.serverThreadId;
-    if (!threadId) return;
+    if (!threadId || !isFocused) return;
     let cancelled = false;
     const pull = () => {
-      if (threadMessages.length === 0) setThreadLoading(true);
       serverApi
         .getMessages(threadId)
         .then((res) => {
@@ -880,7 +880,7 @@ export default function ChatScreen() {
     };
     const t = setInterval(pull, 6000);
     return () => { cancelled = true; clearInterval(t); };
-  }, [activeChat?.serverThreadId, user?.username, threadMessages.length]);
+  }, [activeChat?.serverThreadId, user?.username, isFocused]);
 
   const productName = offerProduct ?? 'Product offer';
 
