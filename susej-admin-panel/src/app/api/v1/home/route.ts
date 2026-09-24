@@ -1,7 +1,6 @@
-import { after, NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { checkAppKeyAsync, unauthorized } from "@/lib/promotions/api-auth";
 import { getPrisma } from "@/lib/db";
-import { lazySweep } from "@/lib/promotions/activate";
 
 const ACTIVE = "active";
 
@@ -19,11 +18,6 @@ export async function GET(request: NextRequest) {
     memoRes.headers.set("Cache-Control", "private, max-age=30, stale-while-revalidate=60");
     return memoRes;
   }
-  after(() => {
-    void lazySweep().catch((error) => {
-      console.error("[home] post-response sweep failed", error instanceof Error ? error.message : error);
-    });
-  });
   const prisma = await getPrisma();
   // FAIL HONEST: DB unreachable → empty payload + degraded flag. No mock data.
   if (!prisma) {
