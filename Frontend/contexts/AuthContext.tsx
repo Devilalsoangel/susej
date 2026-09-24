@@ -232,6 +232,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       '@susej_redeemed_coupons',
       '@susej_blocked',
       '@susej_chat_unread',
+      '@susej_chat_thread_messages',
       '@susej_community_polls',
       '@susej_reports',
       '@susej_broadcast_joined',

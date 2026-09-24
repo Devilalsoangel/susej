@@ -1,4 +1,4 @@
-import { View, Text, StyleSheet, Image } from 'react-native';
+import { View, Text, StyleSheet } from 'react-native';
 import { router } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
@@ -94,33 +94,6 @@ export default function SplashScreen() {
         {/* Progress Bar */}
         <View style={styles.progressBarTrack}>
           <View style={styles.progressBarFill} />
-        </View>
-
-        {/* Social Proof Card */}
-        <View style={styles.cardWrapper}>
-          <BlurView intensity={12} tint="light" style={styles.socialCard}>
-            {/* Thumbnail */}
-            <View style={styles.thumbnailWrapper}>
-              <Image
-                source={require('../assets/images/splash-thumbnail.png')}
-                style={styles.thumbnailImage}
-              />
-            </View>
-            {/* Text */}
-            <View style={styles.cardTextArea}>
-              <Text style={styles.cardFeaturedLabel}>susej Marketplace</Text>
-              <Text style={styles.cardProductName}>Fresh finds from local sellers</Text>
-            </View>
-            {/* Arrow - exact Figma path */}
-            <View style={styles.cardArrow}>
-              <Svg width={12} height={12} viewBox="228 989 14 14" fill="none">
-                <Path
-                  d="M237.986 996.833H227.84V995.167H237.986L233.319 990.5L234.507 989.333L241.173 996L234.507 1002.67L233.319 1001.5L237.986 996.833Z"
-                  fill={colors.onPrimaryContainer}
-                />
-              </Svg>
-            </View>
-          </BlurView>
         </View>
       </View>
     </View>
@@ -232,7 +205,7 @@ const styles = StyleSheet.create({
     borderRadius: 1,
     backgroundColor: 'rgba(255,255,255,0.20)',
     overflow: 'hidden',
-    marginBottom: 20,
+    marginBottom: 0,
   },
   progressBarFill: {
     width: 48,
@@ -241,62 +214,4 @@ const styles = StyleSheet.create({
     backgroundColor: colors.onPrimaryContainer,
   },
 
-  // Social proof card (from Figma: 320w x 58h, rx=12, at y=971)
-  cardWrapper: {
-    width: 320,
-    height: 58,
-    borderRadius: 12,
-    overflow: 'hidden',
-    borderWidth: 0.5,
-    borderColor: 'rgba(255,255,255,0.10)',
-  },
-  socialCard: {
-    width: 320,
-    height: 58,
-    borderRadius: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.10)',
-    paddingLeft: 12,
-    paddingRight: 12,
-    overflow: 'hidden',
-  },
-  thumbnailWrapper: {
-    width: 48,
-    height: 48,
-    borderRadius: 8,
-    overflow: 'hidden',
-    backgroundColor: 'rgba(255,255,255,0.15)',
-  },
-  thumbnailImage: {
-    width: 48,
-    height: 48,
-    borderRadius: 8,
-  },
-  cardTextArea: {
-    flex: 1,
-    paddingLeft: 12,
-  },
-  cardFeaturedLabel: {
-    fontSize: 12,
-    lineHeight: 16,
-    letterSpacing: 0.5,
-    color: colors.onPrimaryContainer,
-    fontFamily: 'Inter',
-    fontWeight: '500',
-  },
-  cardProductName: {
-    fontSize: 16,
-    lineHeight: 20,
-    color: colors.onPrimaryContainer,
-    fontFamily: 'Inter',
-    fontWeight: '700',
-    marginTop: 2,
-  },
-  cardArrow: {
-    width: 24,
-    height: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
 });

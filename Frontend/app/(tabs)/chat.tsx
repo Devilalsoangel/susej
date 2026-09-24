@@ -158,6 +158,7 @@ const UNREAD_KEY_BASE = '@susej_chat_unread';
 const UNREAD_KEY = UNREAD_KEY_BASE;
 const BLOCKED_KEY_BASE = '@susej_blocked';
 const BLOCKED_KEY = BLOCKED_KEY_BASE;
+const THREAD_MESSAGES_KEY_BASE = '@susej_chat_thread_messages';
 
 function unreadKeyFor(username?: string): string {
   const n = typeof username === 'string' ? username.trim() : '';
@@ -166,6 +167,9 @@ function unreadKeyFor(username?: string): string {
 function blockedKeyFor(username?: string): string {
   const n = typeof username === 'string' ? username.trim() : '';
   return n ? `${BLOCKED_KEY_BASE}:${n}` : BLOCKED_KEY_BASE;
+}
+function threadMessagesKeyFor(username: string | undefined, threadId: string): string {
+  return `${THREAD_MESSAGES_KEY_BASE}:${username?.trim() || 'guest'}:${threadId}`;
 }
 
 interface BlockedUser {
@@ -208,6 +212,8 @@ export default function ChatScreen() {
   const [olderLoading, setOlderLoading] = useState(false);
   const [hasOlderMessages, setHasOlderMessages] = useState(false);
   const threadPollInFlight = useRef(false);
+  const openChatRequest = useRef(0);
+  const threadHistoryReady = useRef(false);
   const [serverChats, setServerChats] = useState<ChatItem[]>([]);
   const [threadsLoading, setThreadsLoading] = useState(true);
   const threadsServerLoaded = useRef(false);
@@ -599,22 +605,7 @@ export default function ChatScreen() {
     }
     const existing = allChats.find((c) => (c.username ?? '').toLowerCase() === normalized);
     if (existing?.serverThreadId) {
-      // Real thread exists on the server — open it directly.
-      setActiveChat({ ...existing, hasUnread: false });
-      setOfferProduct(existing.productName ?? undefined);
-      setOfferListingId(undefined);
-      markChatRead(existing.id);
-      setOfferMode(false);
-      setCountering(null);
-      serverApi
-        .getMessages(existing.serverThreadId)
-        .then((res) => {
-          if (!res.ok || !res.data?.messages) return;
-          const data = res.data;
-          setThreadMessages((prev) => mergeThreadMessages(prev, data.messages.map((m) => mapServerMessage(m, user?.username))));
-          setHasOlderMessages(data.hasMore === true);
-        })
-        .catch(() => {});
+      openChat(existing);
       return;
     }
     const displayName =
@@ -740,6 +731,8 @@ export default function ChatScreen() {
   const visibleCommunityRows = communityRows.filter((c) => !q || c.name.toLowerCase().includes(q));
 
   const openChat = (chat: ChatItem) => {
+    const requestId = ++openChatRequest.current;
+    threadHistoryReady.current = false;
     markChatRead(chat.id);
     setActiveChat(chat);
     setOfferProduct(chat.productName);
@@ -749,24 +742,42 @@ export default function ChatScreen() {
     setOfferMode(false);
     setCountering(null);
     if (chat.serverThreadId) {
-      // Real thread: load the server history (offline -> empty thread, local send still works).
+      // Real thread: paint the last real history first, then reconcile with the server.
       setThreadMessages([]);
       setHasOlderMessages(false);
       setOlderLoading(false);
       setThreadLoading(true);
+      const cacheKey = threadMessagesKeyFor(user?.username, chat.serverThreadId);
+      AsyncStorage.getItem(cacheKey)
+        .then((raw) => {
+          if (requestId !== openChatRequest.current) return;
+          if (raw) {
+            try {
+              const cached = JSON.parse(raw) as ThreadMessage[];
+              if (Array.isArray(cached)) {
+                setThreadMessages(cached);
+                setThreadLoading(cached.length === 0);
+              }
+            } catch {}
+          }
+          threadHistoryReady.current = true;
+        })
+        .catch(() => { threadHistoryReady.current = true; });
       serverApi
         .getMessages(chat.serverThreadId)
         .then((res) => {
+          if (requestId !== openChatRequest.current) return;
           if (!res.ok || !res.data?.messages) {
-            setThreadLoading(false);
+            if (threadHistoryReady.current) setThreadLoading(false);
             return;
           }
-          const mapped = res.data.messages.map((m) => mapServerMessage(m, user?.username));
+          const data = res.data;
+          const mapped = data.messages.map((m) => mapServerMessage(m, user?.username));
           setThreadMessages((prev) => mergeThreadMessages(prev, mapped));
-          setHasOlderMessages(res.data.hasMore === true);
-          setThreadLoading(false);
+          setHasOlderMessages(data.hasMore === true);
+          if (threadHistoryReady.current) setThreadLoading(false);
         })
-        .catch(() => setThreadLoading(false));
+        .catch(() => { if (requestId === openChatRequest.current && threadHistoryReady.current) setThreadLoading(false); });
       return;
     }
     // No server thread and no history: start the thread honestly EMPTY.
@@ -774,7 +785,14 @@ export default function ChatScreen() {
     setHasOlderMessages(false);
     setOlderLoading(false);
     setThreadLoading(false);
+    threadHistoryReady.current = true;
   };
+
+  useEffect(() => {
+    const threadId = activeChat?.serverThreadId;
+    if (!threadId || !user?.username || !threadHistoryReady.current) return;
+    AsyncStorage.setItem(threadMessagesKeyFor(user.username, threadId), JSON.stringify(threadMessages.slice(-500))).catch(() => {});
+  }, [activeChat?.serverThreadId, threadMessages, user?.username]);
 
   const sendMessage = () => {
     const text = composer.trim();
