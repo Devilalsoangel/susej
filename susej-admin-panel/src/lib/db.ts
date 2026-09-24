@@ -64,7 +64,7 @@ export function getPrisma(options: { probe?: boolean } = {}): Promise<PrismaClie
       const client = await getClient();
       if (!client) return null;
       try {
-        await client.user.count();
+        await client.$queryRaw`SELECT 1`;
         return client;
       } catch (err) {
         probePromise = null;

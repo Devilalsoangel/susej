@@ -1,60 +1,58 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
+import { cacheKey, cachedRead } from "@/lib/cache";
 import { getAppUser } from "@/lib/app-auth";
 
 export async function GET(req: NextRequest) {
-  const prisma = await getPrisma();
-  if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
-  // Optional auth: if the caller is signed in, compute `joined` from memberList
   let myUsername: string | null = null;
   try {
     const auth = await getAppUser(req);
     myUsername = auth?.user?.username ?? null;
   } catch {}
-  const rows = await prisma.community.findMany({ orderBy: { createdAt: "asc" }, take: 100 });
-  // Resolve member handles to real profiles so member lists show actual
-  // people (never fabricated rosters). Unresolvable handles are skipped.
-  const wanted = new Map<string, string[]>();
-  for (const c of rows) {
-    const raw: unknown = (c as { memberList?: unknown }).memberList;
-    const handles = (Array.isArray(raw) ? raw : [])
-      .map((m) => (typeof m === "string" ? m : m && typeof m === "object" ? String((m as { username?: unknown }).username ?? "") : ""))
-      .map((h) => h.trim())
-      .filter(Boolean)
-      .slice(0, 50);
-    wanted.set(c.id, handles);
-  }
-  const allHandles = [...new Set([...wanted.values()].flat())];
-  const profiles = new Map<string, { username: string; name: string; avatar: string | null; verified: boolean }>();
-  if (allHandles.length) {
-    const users = await prisma.user.findMany({
-      where: { username: { in: allHandles } },
-      select: { username: true, name: true, businessName: true, avatar: true, verification: true },
+  try {
+    const base = await cachedRead(cacheKey("communities-base"), async () => {
+      const prisma = await getPrisma({ probe: false });
+      if (!prisma) throw new Error("Database unavailable");
+      const rows = await prisma.community.findMany({ orderBy: { createdAt: "asc" }, take: 100 });
+      const wanted = new Map<string, string[]>();
+      for (const c of rows) {
+        const raw: unknown = (c as { memberList?: unknown }).memberList;
+        const handles = (Array.isArray(raw) ? raw : [])
+          .map((m) => (typeof m === "string" ? m : m && typeof m === "object" ? String((m as { username?: unknown }).username ?? "") : ""))
+          .map((h) => h.trim())
+          .filter(Boolean)
+          .slice(0, 50);
+        wanted.set(c.id, handles);
+      }
+      const allHandles = [...new Set([...wanted.values()].flat())];
+      const profiles = allHandles.length
+        ? await prisma.user.findMany({
+            where: { username: { in: allHandles } },
+            select: { username: true, name: true, businessName: true, avatar: true, verification: true },
+          })
+        : [];
+      return { rows, wanted, profiles };
+    }, { freshMs: 30_000, staleMs: 120_000 });
+    const profiles = new Map(base.profiles.filter((u) => u.username).map((u) => [u.username!, { username: u.username!, name: u.businessName || u.name, avatar: u.avatar, verified: u.verification === "approved" }]));
+    return NextResponse.json({
+      communities: base.rows.map((c) => {
+        const handles = base.wanted.get(c.id) ?? [];
+        return {
+          id: c.id,
+          name: c.name,
+          description: c.description ?? "",
+          category: c.type === "public" ? "Public" : "Private",
+          memberCount: c.members,
+          joined: !!myUsername && handles.includes(myUsername),
+          type: c.type,
+          ownerName: c.ownerName,
+          memberProfiles: handles.map((h) => profiles.get(h)).filter((p): p is { username: string; name: string; avatar: string | null; verified: boolean } => !!p),
+        };
+      }),
     });
-    for (const u of users) {
-      if (u.username) profiles.set(u.username, { username: u.username, name: u.businessName || u.name, avatar: u.avatar, verified: u.verification === "approved" });
-    }
+  } catch {
+    return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
   }
-  return NextResponse.json({
-    communities: rows.map((c) => {
-      const handles = wanted.get(c.id) ?? [];
-      let joined = false;
-      if (myUsername) joined = handles.includes(myUsername);
-      return {
-        id: c.id,
-        name: c.name,
-        description: c.description ?? "",
-        category: c.type === "public" ? "Public" : "Private",
-        memberCount: c.members,
-        joined,
-        type: c.type,
-        ownerName: c.ownerName,
-        memberProfiles: handles
-          .map((h) => profiles.get(h))
-          .filter((p): p is { username: string; name: string; avatar: string | null; verified: boolean } => !!p),
-      };
-    }),
-  });
 }
 
 export async function POST(req: NextRequest) {

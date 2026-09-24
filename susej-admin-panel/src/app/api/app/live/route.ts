@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
+import { cacheKey, cachedRead } from "@/lib/cache";
 import { getAppUser } from "@/lib/app-auth";
 
 // Safety window: a stream with no explicit end is auto-ended after 2h so the
@@ -10,40 +11,36 @@ const MAX_LIVE_MS = 2 * 60 * 60 * 1000;
  *  Lazily flips stale streams (older than 2h) to "ended". */
 export async function GET(req: NextRequest) {
   void req;
-  const prisma = await getPrisma();
-  if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
-
-  const cutoff = new Date(Date.now() - MAX_LIVE_MS);
-  await prisma.liveStream.updateMany({
-    where: { status: "live", startedAt: { lt: cutoff } },
-    data: { status: "ended", endedAt: new Date() },
-  });
-
-  const rows = await prisma.liveStream.findMany({
-    where: { status: "live" },
-    orderBy: { startedAt: "desc" },
-    take: 50,
-  });
-  // Recently ended rooms stay visible as history (honestly labelled) so the
-  // screen is alive between live sessions instead of an empty page.
-  const recent = await prisma.liveStream.findMany({
-    where: { status: "ended" },
-    orderBy: { endedAt: "desc" },
-    take: 5,
-  });
-
-  return NextResponse.json({
-    streams: [...rows, ...recent].map((s) => ({
-      id: s.id,
-      title: s.title,
-      hostName: s.hostName,
-      hostUsername: s.hostUsername,
-      viewers: s.viewers,
-      status: s.status,
-      startedAt: s.startedAt.getTime(),
-      endedAt: s.endedAt ? s.endedAt.getTime() : null,
-    })),
-  });
+  try {
+    const payload = await cachedRead(cacheKey("live"), async () => {
+      const prisma = await getPrisma({ probe: false });
+      if (!prisma) throw new Error("Database unavailable");
+      const cutoff = new Date(Date.now() - MAX_LIVE_MS);
+      const [rows, recent] = await Promise.all([
+        prisma.liveStream.findMany({
+          where: { status: "live", startedAt: { gte: cutoff } },
+          orderBy: { startedAt: "desc" },
+          take: 50,
+        }),
+        prisma.liveStream.findMany({ where: { status: "ended" }, orderBy: { endedAt: "desc" }, take: 5 }),
+      ]);
+      return {
+        streams: [...rows, ...recent].map((s) => ({
+          id: s.id,
+          title: s.title,
+          hostName: s.hostName,
+          hostUsername: s.hostUsername,
+          viewers: s.viewers,
+          status: s.status,
+          startedAt: s.startedAt.getTime(),
+          endedAt: s.endedAt ? s.endedAt.getTime() : null,
+        })),
+      };
+    }, { freshMs: 10_000, staleMs: 30_000 });
+    return NextResponse.json(payload);
+  } catch {
+    return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
+  }
 }
 
 /** POST /api/app/live — seller goes live. Auth + approved-seller required.

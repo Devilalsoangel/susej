@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
+import { cacheKey, cachedRead } from "@/lib/cache";
 import { getAppUser } from "@/lib/app-auth";
 import { validateMediaRefs } from "@/lib/media";
 
@@ -116,14 +117,13 @@ function toAppPost(p: {
 export async function GET(req: NextRequest) {
   const auth = await getAppUser(req);
   const username = auth?.user.username ?? null;
-  const prisma = await getPrisma();
-  if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
-
   const seller = req.nextUrl.searchParams.get("seller");
   const cat = req.nextUrl.searchParams.get("category");
-  // Guard: cap search query length to prevent DoS via expensive LIKE queries (slice before lowercasing).
   const qRaw = req.nextUrl.searchParams.get("q");
   const q = qRaw ? qRaw.slice(0, 100).toLowerCase() : undefined;
+  const payload = await cachedRead(cacheKey("posts", seller ?? "all", cat ?? "all", q ?? "", username ?? "anonymous"), async () => {
+    const prisma = await getPrisma({ probe: false });
+    if (!prisma) throw new Error("Database unavailable");
 
   // Extracted (shared by the page query + hashtag-suppression backfill below).
   const baseWhere: any = {
@@ -206,7 +206,7 @@ export async function GET(req: NextRequest) {
   const likedSet = new Set<string>();
   if (username) {
     const likes = await prisma.postLike.findMany({
-      where: { username },
+      where: { username, postId: { in: visible.map((p) => p.id) } },
       select: { postId: true },
     });
     likes.forEach((l) => likedSet.add(l.postId));
@@ -225,7 +225,10 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  return NextResponse.json({ posts: visible.map((p) => toAppPost({ ...p, likedByMe: likedSet.has(p.id) }, authorNames.get(p.authorUsername ?? ""))) });
+    return { posts: visible.map((p) => toAppPost({ ...p, likedByMe: likedSet.has(p.id) }, authorNames.get(p.authorUsername ?? ""))) };
+  }, { freshMs: 5_000, staleMs: 20_000 }).catch(() => null);
+  if (!payload) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
+  return NextResponse.json(payload);
 }
 
 export async function POST(req: NextRequest) {

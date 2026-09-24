@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
+import { cacheKey, cachedRead, invalidateCache } from "@/lib/cache";
 import { getAppUser } from "@/lib/app-auth";
 import { getClientIp } from "@/lib/auth";
 import { checkWriteRate } from "@/lib/rate-limit";
@@ -7,27 +8,24 @@ import { checkWriteRate } from "@/lib/rate-limit";
 export async function GET(req: NextRequest) {
   const auth = await getAppUser(req);
   if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-  const prisma = await getPrisma();
-  if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
-
-  const [rows, counts, followerRows] = await Promise.all([
-    prisma.follow.findMany({
-      where: { follower: auth.user.username! },
-      orderBy: { createdAt: "desc" },
-    }),
-    prisma.follow.groupBy({ by: ["followed"], _count: { followed: true } }),
-    prisma.follow.findMany({
-      where: { followed: auth.user.username! },
-      orderBy: { createdAt: "desc" },
-    }),
-  ]);
-  const followerCounts: Record<string, number> = {};
-  for (const c of counts) followerCounts[c.followed] = c._count.followed;
-  return NextResponse.json({
-    followed: rows.map((r) => r.followed),
-    followerCounts,
-    followers: followerRows.map((r) => r.follower),
-  });
+  const username = auth.user.username!;
+  try {
+    const payload = await cachedRead(cacheKey("follows", username), async () => {
+      const prisma = await getPrisma({ probe: false });
+      if (!prisma) throw new Error("Database unavailable");
+      const [rows, counts, followerRows] = await Promise.all([
+        prisma.follow.findMany({ where: { follower: username }, orderBy: { createdAt: "desc" } }),
+        prisma.follow.groupBy({ by: ["followed"], _count: { followed: true } }),
+        prisma.follow.findMany({ where: { followed: username }, orderBy: { createdAt: "desc" } }),
+      ]);
+      const followerCounts: Record<string, number> = {};
+      for (const c of counts) followerCounts[c.followed] = c._count.followed;
+      return { followed: rows.map((r) => r.followed), followerCounts, followers: followerRows.map((r) => r.follower) };
+    }, { freshMs: 5_000, staleMs: 20_000 });
+    return NextResponse.json(payload);
+  } catch {
+    return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -54,6 +52,7 @@ export async function POST(req: NextRequest) {
 
   if (body.unfollow) {
     await prisma.follow.deleteMany({ where: { follower: auth.user.username!, followed } });
+    await invalidateCache(cacheKey("follows", auth.user.username!), cacheKey("follows", followed));
     return NextResponse.json({ following: false });
   }
   const existing = await prisma.follow.findUnique({
@@ -77,5 +76,6 @@ export async function POST(req: NextRequest) {
       },
     });
   }
+  await invalidateCache(cacheKey("follows", auth.user.username!), cacheKey("follows", followed));
   return NextResponse.json({ following: true });
 }
