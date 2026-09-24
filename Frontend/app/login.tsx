@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { View, Text, TextInput, TouchableOpacity, ScrollView, Alert, Modal, FlatList } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router } from 'expo-router';
 import { ChevronLeftIcon } from '../utils/icons';
 import Svg, { Path } from 'react-native-svg';
 import { colors } from '../utils/theme';
@@ -33,12 +33,10 @@ type AuthMode = 'phone' | 'email';
 
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
-  // Session-death landing (401 kill-switch / logout-expired): say WHY the
-  // user is here instead of silently showing the form (WhatsApp pattern).
-  const entryParams = useLocalSearchParams<{ expired?: string | string[] }>();
-  const expiredRaw = Array.isArray(entryParams.expired) ? entryParams.expired[0] : entryParams.expired;
-  const showExpiredNotice = expiredRaw === '1';
-  const { serverLogin, serverEmailLogin, completeOnboarding } = useAuth();
+  const { serverLogin, serverEmailLogin, completeOnboarding, expiredNotice, clearExpiredNotice } = useAuth();
+  // Session-death notice (401 kill-switch raises it via context — no route
+  // params, no navigation involved). Clears on first keystroke/success.
+  const showExpiredNotice = expiredNotice;
   const [mode, setMode] = useState<AuthMode>('phone');
   // Phone OTP state
   const [phone, setPhone] = useState('');
@@ -174,8 +172,7 @@ export default function LoginScreen() {
         const verifyRes = await serverLogin(fullPhone(), res.data.devCode);
         if (verifyRes.ok) {
           await completeOnboarding();
-          router.dismissAll();
-          router.replace('/(tabs)/feed');
+          // No navigation: the root tree swaps on the login flip by itself.
         } else if (verifyRes.needsSignup) {
           // Unknown number even in dev → signup flow, same as requestOtp.
           router.push({ pathname: '/(onboarding)/otp', params: { phone: nationalDigits(), cc: countryCode } });
@@ -197,6 +194,7 @@ export default function LoginScreen() {
     while (digits.length < OTP_LENGTH) digits.push('');
     setCode(digits);
     if (error) setError('');
+    if (showExpiredNotice) clearExpiredNotice();
     // Auto-submit once all 6 digits are entered (industry standard). Pass the
     // fresh digits explicitly — state is stale inside this handler, so the
     // 6th digit never auto-submitted (only the manual button worked).
@@ -224,10 +222,7 @@ export default function LoginScreen() {
       const res = await serverLogin(fullPhone(), finalCode);
       if (res.ok) {
         await completeOnboarding();
-        // Fresh stack root: dismissAll + replace back-to-back (gate idle on
-        // login). Never dismissTo: POP_TO an absent route empties the stack.
-        router.dismissAll();
-        router.replace('/(tabs)/feed');
+        // No navigation: the root tree swaps on the login flip by itself.
       } else if (res.error) {
         if (res.needsSignup) {
           router.push({ pathname: '/(onboarding)/otp', params: { phone: nationalDigits(), cc: countryCode } });
@@ -256,8 +251,7 @@ export default function LoginScreen() {
       const res = await serverEmailLogin(emailRegister ? 'register' : 'login', email, password, name);
       if (res.ok) {
         await completeOnboarding();
-        router.dismissAll();
-        router.replace('/(tabs)/feed');
+        // No navigation: the root tree swaps on the login flip by itself.
       } else if (res.error) {
         setError(authErrorMessage(res.error, 'try again'));
       } else {
@@ -353,6 +347,7 @@ export default function LoginScreen() {
                           }
                           setPhone(d);
                           if (error) setError('');
+                          if (showExpiredNotice) clearExpiredNotice();
                           if (noAccount) setNoAccount(false);
                         }}
                       />

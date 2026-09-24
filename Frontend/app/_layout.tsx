@@ -23,6 +23,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import { useEffect, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { applyTheme, AppearanceContext, THEME_STORAGE_KEY, type ThemeMode } from '../utils/theme';
+import { useAuth } from '../contexts/AuthContext';
 import { setLocale, LOCALE_STORAGE_KEY } from '../utils/i18n';
 import { AuthProvider } from '../contexts/AuthContext';
 import { FollowProvider } from '../contexts/FollowContext';
@@ -39,6 +40,32 @@ import { PromotionProvider } from '../contexts/PromotionContext';
 import { OfflineBanner } from '../components/OfflineBanner';
 
 SplashScreen.preventAutoHideAsync();
+
+/**
+ * Boundary-proof root navigator (industry standard: Instagram/WhatsApp).
+ * Logged-in renders the FULL app; logged-out renders ONLY index/login/
+ * onboarding. Logout/login flips isLoggedIn and React swaps the whole tree
+ * — authed screens UNMOUNT, so back can never reach them and no navigation
+ * call exists to race or corrupt (the entire dismissAll/replace/dismissTo
+ * blue-screen class is structurally impossible). Guards that used to
+ * navigate are render-only nulls now.
+ */
+function RootNavigator() {
+  const { isLoggedIn, isLoading } = useAuth();
+  if (isLoading) return null;
+  if (!isLoggedIn) {
+    return (
+      <Stack screenOptions={{ headerShown: false }} initialRouteName="login">
+        <Stack.Screen name="index" />
+        <Stack.Screen name="login" />
+        <Stack.Screen name="(onboarding)" />
+      </Stack>
+    );
+  }
+  // File-based full app (identical chrome to before — headerless). The tree
+  // swap on the login flip is what kills back-into-account, not options.
+  return <Stack screenOptions={{ headerShown: false }} />;
+}
 
 export default function RootLayout() {
   const [loaded, error] = useFonts({
@@ -111,7 +138,7 @@ export default function RootLayout() {
                         {/* Global offline strip — sits above every screen when device is offline */}
                         <OfflineBanner />
                         <StatusBar style={themeMode === 'dark' ? 'light' : 'dark'} />
-                        <Stack key={themeMode} screenOptions={{ headerShown: false }} />
+                        <RootNavigator key={themeMode} />
 </PromotionProvider>
   </HashtagProvider>
   </RecentlyViewedProvider>

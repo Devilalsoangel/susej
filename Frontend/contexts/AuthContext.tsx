@@ -1,23 +1,9 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { router } from 'expo-router';
 import { sessionStorage } from '../utils/sessionStorage';
 import { serverApi, onSessionExpired } from '../utils/serverApi';
 
 const PENDING_REVOKE_KEY = '@susej_pending_revoke';
-
-// Boundary-navigation guard: while an intentional logged-in/logged-out
-// transition is driving, the tab gate must NOT fire its own replace — two
-// competing resets corrupt the stack into the blank blue window (proven on
-// Switch-account: state-flip → gate replace → reset dismissTo racing).
-// Screens read it; only logoutAndReset / kill-switch set it.
-let boundaryNavActive = false;
-export function isBoundaryNavigating(): boolean {
-  return boundaryNavActive;
-}
-// Re-entry guard for logoutAndReset (double-tap, unmounted Alert re-fire):
-// module scope so it survives renders.
-let resetInFlight = false;
 
 const ONBOARDED_KEY = '@susej_has_onboarded';
 const ONBOARDED_PREFIX = '@susej_has_onboarded:';
@@ -66,11 +52,15 @@ interface AuthContextType {
   logout: () => Promise<void>;
   /**
    * Industry-standard logout (Instagram/WhatsApp): await the FULL wipe
-   * (server revoke, disk, memory), THEN reset the nav stack so /login is the
-   * only route — the back button can never walk back into the old account.
-   * expired=true adds the session-expired notice on the login screen.
+   * (server revoke with offline retry, disk, memory, per-user cache sweep).
+   * NO navigation call — the root navigator swaps the whole tree on the
+   * isLoggedIn flip, so there is no transition to race and no history for
+   * back to walk. expired=true raises the session-expired notice on login.
    */
   logoutAndReset: (expired?: boolean) => Promise<void>;
+  /** True after a 401 session-death until the next keystroke/success. */
+  expiredNotice: boolean;
+  clearExpiredNotice: () => void;
   setOnboardingStep: (step: number) => Promise<void>;
   completeOnboarding: () => Promise<void>;
   setHasSeenFeedWelcome: () => Promise<void>;
@@ -92,6 +82,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [onboardingStep, setOnboardingStepState] = useState(1);
   const [sessionSeq, setSessionSeq] = useState(0);
   const [tokenSeq, setTokenSeq] = useState(0);
+  // Raised on 401 session-death; login shows it until keystroke/success.
+  const [expiredNotice, setExpiredNotice] = useState(false);
+  const clearExpiredNotice = useCallback(() => setExpiredNotice(false), []);
 
   useEffect(() => {
     (async () => {
@@ -364,30 +357,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [clearMoneyCache]);
 
   /**
-   * Full logout + nav-stack reset (see type docs). ONE actor drives: the
-   * boundary flag suppresses the tab gate for the whole transition, and the
-   * re-entry guard collapses double-taps. The nav is dismissAll() +
-   * replace() issued BACK-TO-BACK synchronously (no await between): with the
-   * gate suppressed nothing can interleave, which is what makes the pair
-   * atomic. (dismissTo() alone was tried: POP_TO a route absent from history
-   * leaves an empty stack = the same blue window.)
+   * Full logout (see type docs). Wipe ONLY — the root navigator swaps the
+   * whole tree the moment isLoggedIn flips, so no navigation call exists to
+   * race, corrupt, or blue-screen. Re-entry safe: a second concurrent call
+   * simply re-runs an idempotent wipe.
    */
   const logoutAndReset = useCallback(async (expired = false) => {
-    if (resetInFlight) return;
-    resetInFlight = true;
-    boundaryNavActive = true;
-    try {
-      await logout();
-      const target = (expired ? { pathname: '/login', params: { expired: '1' } } : '/login') as never;
-      router.dismissAll();
-      router.replace(target as never);
-    } finally {
-      // Settle window: the gate stays suppressed until the stack lands.
-      setTimeout(() => {
-        resetInFlight = false;
-        boundaryNavActive = false;
-      }, 800);
-    }
+    if (expired) setExpiredNotice(true);
+    await logout();
   }, [logout]);
 
   const setOnboardingStep = useCallback(async (step: number) => {
@@ -473,25 +450,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   // Dead-Bearer kill-switch: any non-auth lane proving a 401 means the token
-  // is revoked/rotated server-side. Same single-actor discipline as logout:
-  // suppress the gate, wipe, dismissAll+replace back-to-back (atomic while
-  // suppressed — see logoutAndReset).
+  // is revoked/rotated server-side. Wipe + raise the notice; the root
+  // navigator swaps trees on the flip — no navigation call, nothing to race.
   useEffect(() => {
     onSessionExpired(() => {
-      if (resetInFlight) return;
-      resetInFlight = true;
-      boundaryNavActive = true;
+      setExpiredNotice(true);
       setUser(null);
       setIsLoggedIn(false);
       setSessionSeq((n) => n + 1);
       setTokenSeq((n) => n + 1);
       void clearMoneyCache();
-      router.dismissAll();
-      router.replace({ pathname: '/login', params: { expired: '1' } });
-      setTimeout(() => {
-        resetInFlight = false;
-        boundaryNavActive = false;
-      }, 800);
     });
   }, [clearMoneyCache]);
 
@@ -512,6 +480,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     serverGoogleLogin,
         logout,
         logoutAndReset,
+        expiredNotice,
+        clearExpiredNotice,
         setOnboardingStep,
         completeOnboarding,
         setHasSeenFeedWelcome,
