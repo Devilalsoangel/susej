@@ -9,7 +9,7 @@ import { cacheKey, cachedRead } from "@/lib/cache";
 export async function GET() {
   try {
     const payload = await cachedRead(cacheKey("categories"), async () => {
-      const prisma = await getPrisma();
+      const prisma = await getPrisma({ probe: false });
       if (!prisma) throw new Error("Database unavailable");
 
       const [rows, childRows, counts] = await Promise.all([
