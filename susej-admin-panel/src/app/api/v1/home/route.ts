@@ -1,5 +1,5 @@
-import { unstable_cache } from "next/cache";
 import { NextRequest, NextResponse } from "next/server";
+import { cacheKey, cachedRead } from "@/lib/cache";
 import { checkAppKeyAsync, unauthorized } from "@/lib/promotions/api-auth";
 import { getPrisma } from "@/lib/db";
 
@@ -416,8 +416,6 @@ async function buildHomePayload() {
   return payload;
 }
 
-const getCachedHomePayload = unstable_cache(buildHomePayload, ["susej-home-v2"], { revalidate: 30 });
-
 export async function GET(request: NextRequest) {
   if (!await checkAppKeyAsync(request)) return unauthorized();
 
@@ -428,7 +426,7 @@ export async function GET(request: NextRequest) {
     return memoRes;
   }
 
-  const payload = await getCachedHomePayload();
+  const payload = await cachedRead(cacheKey("home"), buildHomePayload, { freshMs: 15_000, staleMs: 120_000 });
   homeMemo = { at: Date.now(), body: payload };
   const response = NextResponse.json(payload);
   response.headers.set("Cache-Control", "private, max-age=30, stale-while-revalidate=60");

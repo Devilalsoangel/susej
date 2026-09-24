@@ -1,6 +1,6 @@
-import { unstable_cache } from "next/cache";
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
+import { cacheKey, cachedRead } from "@/lib/cache";
 import { Prisma, type PrismaClient } from "@/generated/prisma/client";
 
 const SEARCH_KINDS = ["user", "product", "category", "location"] as const;
@@ -649,8 +649,6 @@ async function executeSearch(query: string, mode: SearchMode, types: SearchKind[
   return responseFor(query, mode, types, limit, unavailable, degraded, hits, counts, hasMore);
 }
 
-const getCachedSearch = unstable_cache(executeSearch, ["susej-search-v1"], { revalidate: 15 });
-
 export async function GET(req: NextRequest) {
   const params = req.nextUrl.searchParams;
   const rawQuery = params.get("q") ?? "";
@@ -669,5 +667,10 @@ export async function GET(req: NextRequest) {
   const limit = rawLimit === null ? 10 : Number(rawLimit);
   if (!Number.isInteger(limit) || limit < 1 || limit > 20) return NextResponse.json({ error: "limit must be between 1 and 20" }, { status: 400 });
 
-  return NextResponse.json(await getCachedSearch(query, mode, types, limit));
+  const payload = await cachedRead(
+    cacheKey("search", query, mode, types.join(","), limit),
+    () => executeSearch(query, mode, types, limit),
+    { freshMs: 10_000, staleMs: 60_000 },
+  );
+  return NextResponse.json(payload);
 }
