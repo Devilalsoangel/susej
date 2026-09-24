@@ -20,12 +20,17 @@ export default function RateReviewScreen() {
   // resolves server-side instead of dead-ending.
   const [serverOrder, setServerOrder] = useState<Order | null>(null);
   const [serverMiss, setServerMiss] = useState(false);
+  const [serverLoading, setServerLoading] = useState(false);
   useEffect(() => {
     setServerOrder(null);
     setServerMiss(false);
+    setServerLoading(Boolean(rawId));
   }, [rawId]);
   useEffect(() => {
-    if (localOrder || !rawId || serverOrder || serverMiss) return;
+    if (localOrder || !rawId || serverOrder || serverMiss) {
+      if (localOrder || !rawId) setServerLoading(false);
+      return;
+    }
     let alive = true;
     serverApi
       .getOrder(rawId)
@@ -36,7 +41,8 @@ export default function RateReviewScreen() {
         if (!mapped) setServerMiss(true);
         else setServerOrder(mapped);
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => { if (alive) setServerLoading(false); });
     return () => {
       alive = false;
     };
@@ -72,6 +78,16 @@ export default function RateReviewScreen() {
   const me = (user?.username ?? '').trim().toLowerCase();
   const isBuyer = !!order && me !== '' && (order.buyerUsername ?? '').toLowerCase() === me;
   const reviewable = !!order && order.status === 'delivered' && !order.reviewed && isBuyer;
+
+  if (!order && serverLoading) {
+    return (
+      <View className="flex-1 bg-surface px-5 pt-8" style={{ paddingTop: insets.top + 8 }}>
+        <View style={{ width: 140, height: 22, borderRadius: 11, backgroundColor: colors.surfaceContainer }} />
+        <View style={{ width: '100%', height: 150, borderRadius: 20, marginTop: 24, backgroundColor: colors.surfaceContainerLow }} />
+        <View style={{ width: '100%', height: 80, borderRadius: 18, marginTop: 14, backgroundColor: colors.surfaceContainerLow }} />
+      </View>
+    );
+  }
 
   if (!order) {
     return (

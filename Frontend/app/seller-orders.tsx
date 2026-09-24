@@ -230,7 +230,7 @@ export default function SellerOrdersScreen() {
           onPress={() => router.push('/wallet')}
         >
             <Text className="font-inter-600 text-white" style={{ fontSize: 13, lineHeight: 18 }}>
-              {formatPrice(earnings)} net earned
+              {ordersLoaded ? `${formatPrice(earnings)} net earned` : 'Loading earnings…'}
             </Text>
           <Text className="font-inter-500 text-white/80 ml-1" style={{ fontSize: 12, lineHeight: 16 }}>
             ›
@@ -263,7 +263,7 @@ export default function SellerOrdersScreen() {
             return (
               <TouchableOpacity key={t} onPress={() => setTab(t)} className="px-4 py-2 rounded-full" accessibilityRole="button" accessibilityLabel={'Filter orders by status: ' + t} style={{ backgroundColor: on ? colors.primaryContainer : colors.surfaceContainer }}>
                 <Text className="font-inter-500" style={{ fontSize: 13, lineHeight: 18, color: on ? colors.onPrimary : colors.textPrimary }}>
-                  {t} ({counts[t] ?? 0})
+                  {t} ({ordersLoaded ? counts[t] ?? 0 : '…'})
                 </Text>
               </TouchableOpacity>
             );
@@ -273,10 +273,8 @@ export default function SellerOrdersScreen() {
         {/* Orders */}
         <View className="mx-5 mt-4" style={{ gap: 12 }}>
           {!ordersLoaded && (
-            <View className="p-6 rounded-figma-24 items-center" style={{ backgroundColor: colors.surfaceContainer }}>
-              <Text className="font-inter-500 text-textSecondary" style={{ fontSize: 13, lineHeight: 18 }}>
-                Loading orders…
-              </Text>
+            <View className="p-4 rounded-figma-24" style={{ backgroundColor: colors.surfaceContainer }}>
+              {[0, 1, 2].map((key) => <View key={key} style={{ height: 54, borderRadius: 14, marginBottom: 10, backgroundColor: colors.surfaceContainerLow }} />)}
             </View>
           )}
           {ordersLoaded && visible.length === 0 && (
