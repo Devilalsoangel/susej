@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
+import { cacheKey, cachedRead, invalidateCache } from "@/lib/cache";
 import { getAppUser } from "@/lib/app-auth";
 
 /** Find the caller's own seller application: primary key app_<username>,
@@ -41,31 +42,35 @@ async function findMine(
 export async function GET(req: NextRequest) {
   const auth = await getAppUser(req);
   if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-  const prisma = await getPrisma();
-  if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
-
   const username = auth.user.username!;
-  const row = await findMine(prisma, username, (auth.user as { phone?: unknown }).phone as string | null, (auth.user as { email?: unknown }).email as string | null);
-  if (!row) return NextResponse.json({ application: null });
-
-  const [docCount, verifiedDocs, lastAudit] = await Promise.all([
-    prisma.sellerDocument.count({ where: { sellerId: row.id } }),
-    prisma.sellerDocument.count({ where: { sellerId: row.id, verified: true } }),
-    prisma.sellerAuditLog.findFirst({ where: { sellerId: row.id }, orderBy: { timestamp: "desc" } }).catch(() => null),
-  ]);
-
-  return NextResponse.json({
-    application: {
-      id: row.id,
-      businessName: row.businessName,
-      category: row.category ?? "",
-      status: row.kycStatus,
-      submittedAt: row.submittedAt instanceof Date ? row.submittedAt.getTime() : new Date(row.submittedAt).getTime(),
-      docCount,
-      verifiedDocs,
-      lastDecision: lastAudit ? { action: lastAudit.action, note: lastAudit.note, at: lastAudit.timestamp.getTime() } : null,
-    },
-  });
+  try {
+    const payload = await cachedRead(cacheKey("seller-application", username), async () => {
+      const prisma = await getPrisma({ probe: false });
+      if (!prisma) throw new Error("Database unavailable");
+      const row = await findMine(prisma, username, (auth.user as { phone?: unknown }).phone as string | null, (auth.user as { email?: unknown }).email as string | null);
+      if (!row) return { application: null };
+      const [docCount, verifiedDocs, lastAudit] = await Promise.all([
+        prisma.sellerDocument.count({ where: { sellerId: row.id } }),
+        prisma.sellerDocument.count({ where: { sellerId: row.id, verified: true } }),
+        prisma.sellerAuditLog.findFirst({ where: { sellerId: row.id }, orderBy: { timestamp: "desc" } }).catch(() => null),
+      ]);
+      return {
+        application: {
+          id: row.id,
+          businessName: row.businessName,
+          category: row.category ?? "",
+          status: row.kycStatus,
+          submittedAt: row.submittedAt instanceof Date ? row.submittedAt.getTime() : new Date(row.submittedAt).getTime(),
+          docCount,
+          verifiedDocs,
+          lastDecision: lastAudit ? { action: lastAudit.action, note: lastAudit.note, at: lastAudit.timestamp.getTime() } : null,
+        },
+      };
+    }, { freshMs: 5_000, staleMs: 60_000 });
+    return NextResponse.json(payload);
+  } catch {
+    return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
+  }
 }
 
 /**

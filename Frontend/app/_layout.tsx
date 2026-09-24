@@ -89,6 +89,50 @@ class RootCrashBoundary extends Component<{ children: ReactNode }, { error: Erro
  * blue-screen class is structurally impossible). Guards that used to
  * navigate are render-only nulls now.
  */
+function LaunchSkeleton() {
+  return (
+    <View style={{ flex: 1, backgroundColor: colors.surfaceContainerLowest, paddingHorizontal: 20, paddingTop: 28 }}>
+      <View style={{ width: 116, height: 18, borderRadius: 9, backgroundColor: colors.surfaceContainer }} />
+      <View style={{ width: '100%', height: 168, borderRadius: 18, marginTop: 22, backgroundColor: colors.surfaceContainer }} />
+      <View style={{ width: '72%', height: 14, borderRadius: 7, marginTop: 20, backgroundColor: colors.surfaceContainer }} />
+      <View style={{ width: '88%', height: 14, borderRadius: 7, marginTop: 10, backgroundColor: colors.surfaceContainer }} />
+      <View style={{ width: '100%', height: 74, borderRadius: 16, marginTop: 24, backgroundColor: colors.surfaceContainer }} />
+    </View>
+  );
+}
+
+function SessionDataTree() {
+  const { isLoading, isLoggedIn } = useAuth();
+  if (isLoading) return <LaunchSkeleton />;
+  if (!isLoggedIn) return <RootNavigator />;
+  return (
+    <FollowProvider>
+      <BookmarkProvider>
+        <PostProvider>
+          <SettingsProvider>
+            <NotificationProvider>
+              <CartProvider>
+                <OrderProvider>
+                  <CommunityProvider>
+                    <RecentlyViewedProvider>
+                      <HashtagProvider>
+                        <PromotionProvider>
+                          <OfflineBanner />
+                          <RootNavigator />
+                        </PromotionProvider>
+                      </HashtagProvider>
+                    </RecentlyViewedProvider>
+                  </CommunityProvider>
+                </OrderProvider>
+              </CartProvider>
+            </NotificationProvider>
+          </SettingsProvider>
+        </PostProvider>
+      </BookmarkProvider>
+    </FollowProvider>
+  );
+}
+
 function RootNavigator() {
   const { isLoggedIn, isLoading, sessionSeq, hasOnboarded } = useAuth();
   const navigatorKey = `${isLoggedIn ? 'auth' : 'guest'}:${sessionSeq}`;
@@ -184,31 +228,8 @@ export default function RootLayout() {
         <AppearanceContext.Provider value={{ themeMode, setThemeMode }}>
           <RootCrashBoundary>
             <AuthProvider>
-              <FollowProvider>
-                <BookmarkProvider>
-                  <PostProvider>
-                    <SettingsProvider>
-                      <NotificationProvider>
-                        <CartProvider>
-                          <OrderProvider>
-                            <CommunityProvider>
-                              <RecentlyViewedProvider>
-                                <HashtagProvider>
-                                  <PromotionProvider>
-                                    <OfflineBanner />
-                                    <StatusBar style={themeMode === 'dark' ? 'light' : 'dark'} />
-                                    <RootNavigator key={themeMode} />
-                                  </PromotionProvider>
-                                </HashtagProvider>
-                              </RecentlyViewedProvider>
-                            </CommunityProvider>
-                          </OrderProvider>
-                        </CartProvider>
-                      </NotificationProvider>
-                    </SettingsProvider>
-                  </PostProvider>
-                </BookmarkProvider>
-              </FollowProvider>
+              <StatusBar style={themeMode === 'dark' ? 'light' : 'dark'} />
+              <SessionDataTree />
             </AuthProvider>
           </RootCrashBoundary>
         </AppearanceContext.Provider>
