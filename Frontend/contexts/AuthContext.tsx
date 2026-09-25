@@ -93,6 +93,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const authTransitionRef = useRef<Promise<void> | null>(null);
   const authEpochRef = useRef(0);
   const loginRequestRef = useRef(0);
+  const loginGraceUntilRef = useRef(0);
   const clearExpiredNotice = useCallback(() => setExpiredNotice(false), []);
   const waitForAuthTransition = useCallback(async () => {
     const pending = authTransitionRef.current;
@@ -239,6 +240,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(nextUser);
     setIsLoggedIn(true);
     setExpiredNotice(false);
+    if (accessToken.startsWith('susej_')) loginGraceUntilRef.current = Date.now() + 15000;
     setSessionSeq((n) => n + 1);
     return true;
   }, []);
@@ -415,6 +417,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const run = (async () => {
       authEpochRef.current += 1;
       loginRequestRef.current += 1;
+      loginGraceUntilRef.current = 0;
       const session = await sessionStorage.getSession().catch(() => null);
       const token = session?.accessToken && session.accessToken.startsWith('susej_') ? session.accessToken : null;
 
@@ -545,6 +548,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // navigator swaps trees on the flip — no navigation call, nothing to race.
   useEffect(() => {
     onSessionExpired(async (token) => {
+      if (Date.now() < loginGraceUntilRef.current) return;
       const session = await sessionStorage.getSession().catch(() => null);
       if (!session || session.accessToken !== token) return;
       const requestId = loginRequestRef.current;
