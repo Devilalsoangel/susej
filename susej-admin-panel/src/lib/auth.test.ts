@@ -51,6 +51,7 @@ test("legacy typeless session tokens are rejected", () => {
 test("tampered session tokens are rejected", () => {
   const token = auth.signSession(admin, "password-hash");
   const [body, signature] = token.split(".");
+  const changedSignature = `${signature.slice(0, -1)}${signature.endsWith("a") ? "b" : "a"}`;
   assert.equal(auth.verifySessionToken(`${body}x.${signature}`), null);
-  assert.equal(auth.verifySessionToken(`${body}.${signature.slice(0, -1)}x`), null);
+  assert.equal(auth.verifySessionToken(`${body}.${changedSignature}`), null);
 });
