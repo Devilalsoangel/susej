@@ -16,8 +16,7 @@ export interface SeedAdmin {
   name: string;
   loginId: string;
   email: string;
-  /** Plaintext seed secret ONLY — hashed by seed.ts before insert. Omit to
-   *  use the documented default rotation flow (change on first login). */
+  /** Optional explicit seed password; otherwise use SUSEJ_SEED_ADMIN_PASSWORD. */
   password?: string;
   role: string;
   status: string;

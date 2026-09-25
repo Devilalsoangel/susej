@@ -54,7 +54,15 @@ async function main() {
   // ---- Admin accounts ----
 
   for (const a of seedAdmins) {
-    const twoFactorEnabled = a.loginId === "alexrivera";
+    const adminPassword = a.password ?? process.env.SUSEJ_SEED_ADMIN_PASSWORD;
+    if (!adminPassword) {
+      throw new Error("SUSEJ_SEED_ADMIN_PASSWORD is required before seeding admin accounts.");
+    }
+    const twoFactorEnabled = a.loginId === (process.env.SUSEJ_SEED_2FA_ADMIN_ID ?? seedAdmins[0]?.loginId);
+    const twoFactorCode = twoFactorEnabled ? process.env.SUSEJ_SEED_ADMIN_2FA : null;
+    if (twoFactorEnabled && !twoFactorCode) {
+      throw new Error("SUSEJ_SEED_ADMIN_2FA is required for the seeded 2FA admin.");
+    }
     await prisma.admin.upsert({
       where: { loginId: a.loginId },
       update: {},
@@ -63,11 +71,11 @@ async function main() {
         name: a.name,
         loginId: a.loginId,
         email: a.email,
-        passwordHash: hashPassword(a.password ?? "Admin@123"),
+        passwordHash: hashPassword(adminPassword),
         role: a.role,
         status: a.status,
         twoFactorEnabled,
-        twoFactorCode: twoFactorEnabled ? hashPassword("123456") : null,
+        twoFactorCode: twoFactorCode ? hashPassword(twoFactorCode) : null,
         createdAt: toDate("2024-01-01"),
       },
     });

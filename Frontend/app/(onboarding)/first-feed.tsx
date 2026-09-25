@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import { View, Text, TouchableOpacity } from 'react-native';
 import { router } from 'expo-router';
 import { ArrowRightIcon } from '../../utils/icons';
@@ -6,6 +7,7 @@ import { useAuth } from '../../contexts/AuthContext';
 
 export default function FirstFeedScreen() {
   const { setHasSeenFeedWelcome, completeOnboarding } = useAuth();
+  const finishing = useRef(false);
 
   return (
     <View className="flex-1" style={{ backgroundColor: colors.surface }}>
@@ -40,15 +42,14 @@ export default function FirstFeedScreen() {
         <TouchableOpacity
           className="w-full h-14 flex-row items-center justify-center rounded-figma-16"
           style={{ backgroundColor: colors.primaryContainer }}
-          onPress={async () => {
-            // Onboarding complete: flags FIRST (awaited — the splash router
-            // reads them), then dismissAll+replace back-to-back so no auth
-            // screen survives beneath feed for back to reach.
-            await completeOnboarding();
-            await setHasSeenFeedWelcome();
-            router.dismissAll();
-            router.replace('/(tabs)/feed');
-          }}
+           onPress={async () => {
+             if (finishing.current) return;
+             finishing.current = true;
+             await completeOnboarding();
+             await setHasSeenFeedWelcome();
+             router.dismissAll();
+             router.replace('/(tabs)/feed');
+           }}
         >
           <Text
             className="font-inter-600 mr-2"

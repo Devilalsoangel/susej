@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import type { User } from "@/generated/prisma/client";
 import { getPrisma } from "./db";
 
 export const APP_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -14,11 +15,19 @@ export async function getAppUser(req: NextRequest) {
   const token = getAppToken(req);
   if (!token) return null;
   const prisma = await getPrisma();
-  if (!prisma) return null;
+  if (!prisma) {
+    const error = new Error('Database unavailable') as Error & { code?: string };
+    error.code = 'DB_UNAVAILABLE';
+    throw error;
+  }
   // Hash-first (one-shot hardening): new sessions store sha256(tokenHash);
   // the plaintext `token` column stays readable until rotation lands, then
   // goes away. Pre-migration DBs reject the unknown field → fall through.
-  let session: any = null;
+  let session: {
+    id: string;
+    expiresAt: Date;
+    user: User;
+  } | null = null;
   try {
     const { createHash } = await import("crypto");
     const digest = createHash("sha256").update(token).digest("hex");

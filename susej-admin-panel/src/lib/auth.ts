@@ -40,6 +40,8 @@ export function verifyPassword(password: string, stored: string): boolean {
 }
 
 interface SessionPayload {
+  typ: "admin-session";
+  aud: "susej-admin";
   sub: string;
   name: string;
   role: string;
@@ -56,14 +58,17 @@ export function sessionPasswordVerifier(passwordHash: string): string {
   return sha256Hex(`susej-sess-v1:${passwordHash}`).slice(0, 16);
 }
 
-function hmac(payload: string): Buffer {
-  const h = require("node:crypto").createHmac("sha256", SECRET);
+function hmac(payload: string, domain: "session" | "challenge"): Buffer {
+  const h = createHmac("sha256", SECRET);
+  h.update(`${domain}.`);
   h.update(payload);
   return h.digest();
 }
 
 export function signSession(admin: { id: string; name: string; role: string; loginId: string }, passwordHash?: string): string {
   const payload: SessionPayload = {
+    typ: "admin-session",
+    aud: "susej-admin",
     sub: admin.id,
     name: admin.name,
     role: admin.role,
@@ -76,7 +81,7 @@ export function signSession(admin: { id: string; name: string; role: string; log
     ...(passwordHash ? { ph: sessionPasswordVerifier(passwordHash) } : {}),
   };
   const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  const sig = hmac(body).toString("base64url");
+  const sig = hmac(body, "session").toString("base64url");
   return `${body}.${sig}`;
 }
 
@@ -84,12 +89,22 @@ export function verifySessionToken(token: string | undefined): SessionPayload | 
   if (!token) return null;
   const [body, sig] = token.split(".");
   if (!body || !sig) return null;
-  const expected = hmac(body);
+  const expected = hmac(body, "session");
   const provided = Buffer.from(sig, "base64url");
   if (expected.length !== provided.length || !timingSafeEqual(expected, provided)) return null;
   try {
     const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as SessionPayload;
-    if (typeof payload.exp !== "number" || payload.exp < Date.now()) return null;
+    if (
+      payload.typ !== "admin-session" ||
+      payload.aud !== "susej-admin" ||
+      typeof payload.sub !== "string" || !payload.sub ||
+      typeof payload.name !== "string" ||
+      typeof payload.role !== "string" ||
+      typeof payload.loginId !== "string" ||
+      typeof payload.exp !== "number" || payload.exp <= Date.now() ||
+      typeof payload.iat !== "number"
+    ) return null;
+    if (payload.ph !== undefined && typeof payload.ph !== "string") return null;
     return payload;
   } catch {
     return null;
@@ -105,14 +120,23 @@ export const MAX_LOGIN_ATTEMPTS = 5;
 export const LOCKOUT_MINUTES = 15;
 
 interface ChallengePayload {
+  typ: "admin-2fa";
+  aud: "susej-admin-2fa";
   sub: string;
+  jti: string;
   exp: number;
 }
 
 export function signChallenge(admin: { id: string }): string {
-  const payload: ChallengePayload = { sub: admin.id, exp: Date.now() + CHALLENGE_TTL_MS };
+  const payload: ChallengePayload = {
+    typ: "admin-2fa",
+    aud: "susej-admin-2fa",
+    sub: admin.id,
+    jti: randomBytes(24).toString("base64url"),
+    exp: Date.now() + CHALLENGE_TTL_MS,
+  };
   const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  const sig = hmac(body).toString("base64url");
+  const sig = hmac(body, "challenge").toString("base64url");
   return `${body}.${sig}`;
 }
 
@@ -120,12 +144,18 @@ export function verifyChallengeToken(token: string | undefined): ChallengePayloa
   if (!token) return null;
   const [body, sig] = token.split(".");
   if (!body || !sig) return null;
-  const expected = hmac(body);
+  const expected = hmac(body, "challenge");
   const provided = Buffer.from(sig, "base64url");
   if (expected.length !== provided.length || !timingSafeEqual(expected, provided)) return null;
   try {
     const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as ChallengePayload;
-    if (typeof payload.exp !== "number" || payload.exp < Date.now()) return null;
+    if (
+      payload.typ !== "admin-2fa" ||
+      payload.aud !== "susej-admin-2fa" ||
+      typeof payload.sub !== "string" || !payload.sub ||
+      typeof payload.jti !== "string" || !payload.jti ||
+      typeof payload.exp !== "number" || payload.exp <= Date.now()
+    ) return null;
     return payload;
   } catch {
     return null;

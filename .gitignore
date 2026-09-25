@@ -7,17 +7,54 @@
 
 # ---------- Memory & agent files (never push) ----------
 AGENTS.md
+**/AGENTS.md
+**/CLAUDE.md
 AGENTS.md.bak-*
 *.bak
 
-# ---------- Docs (kept local only) ----------
+# ---------- Local project memory & evidence (never push) ----------
 docs/
+memory-bank/
+evidence-screenshots/
+harness/
+PRODUCTION-PLAN.md
+susej-admin-panel/plan.md
+susej-admin-panel/dbcheck2.js
+susej-admin-panel/listTables.js
+susej-admin-panel/pg-check*.js
+susej-admin-panel/pg-probe-*.js
+susej-admin-panel/pgc*.js
+susej-admin-panel/test-env.ts
+susej-admin-panel/xsync-test.js
 
 # ---------- Tooling scratch dirs ----------
 .codegraph/
-.omo/
-.playwright-mcp/
+**/.agents/
+**/.claude/
+**/.cline/
+**/.clinerules/
+**/.omo/
+**/.opencode/
+**/.playwright-mcp/
+**/.ruff_cache/
+**/_tmp-*
+**/pg-probe-tmp.js
+**/skills-lock.json
 gpt-map-verdict.txt
+tools/_*
+tools/*.sql
+tools/*.png
+tools/*.txt
+tools/*.err
+tools/*.html
+tools/*.json
+tools/*.md
+tools/*.xml
+tools/gcloud/
+tools/ui-test/
+tools/worker-logs/
+tools/worker-specs/
+tools/cline-plugin-guard/
 
 # ---------- Dependencies ----------
 node_modules/
@@ -48,16 +85,14 @@ dist/
 out/
 coverage/
 .nyc_output/
-
-# ---------- Android native build output ----------
-android/.gradle/
-android/build/
-android/app/build/
-android/app/.cxx/
-android/.kotlin/
-android/local.properties
+*.apk
+**/.gradle/
+**/.kotlin/
+**/.cxx/
+**/local.properties
 *.keystore
 !debug.keystore
+
 
 # ---------- Logs ----------
 *.log
@@ -73,3 +108,4 @@ metro.log*
 *.swo
 .DS_Store
 Thumbs.db
+.neon

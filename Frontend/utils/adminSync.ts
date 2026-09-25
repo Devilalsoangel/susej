@@ -14,8 +14,8 @@
  *
  * AUTH: the admin /api/data/* endpoints normally require an admin session
  * cookie. The app authenticates with the device API key instead
- * (x-app-key header, default "dev-key" in dev, override via AsyncStorage
- * key @susej_app_key). The admin route accepts the app key for the sync
+ * (x-app-key header, supplied by EXPO_PUBLIC_APP_KEY or the local
+ * @susej_app_key override). The admin route accepts the app key for the sync
  * resource set and never for reads.
  *
  * Base URL: `http://127.0.0.1:3000` (works on-device via `adb reverse
@@ -41,7 +41,7 @@ export const ADMIN_URL_KEY = '@susej_admin_url';
 // Vercel = Neon DB with all 19 users + real data. Auth works with AUTH_DEV_MODE=1.
 export const DEFAULT_ADMIN_URL = 'https://susej-admin-panel-theta.vercel.app';
 export const APP_KEY_KEY = '@susej_app_key';
-export const DEFAULT_APP_KEY = 'dev-key';
+export const DEFAULT_APP_KEY = process.env.EXPO_PUBLIC_APP_KEY?.trim() ?? '';
 
 let cachedUrl: string | null = null;
 let cachedKey: string | null = null;
@@ -54,7 +54,10 @@ export async function getAdminUrl(): Promise<string> {
   urlPromise = (async () => {
     try {
       const stored = await AsyncStorage.getItem(ADMIN_URL_KEY);
-      cachedUrl = stored && stored.trim() ? stored.trim() : DEFAULT_ADMIN_URL;
+      const candidate = stored?.trim() || '';
+      const isStaleProductionHost = candidate === 'https://susej-admin-panel.vercel.app';
+      cachedUrl = candidate && !isStaleProductionHost ? candidate : DEFAULT_ADMIN_URL;
+      if (isStaleProductionHost) await AsyncStorage.setItem(ADMIN_URL_KEY, DEFAULT_ADMIN_URL).catch(() => {});
     } catch {
       cachedUrl = DEFAULT_ADMIN_URL;
     }
@@ -69,7 +72,7 @@ export function setAdminUrl(url: string) {
 }
 
 export async function getAppKey(): Promise<string> {
-  if (cachedKey) return cachedKey;
+  if (cachedKey !== null) return cachedKey;
   if (keyPromise) return keyPromise;
   keyPromise = (async () => {
     try {
@@ -78,7 +81,7 @@ export async function getAppKey(): Promise<string> {
     } catch {
       cachedKey = DEFAULT_APP_KEY;
     }
-    return cachedKey;
+    return cachedKey ?? DEFAULT_APP_KEY;
   })().finally(() => { keyPromise = null; });
   return keyPromise;
 }

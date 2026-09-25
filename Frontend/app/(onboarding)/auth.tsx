@@ -49,13 +49,10 @@ export default function AuthScreen() {
       setGoogleBusy(true);
       setGoogleError('');
       serverGoogleLogin(idToken)
-        .then((res) => {
-          if (res.ok) {
-            router.replace('/(onboarding)/location');
-          } else {
-            setGoogleError(res.error ?? 'Google sign-in failed. Try again.');
-          }
-        })
+         .then((res) => {
+           if (res.ok) return;
+           setGoogleError(res.error ?? 'Google sign-in failed. Try again.');
+         })
         .finally(() => setGoogleBusy(false));
     } else if (response.type === 'error') {
       setGoogleBusy(false);
@@ -81,11 +78,8 @@ export default function AuthScreen() {
     setGoogleError('');
     const res = await serverGoogleLogin('', { email, name: email.split('@')[0] });
     setGoogleBusy(false);
-    if (res.ok) {
-      router.push('/(onboarding)/location');
-    } else {
-      setGoogleError(res.error ?? 'Dev Google sign-in failed.');
-    }
+     if (res.ok) return;
+     setGoogleError(res.error ?? 'Dev Google sign-in failed.');
   };
 
   // Dev bypass must never appear in user hands: __DEV__ is true in every

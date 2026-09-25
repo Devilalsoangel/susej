@@ -1,1 +1,0 @@
-SELECT loginId, name, role, status FROM public."Admin" ORDER BY "createdAt" LIMIT 8;

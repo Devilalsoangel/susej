@@ -1,5 +1,5 @@
 import '../global.css';
-import { Stack, router } from 'expo-router';
+import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -133,9 +133,10 @@ function AuthenticatedReadWarmup() {
 }
 
 function SessionDataTree() {
-  const { isLoading, isLoggedIn } = useAuth();
+  const { isLoading, isLoggedIn, sessionSeq } = useAuth();
+  const navigatorKey = `${isLoggedIn ? 'auth' : 'guest'}:${sessionSeq}`;
   if (isLoading) return <LaunchSkeleton />;
-  if (!isLoggedIn) return <RootNavigator />;
+  if (!isLoggedIn) return <RootNavigator key={navigatorKey} />;
   return (
     <FollowProvider>
       <BookmarkProvider>
@@ -148,10 +149,10 @@ function SessionDataTree() {
                   <CommunityProvider>
                     <RecentlyViewedProvider>
                       <HashtagProvider>
-                        <PromotionProvider>
-                          <OfflineBanner />
-                          <RootNavigator />
-                        </PromotionProvider>
+                         <PromotionProvider>
+                           <OfflineBanner />
+                           <RootNavigator key={navigatorKey} />
+                         </PromotionProvider>
                       </HashtagProvider>
                     </RecentlyViewedProvider>
                   </CommunityProvider>
@@ -168,29 +169,6 @@ function SessionDataTree() {
 function RootNavigator() {
   const { isLoggedIn, isLoading, sessionSeq, hasOnboarded } = useAuth();
   const navigatorKey = `${isLoggedIn ? 'auth' : 'guest'}:${sessionSeq}`;
-  const authBoundary = useRef<{ hasOnboarded: boolean; isLoggedIn: boolean; sessionSeq: number } | null>(null);
-
-  useEffect(() => {
-    if (isLoading) return;
-    const previous = authBoundary.current;
-    const current = { hasOnboarded, isLoggedIn, sessionSeq };
-    authBoundary.current = current;
-    if (!previous) return;
-    if (
-      previous.hasOnboarded === current.hasOnboarded &&
-      previous.isLoggedIn === current.isLoggedIn &&
-      previous.sessionSeq === current.sessionSeq
-    ) {
-      return;
-    }
-    const target = !isLoggedIn
-      ? '/login'
-      : hasOnboarded
-        ? '/(tabs)/feed'
-        : '/(onboarding)/location';
-    const timer = setTimeout(() => router.replace(target), 0);
-    return () => clearTimeout(timer);
-  }, [hasOnboarded, isLoading, isLoggedIn, sessionSeq]);
 
   if (isLoading) {
     return (
@@ -215,7 +193,10 @@ function RootNavigator() {
       key={navigatorKey}
       screenOptions={{ headerShown: false }}
       initialRouteName={hasOnboarded ? '(tabs)' : '(onboarding)'}
-    />
+    >
+      <Stack.Screen name="(tabs)" />
+      <Stack.Screen name="(onboarding)" />
+    </Stack>
   );
 }
 

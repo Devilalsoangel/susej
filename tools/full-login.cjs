@@ -1,6 +1,13 @@
 const { chromium } = require("C:/Users/TONI/.config/opencode/node_modules/playwright");
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const ADMIN_ID = process.env.SUSEJ_ADMIN_ID;
+const ADMIN_PASSWORD = process.env.SUSEJ_ADMIN_PASSWORD;
+const ADMIN_2FA = process.env.SUSEJ_ADMIN_2FA;
+if (!ADMIN_ID || !ADMIN_PASSWORD || !ADMIN_2FA) {
+  console.log("Set SUSEJ_ADMIN_ID, SUSEJ_ADMIN_PASSWORD, and SUSEJ_ADMIN_2FA before running this tool.");
+  process.exit(1);
+}
 
 (async () => {
   const browser = await chromium.connectOverCDP("http://127.0.0.1:9222").catch(e => { console.log(e.message); process.exit(1); });
@@ -17,8 +24,8 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
     const loginId = await page.$("#loginId");
     const password = await page.$("#password");
     if (loginId && password) {
-      await loginId.fill("alexrivera");
-      await password.fill("Admin@123");
+      await loginId.fill(ADMIN_ID);
+      await password.fill(ADMIN_PASSWORD);
       const submit = await page.$('button[type="submit"]:has-text("Sign In")');
       if (submit) {
         await submit.click();
@@ -36,7 +43,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
     const boxes = await page.$$('input[maxlength="1"]');
     console.log("    OTP boxes:", boxes.length);
     if (boxes.length >= 6) {
-      const code = "123456";
+      const code = ADMIN_2FA;
       for (let i = 0; i < Math.min(6, boxes.length); i++) {
         await boxes[i].click();
         await boxes[i].fill(code[i]);
@@ -62,8 +69,8 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
       const loginId = await page.$("#loginId");
       const password = await page.$("#password");
       if (loginId && password) {
-        await loginId.fill("alexrivera");
-        await password.fill("Admin@123");
+        await loginId.fill(ADMIN_ID);
+        await password.fill(ADMIN_PASSWORD);
         const submit = await page.$('button[type="submit"]:has-text("Sign In")');
         if (submit) {
           await submit.click();
@@ -75,7 +82,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
         await sleep(2000);
         const boxes2 = await page.$$('input[maxlength="1"]');
         if (boxes2.length >= 6) {
-          const code = "123456";
+          const code = ADMIN_2FA;
           for (let i = 0; i < 6; i++) {
             await boxes2[i].click();
             await boxes2[i].fill(code[i]);

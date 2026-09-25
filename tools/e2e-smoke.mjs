@@ -7,6 +7,11 @@
 import fs from "node:fs";
 import path from "node:path";
 const BASE = "http://127.0.0.1:3000";
+const APP_KEY = process.env.SUSEJ_APP_KEY ?? process.env.APP_API_KEY;
+if (!APP_KEY) {
+  console.error("Set SUSEJ_APP_KEY or APP_API_KEY before running this tool.");
+  process.exit(1);
+}
 const phone = process.argv[2] || "9198000000" + String(process.pid).slice(-2);
 let pass = 0, fail = 0;
 const ok = (c, label, extra = "") => { console.log((c ? "PASS" : "FAIL") + " " + label + (extra ? " | " + extra : "")); c ? pass++ : fail++; };
@@ -44,7 +49,7 @@ ok(w2.status === 200 && w2.data?.balance === (w1.data?.balance ?? 0) + 100, "WAL
 const feed = await j("GET", "/api/app/posts", null, H);
 ok(feed.status === 200, "FEED: GET /posts", Array.isArray(feed.data?.posts) ? `posts=${feed.data.posts.length}` : (feed.data?.posts ? "posts key ok" : `status=${feed.status}`));
 // 7) categories
-const cat = await j("GET", "/api/app/categories", null, { "x-app-key": "dev-key" });
+const cat = await j("GET", "/api/app/categories", null, { "x-app-key": APP_KEY });
 ok(cat.status === 200 && Array.isArray(cat.data?.categories), "CATEGORIES: GET (app-key)", Array.isArray(cat.data?.categories) ? `count=${cat.data.categories.length}` : `status=${cat.status}`);
 // 8) 401 without token (honest auth gate)
 const anon = await j("GET", "/api/app/wallet");

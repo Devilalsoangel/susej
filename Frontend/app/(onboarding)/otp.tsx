@@ -9,19 +9,13 @@ import { serverApi, transportMessage, authErrorMessage } from '../../utils/serve
 
 const COUNTRIES = [
   { code: '+91', name: 'India', flag: '🇮🇳' },
-  { code: '+1', name: 'United States', flag: '🇺🇸' },
-  { code: '+44', name: 'United Kingdom', flag: '🇬🇧' },
-  { code: '+971', name: 'UAE', flag: '🇦🇪' },
-  { code: '+65', name: 'Singapore', flag: '🇸🇬' },
-  { code: '+61', name: 'Australia', flag: '🇦🇺' },
-  { code: '+81', name: 'Japan', flag: '🇯🇵' },
 ];
 
 const OTP_LENGTH = 6;
 
 export default function OtpScreen() {
   const insets = useSafeAreaInsets();
-  const { updateUser, login, serverLogin } = useAuth();
+  const { serverLogin } = useAuth();
   // Prefill when sign-in redirects an unknown number here (params phone/cc).
   // Sanitized: digits only, cc must be a known picker code, else defaults.
   const entryParams = useLocalSearchParams<{ phone?: string | string[]; cc?: string | string[] }>();
@@ -47,6 +41,10 @@ export default function OtpScreen() {
   const codeComplete = code.every((d) => d !== '');
   // Auto-submit guard: skips stale schedules after further typing/deletes.
   const autoSubmitId = useRef(0);
+  const autoSubmitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const verifyInFlight = useRef(false);
+  const sendInFlight = useRef(false);
+  const [otpPhone, setOtpPhone] = useState('');
 
   useEffect(() => {
     if (resendIn <= 0) return;
@@ -60,6 +58,22 @@ export default function OtpScreen() {
     const t = setTimeout(() => setError(''), 6000);
     return () => clearTimeout(t);
   }, [error]);
+
+  useEffect(() => {
+    return () => {
+      autoSubmitId.current += 1;
+      if (autoSubmitTimer.current) clearTimeout(autoSubmitTimer.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    setPhone(prefillPhone);
+    setCountryCode(prefillCc);
+    setOtpPhone('');
+    setOtpSent(false);
+    setCode(Array(OTP_LENGTH).fill(''));
+    setError('');
+  }, [prefillPhone, prefillCc]);
 
   // Industry standard (E.164): the selected country code is part of the
   // identity. Sending bare national digits made the picker decorative and
@@ -75,7 +89,7 @@ export default function OtpScreen() {
     let digits = phone.replace(/\D/g, '');
     // Single strip each: cc once, then one trunk 0 for +91. A second cc
     // (14-digit 91+911556848908) must NOT strip again — it warns instead.
-    if (cc && digits.startsWith(cc) && digits.length > cc.length) digits = digits.slice(cc.length);
+    if (cc && digits.startsWith(cc) && digits.length > (cc === '91' ? 10 : cc.length)) digits = digits.slice(cc.length);
     if (cc === '91' && digits.startsWith('0') && digits.length > 10) digits = digits.slice(1);
     return digits;
   };
@@ -95,6 +109,7 @@ export default function OtpScreen() {
   const [devBypassing, setDevBypassing] = useState(false);
 
   const handleSendOtp = async () => {
+    if (sending || sendInFlight.current) return;
     // Length guard FIRST: >10 (or <10 for +91) warns and never sends.
     if (!isPhoneValid()) {
       setError(phoneWarn());
@@ -103,6 +118,7 @@ export default function OtpScreen() {
      const full = fullPhone();
      setError('');
     setSending(true);
+    sendInFlight.current = true;
     try {
       // Real server-side code issuance (hashed, expiring, single-use).
       const res = await serverApi.sendOtp(full);
@@ -110,6 +126,7 @@ export default function OtpScreen() {
         setError(authErrorMessage(res.error, 'try again'));
         return;
       }
+      setOtpPhone(full);
       // Dev-mode convenience: the SERVER decides whether a hint may be
       // shown (AUTH_DEV_MODE=1). Each request gets its own random code —
       // the app displays exactly what the server returned for this phone.
@@ -120,11 +137,14 @@ export default function OtpScreen() {
     } catch (e) {
       setError('Could not send the code. Check your connection.');
     } finally {
+      sendInFlight.current = false;
       setSending(false);
     }
   };
 
   const handleOtpChange = (text: string) => {
+    autoSubmitId.current += 1;
+    if (autoSubmitTimer.current) clearTimeout(autoSubmitTimer.current);
     const digits = text.replace(/\D/g, '').slice(0, OTP_LENGTH).split('');
     while (digits.length < OTP_LENGTH) digits.push('');
     setCode(digits);
@@ -136,7 +156,10 @@ export default function OtpScreen() {
     if (text.replace(/\D/g, '').length === OTP_LENGTH) {
       const freshCode = digits.join('');
       const id = ++autoSubmitId.current;
-      setTimeout(() => { if (id === autoSubmitId.current) handleVerify(freshCode); }, 150);
+      autoSubmitTimer.current = setTimeout(() => {
+        autoSubmitTimer.current = null;
+        if (id === autoSubmitId.current) handleVerify(freshCode);
+      }, 150);
     }
   };
 
@@ -181,13 +204,15 @@ export default function OtpScreen() {
   // onPress={handleVerify}) — the press event must not land in codeOverride.
   const handleVerify = async (codeOverride?: string) => {
     const finalCode = typeof codeOverride === 'string' ? codeOverride : otpCode;
-    if (finalCode.length !== OTP_LENGTH || verifying) return;
+    if (finalCode.length !== OTP_LENGTH || verifying || verifyInFlight.current) return;
+    verifyInFlight.current = true;
     setVerifying(true);
     setError('');
     try {
       // Server-first signup — explicit create:true (this is the signup
       // screen). Sign-in typos elsewhere get needsSignup, never ghosts.
-      const res = await serverLogin(fullPhone(), finalCode, { create: true });
+       const targetPhone = otpPhone || fullPhone();
+       const res = await serverLogin(targetPhone, finalCode, { create: true });
        if (res.ok) {
          return;
        } else {
@@ -202,10 +227,11 @@ export default function OtpScreen() {
         setError(authErrorMessage(res.error, 'try again'));
       }
     } catch (e) {
-      setError('Sign-in is unavailable. Try again once you are back online.');
-    } finally {
-      setVerifying(false);
-    }
+       setError('Sign-in is unavailable. Try again once you are back online.');
+     } finally {
+       verifyInFlight.current = false;
+       setVerifying(false);
+     }
   };
 
   return (
@@ -299,7 +325,7 @@ export default function OtpScreen() {
               className="w-full h-14 flex-row items-center justify-center rounded-figma-16 mb-8"
               style={{ backgroundColor: isPhoneValid() && !sending ? colors.primary : 'rgba(93,95,239,0.2)' }}
               onPress={handleSendOtp}
-              disabled={sending}
+               disabled={sending || !isPhoneValid()}
             >
               <Text
                 className="font-inter-600"

@@ -186,11 +186,11 @@ export default function InterestsScreen() {
             backgroundColor: hasMin ? colors.primaryContainer : 'rgba(93,95,239,0.2)',
           }}
           disabled={!hasMin}
-          onPress={() => {
-            updateUser({ interests: selected });
-            completeOnboarding();
-            router.push('/(onboarding)/first-feed');
-          }}
+           onPress={async () => {
+             await updateUser({ interests: selected });
+             await completeOnboarding();
+             router.push('/(onboarding)/first-feed');
+           }}
         >
           <Text
             className="font-inter-600 mr-2"

@@ -342,7 +342,7 @@ function parseSession(request: NextRequest) {
  * mobile app's device API key (x-app-key) PLUS a valid Bearer susej_ token.
  * The Bearer token binds the device to a REAL user (getAppUser) so
  * storefront-banners / sellers / withdrawals cannot be spoofed as another
- * seller by just knowing dev-key.
+ * seller by just knowing the app key.
  */
 async function parseWriteSession(request: NextRequest) {
   // Admin cookie resolves to the LIVE Admin row (ban/deactivate/demote bite

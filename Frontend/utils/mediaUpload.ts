@@ -74,6 +74,31 @@ export async function shrinkForUpload(
   return uriToDataUrl(uri, mime);
 }
 
+/**
+ * Encode a bundled require() asset as a base64 data URL for the upload
+ * pipeline. Resolves via expo-asset (Asset.fromModule → downloadAsync →
+ * file:// localUri), then encodes with the existing uriToDataUrl path.
+ * NEVER passes a bare numeric asset ID to fetch() — on-device
+ * Image.resolveAssetSource does not yield a fetchable URI for these
+ * drawables (MalformedURLException: no protocol), which previously surfaced
+ * as raw exception text on screen. Throws a human Error when no file:// URI
+ * materializes.
+ */
+export async function bundledAssetToDataUrl(moduleId: number, mime = 'image/jpeg'): Promise<string> {
+  const expoAssetModule = require('expo-asset') as {
+    Asset: {
+      fromModule: (m: number) => {
+        downloadAsync: () => Promise<{ localUri: string | null }>;
+      };
+    };
+  };
+  const asset = expoAssetModule.Asset.fromModule(moduleId);
+  const done = await asset.downloadAsync();
+  const localUri = String(done?.localUri ?? '');
+  if (!localUri.startsWith('file://')) throw new Error('unresolvable');
+  return uriToDataUrl(localUri, mime);
+}
+
 /** Resolve a stored image reference to an absolute URL for <Image source>. */
 export function resolveImageUrl(url: string, base: string): string {
   const u = String(url ?? '').trim();

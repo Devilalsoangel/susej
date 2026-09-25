@@ -12,7 +12,11 @@ const q = (text, values) => prisma.query(text, values);
 const https = require("https");
 
 const ADMIN = "https://susej-admin-panel.vercel.app";
-const APP_KEY = process.env.E2E_APP_KEY || "dev-key";
+const APP_KEY = process.env.E2E_APP_KEY || process.env.SUSEJ_APP_KEY || process.env.APP_API_KEY;
+if (!APP_KEY) {
+  console.error("Set E2E_APP_KEY, SUSEJ_APP_KEY, or APP_API_KEY before running this tool.");
+  process.exit(1);
+}
 const USERNAME = "e2e_seller_" + Date.now().toString(36);
 const USER_ID = "e2e-user-" + Date.now().toString(36);
 const SELLER_ROW_ID = `app_${USERNAME}`;

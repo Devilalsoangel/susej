@@ -139,10 +139,13 @@ export async function POST(req: NextRequest) {
   if (!throttleCreateIp(req)) {
     return NextResponse.json({ error: "Too many accounts from this network — try again later" }, { status: 429 });
   }
-  const user = await createUserByPhone(phone);
-  if (!user) return NextResponse.json({ error: "Could not create account" }, { status: 500 });
+   const user = await createUserByPhone(phone);
+   if (!user) return NextResponse.json({ error: "Could not create account" }, { status: 500 });
+   if (user.status !== "active") {
+     return NextResponse.json({ error: "Account disabled. Contact support." }, { status: 403 });
+   }
 
-  const token = await createAppSession(user.id, user.username!);
+   const token = await createAppSession(user.id, user.username!);
   // Respond with the row as it exists NOW - a KYC verdict may have landed on
   // the User row moments before login, and the payload must never carry a
   // stale pre-verdict snapshot (isSeller/verification/businessName).

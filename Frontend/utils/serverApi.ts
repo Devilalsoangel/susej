@@ -193,17 +193,19 @@ async function getToken(): Promise<string | null> {
  *  AuthContext registers the local-wipe handler; serverApi never imports it
  *  (import cycle). Auth lanes are excluded — a 401 there is a credential
  *  rejection (wrong OTP/password), not a session death. */
-let expiredListener: (() => void) | null = null;
-export function onSessionExpired(cb: () => void): void {
+let expiredListener: ((token: string) => void | Promise<void>) | null = null;
+export function onSessionExpired(cb: (token: string) => void | Promise<void>): void {
   expiredListener = cb;
 }
 
 async function expireIfCurrentToken(token: string): Promise<void> {
-  const expired = await sessionStorage.clearSessionIfToken(token);
-  if (!expired) return;
-  try {
-    expiredListener?.();
-  } catch {}
+  if (expiredListener) {
+    try {
+      await expiredListener(token);
+    } catch {}
+    return;
+  }
+  await sessionStorage.clearSessionIfToken(token);
 }
 
 const requestFlights = new Map<string, Promise<ApiResult<unknown>>>();
@@ -729,8 +731,8 @@ export const serverApi = {
       posts: any[];
       reviews?: Array<{ id: string; reviewer: string; rating: number; text?: string; product?: string; createdAt: number }>;
     }>(`/users/${encodeURIComponent(username)}`),
-  updateProfile: (patch: Record<string, unknown>) =>
-    request<{ user: Record<string, unknown> }>('/users/me', { method: 'PATCH', body: patch, timeoutMs: 20000 }),
+  updateProfile: (patch: Record<string, unknown>, authToken?: string) =>
+    request<{ user: Record<string, unknown> }>('/users/me', { method: 'PATCH', body: patch, timeoutMs: 20000, authToken }),
   /** Live DB availability probe for a signup handle (debounced by caller). */
   checkUsername: (username: string) =>
     request<{ available: boolean; reason?: string; mine?: boolean }>(

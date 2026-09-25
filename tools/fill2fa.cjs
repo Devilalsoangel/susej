@@ -1,4 +1,9 @@
 const { chromium } = require("C:/Users/TONI/.config/opencode/node_modules/playwright");
+const code = process.env.SUSEJ_ADMIN_2FA;
+if (!code) {
+  console.log("Set SUSEJ_ADMIN_2FA before running this tool.");
+  process.exit(1);
+}
 
 (async () => {
   const browser = await chromium.connectOverCDP("http://127.0.0.1:9222").catch(e => { console.log(e.message); process.exit(1); });
@@ -11,12 +16,11 @@ const { chromium } = require("C:/Users/TONI/.config/opencode/node_modules/playwr
   
   console.log("Current URL:", page.url());
   
-  // Fill all 6 OTP boxes with 123456
+  // Fill all 6 OTP boxes with the configured 2FA code
   const boxes = await page.$$('input[maxlength="1"]');
   console.log("OTP boxes found:", boxes.length);
   
   if (boxes.length === 6) {
-    const code = "123456";
     for (let i = 0; i < 6; i++) {
       console.log("Filling box " + i + " with " + code[i]);
       await boxes[i].click();

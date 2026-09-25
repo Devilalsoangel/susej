@@ -43,7 +43,7 @@ export async function POST(request: NextRequest) {
   }
 
   const ip = getClientIp(request);
-  if (!code) {
+  if (!/^\d{6}$/.test(code)) {
     return NextResponse.json({ error: "Enter the 6-digit code." }, { status: 400 });
   }
 

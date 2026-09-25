@@ -135,6 +135,25 @@ export const productDetailImages = {
   ], // 170x169 x4
 };
 
+// Onboarding avatar presets — EXACTLY 10 DISTINCT bundled require() modules
+// suitable as profile faces/identities. Reuses existing entries only (auth
+// bento, profile avatar, highlights, notification, rateReview avatar, seller
+// avatar, bookService avatar) — no new image files, no repeats. Rendered
+// from `src` (the numeric module); upload goes through expo-asset
+// (bundledAssetToDataUrl), never a bare asset ID into fetch().
+export const avatarPresets: number[] = [
+  authImages[0],
+  authImages[1],
+  authImages[2],
+  profileImages.avatar,
+  profileImages.highlights[0],
+  profileImages.highlights[1],
+  notificationImages[0],
+  rateReviewImages.avatar,
+  sellerImages.avatar,
+  bookServiceImages.avatar,
+];
+
 // Create New Post (1:3346)
 export const createPostImages = {
   preview: require('../assets/images/screens/create/img-1-3359.png'), // 393x390

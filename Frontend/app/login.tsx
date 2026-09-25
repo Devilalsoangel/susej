@@ -11,12 +11,6 @@ import { serverApi, transportMessage, authErrorMessage } from '../utils/serverAp
 
 const COUNTRIES = [
   { code: '+91', name: 'India', flag: '🇮🇳' },
-  { code: '+1', name: 'United States', flag: '🇺🇸' },
-  { code: '+44', name: 'United Kingdom', flag: '🇬🇧' },
-  { code: '+971', name: 'UAE', flag: '🇦🇪' },
-  { code: '+65', name: 'Singapore', flag: '🇸🇬' },
-  { code: '+61', name: 'Australia', flag: '🇦🇺' },
-  { code: '+81', name: 'Japan', flag: '🇯🇵' },
 ];
 
 const OTP_LENGTH = 6;
@@ -33,7 +27,7 @@ type AuthMode = 'phone' | 'email';
 
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
-  const { serverLogin, serverEmailLogin, completeOnboarding, expiredNotice, clearExpiredNotice } = useAuth();
+  const { serverLogin, serverEmailLogin, expiredNotice, clearExpiredNotice } = useAuth();
   // Session-death notice (401 kill-switch raises it via context — no route
   // params, no navigation involved). Clears on first keystroke/success.
   const showExpiredNotice = expiredNotice;
@@ -64,6 +58,10 @@ export default function LoginScreen() {
   // Auto-submit guard: each keystroke bumps the id; a scheduled submit only
   // fires if nothing changed since (no stale-code verify after delete).
   const autoSubmitId = useRef(0);
+  const autoSubmitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const verifyInFlight = useRef(false);
+  const sendInFlight = useRef(false);
+  const [otpPhone, setOtpPhone] = useState('');
   const codeComplete = code.every((d) => d !== '');
 
   useEffect(() => {
@@ -80,6 +78,13 @@ export default function LoginScreen() {
     return () => clearTimeout(t);
   }, [error]);
 
+  useEffect(() => {
+    return () => {
+      autoSubmitId.current += 1;
+      if (autoSubmitTimer.current) clearTimeout(autoSubmitTimer.current);
+    };
+  }, []);
+
   // Industry standard (E.164): the selected country code is part of the
   // identity — never send bare national digits (see onboarding otp.tsx).
   // FIX Sep 15 (tony 911556848908 -> user8908 ghost): users paste the full
@@ -91,7 +96,7 @@ export default function LoginScreen() {
     let digits = phone.replace(/\D/g, '');
     // Single strip each: cc once, then one trunk 0 for +91. A second cc
     // (14-digit 91+911556848908) must NOT strip again — it warns instead.
-    if (cc && digits.startsWith(cc) && digits.length > cc.length) digits = digits.slice(cc.length);
+    if (cc && digits.startsWith(cc) && digits.length > (cc === '91' ? 10 : cc.length)) digits = digits.slice(cc.length);
     if (cc === '91' && digits.startsWith('0') && digits.length > 10) digits = digits.slice(1);
     return digits;
   };
@@ -113,7 +118,7 @@ export default function LoginScreen() {
   const [devBypassing, setDevBypassing] = useState(false);
 
   const requestOtp = async () => {
-    if (sending || verifying) return;
+    if (sending || verifying || sendInFlight.current) return;
     // Length guard FIRST: >10 (or <10) national digits warns and never
     // sends — the typo can never reach OTP, let alone mint anything.
     if (!isPhoneValid()) {
@@ -121,6 +126,7 @@ export default function LoginScreen() {
       return;
     }
     setSending(true);
+    sendInFlight.current = true;
     setError('');
     try {
       const full = fullPhone();
@@ -129,22 +135,21 @@ export default function LoginScreen() {
       // number prefilled (explicit consent lane). A failed check STOPS with
       // a friendly message — never a blind OTP into a broken lane.
       const check = await serverApi.checkPhone(full);
-      if (check.ok && check.data && !check.data.exists) {
-        // Plain fork message + CTA below (no silent redirect — the user
-        // must READ that no account exists before moving to create one).
-        setNoAccount(true);
-        setError('No account found for this number. Create one to continue.');
-        return;
-      }
+       if (check.ok && check.data && !check.data.exists) {
+         setNoAccount(true);
+         setError('No account found for this number.');
+         return;
+       }
       setNoAccount(false);
       if (!check.ok) {
         setError(authErrorMessage(check.error, 'try again'));
         return;
       }
       const res = await serverApi.sendOtp(full);
-      if (res.ok) {
-        setNoAccount(false);
-        setCode(Array(OTP_LENGTH).fill(''));
+       if (res.ok) {
+         setNoAccount(false);
+         setOtpPhone(full);
+         setCode(Array(OTP_LENGTH).fill(''));
         setResendIn(45); // match server RESEND_COOLDOWN_MS (45s)
         setOtpSent(true);
         // Dev-mode convenience: the SERVER decides whether a hint may be
@@ -157,6 +162,7 @@ export default function LoginScreen() {
     } catch (e) {
       setError('No connection. Check your internet and try again.');
     } finally {
+      sendInFlight.current = false;
       setSending(false);
     }
   };
@@ -173,14 +179,13 @@ export default function LoginScreen() {
     try {
       const res = await serverApi.sendOtp(fullPhone());
       if (res.ok && res.data?.devCode) {
-        const verifyRes = await serverLogin(fullPhone(), res.data.devCode);
-        if (verifyRes.ok) {
-          await completeOnboarding();
-          // No navigation: the root tree swaps on the login flip by itself.
-        } else if (verifyRes.needsSignup) {
-          // Unknown number even in dev → signup flow, same as requestOtp.
-          router.push({ pathname: '/(onboarding)/otp', params: { phone: nationalDigits(), cc: countryCode } });
-        } else {
+         const verifyRes = await serverLogin(fullPhone(), res.data.devCode);
+         if (verifyRes.ok) {
+           return;
+         } else if (verifyRes.needsSignup) {
+           setNoAccount(true);
+           setError('No account found for this number.');
+         } else {
           setError(transportMessage(verifyRes.error, 'Dev bypass failed'));
         }
       } else {
@@ -194,6 +199,8 @@ export default function LoginScreen() {
   };
 
   const handleOtpChange = (text: string) => {
+    autoSubmitId.current += 1;
+    if (autoSubmitTimer.current) clearTimeout(autoSubmitTimer.current);
     const digits = text.replace(/\D/g, '').slice(0, OTP_LENGTH).split('');
     while (digits.length < OTP_LENGTH) digits.push('');
     setCode(digits);
@@ -206,7 +213,10 @@ export default function LoginScreen() {
     if (text.replace(/\D/g, '').length === OTP_LENGTH) {
       const freshCode = digits.join('');
       const id = ++autoSubmitId.current;
-      setTimeout(() => { if (id === autoSubmitId.current) handleVerify(freshCode); }, 150);
+       autoSubmitTimer.current = setTimeout(() => {
+         autoSubmitTimer.current = null;
+         if (id === autoSubmitId.current) handleVerify(freshCode);
+       }, 150);
     }
   };
 
@@ -216,21 +226,21 @@ export default function LoginScreen() {
   // onPress={handleVerify}) — the press event must not land in codeOverride.
   const handleVerify = async (codeOverride?: string) => {
     const finalCode = typeof codeOverride === 'string' ? codeOverride : otpCode;
-    if (finalCode.length !== OTP_LENGTH || verifying) return;
+    if (finalCode.length !== OTP_LENGTH || verifying || verifyInFlight.current) return;
+    verifyInFlight.current = true;
     setVerifying(true);
     setError('');
     try {
       // Known numbers land in the feed. needsSignup survives only as an
       // old-server/race fallback → create screens with the number prefilled
       // (same fork as the pre-check above).
-      const res = await serverLogin(fullPhone(), finalCode);
+       const targetPhone = otpPhone || fullPhone();
+       const res = await serverLogin(targetPhone, finalCode);
       if (res.ok) {
-        setSigningIn(true);
-        await completeOnboarding();
-        // No navigation: the root tree swaps on the login flip by itself.
+         setSigningIn(true);
       } else if (res.error) {
         if (res.needsSignup) {
-          router.push({ pathname: '/(onboarding)/otp', params: { phone: nationalDigits(), cc: countryCode } });
+           router.replace({ pathname: '/(onboarding)/otp', params: { phone: nationalDigits(), cc: countryCode } });
           return;
         }
         // Expired code: the server deleted the row, so a retry would say
@@ -260,11 +270,12 @@ export default function LoginScreen() {
     } catch (e) {
       // Failure AFTER the overlay went up must take it back down, or the
       // user sits on "Signing you in…" forever with the cause hidden below.
-      setSigningIn(false);
-      // Network abort/timeout must never crash to the root screen.
-      setError('Sign-in is unavailable. Check your connection and try again.');
-    } finally {
-      setVerifying(false);
+       setSigningIn(false);
+       // Network abort/timeout must never crash to the root screen.
+       setError('Sign-in is unavailable. Check your connection and try again.');
+     } finally {
+       verifyInFlight.current = false;
+       setVerifying(false);
     }
   };
 
@@ -274,10 +285,9 @@ export default function LoginScreen() {
     setError('');
     try {
       const res = await serverEmailLogin(emailRegister ? 'register' : 'login', email, password, name);
-      if (res.ok) {
-        await completeOnboarding();
-        // No navigation: the root tree swaps on the login flip by itself.
-      } else if (res.error) {
+       if (res.ok) {
+         return;
+       } else if (res.error) {
         setError(authErrorMessage(res.error, 'try again'));
       } else {
         setError('No connection. Check your internet and try again.');
@@ -355,26 +365,18 @@ export default function LoginScreen() {
                         placeholderTextColor="rgba(70,69,85,0.4)"
                         keyboardType="phone-pad"
                         value={phone}
-                        onChangeText={(t) => {
-                          // Strict visible cap (user spec): digits only, hard
-                          // 10. A pasted +91/0 prefix is stripped VISIBLY (the
-                          // field shows the result); anything beyond 10 plain
-                          // digits is refused WITH a warning, never silently
-                          // kept. The field always shows exactly what sends.
-                          let d = t.replace(/\D/g, '');
-                          const cc = countryCode.replace(/\D/g, '');
-                          if (d.length > 10 && cc && d.startsWith(cc)) d = d.slice(cc.length);
-                          if (cc === '91' && d.length > 10 && d.startsWith('0')) d = d.slice(1);
-                          if (d.length > 10) {
-                            setPhone(d.slice(0, 10));
-                            setError(phoneWarn());
-                            return;
-                          }
-                          setPhone(d);
-                          if (error) setError('');
-                          if (showExpiredNotice) clearExpiredNotice();
-                          if (noAccount) setNoAccount(false);
-                        }}
+                         onChangeText={(t) => {
+                           let d = t.replace(/\D/g, '');
+                           const cc = countryCode.replace(/\D/g, '');
+                           if (cc === '91' && d.length > 10 && d.startsWith('91')) d = d.slice(2);
+                           if (cc === '91' && d.length > 10 && d.startsWith('0')) d = d.slice(1);
+                           if (d.length > 15) d = d.slice(0, 15);
+                           setPhone(d);
+                           if (d.length > 10) setError(phoneWarn());
+                           else if (error) setError('');
+                           if (showExpiredNotice) clearExpiredNotice();
+                           if (noAccount) setNoAccount(false);
+                         }}
                       />
                     </View>
                   </View>
@@ -387,7 +389,7 @@ export default function LoginScreen() {
                     <TouchableOpacity
                       className="w-full h-14 items-center justify-center rounded-figma-16 mb-2"
                       style={{ backgroundColor: colors.primary }}
-                      onPress={() => router.push({ pathname: '/(onboarding)/otp', params: { phone: nationalDigits(), cc: countryCode } })}
+                       onPress={() => router.replace({ pathname: '/(onboarding)/otp', params: { phone: nationalDigits(), cc: countryCode } })}
                     >
                       <Text className="font-inter-600" style={{ fontSize: 14, lineHeight: 16, letterSpacing: 0.14, color: '#FFFFFF' }}>
                         Create an account
@@ -398,7 +400,7 @@ export default function LoginScreen() {
                     className="w-full h-14 items-center justify-center rounded-figma-16 mb-2"
                     style={{ backgroundColor: isPhoneValid() && !sending ? colors.primary : 'rgba(93,95,239,0.2)' }}
                     onPress={requestOtp}
-                    disabled={sending}
+                     disabled={sending || !isPhoneValid()}
                   >
                     <Text className="font-inter-600" style={{ fontSize: 14, lineHeight: 16, letterSpacing: 0.14, color: isPhoneValid() && !sending ? '#FFFFFF' : 'rgba(70,69,85,0.4)' }}>
                       {sending ? 'Sending...' : 'Send code'}

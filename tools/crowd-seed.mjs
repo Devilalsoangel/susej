@@ -6,7 +6,18 @@
 const BASE = "http://127.0.0.1:3000";
 const PHONE_S = "9811110001";   // seller
 const PHONE_B = "9822220002";   // buyer
-const ADMIN_ID = "alexrivera", ADMIN_PASS = "Admin@123", ADMIN_TFA = "123456";
+const ADMIN_ID = process.env.SUSEJ_ADMIN_ID;
+const ADMIN_PASS = process.env.SUSEJ_ADMIN_PASSWORD;
+const ADMIN_TFA = process.env.SUSEJ_ADMIN_2FA;
+if (!ADMIN_ID || !ADMIN_PASS || !ADMIN_TFA) {
+  console.error("Set SUSEJ_ADMIN_ID, SUSEJ_ADMIN_PASSWORD, and SUSEJ_ADMIN_2FA before running this tool.");
+  process.exit(1);
+}
+const APP_KEY = process.env.SUSEJ_APP_KEY ?? process.env.APP_API_KEY;
+if (!APP_KEY) {
+  console.error("Set SUSEJ_APP_KEY or APP_API_KEY before running this tool.");
+  process.exit(1);
+}
 let pass = 0, fail = 0;
 const ok = (c, label, extra = "") => { console.log((c ? "PASS" : "FAIL") + " " + label + (extra ? " | " + extra : "")); c ? pass++ : fail++; };
 async function jsonReq(method, p, body, headers = {}, withRedirect = false) {
@@ -53,7 +64,7 @@ await jsonReq("PATCH", "/api/app/users/me", { name: "Riya Sharma", username: una
 const kyc = await jsonReq("POST", "/api/data/sellers", {
   businessName: "Riya Threadz", ownerName: "Riya Sharma",
   category: "Fashion", address: "Mumbai, India",
-}, { "x-app-key": "dev-key", Authorization: `Bearer ${tS}` });
+}, { "x-app-key": APP_KEY, Authorization: `Bearer ${tS}` });
 const sellerId = kyc.data?.row?.id || "";
 ok(kyc.status === 200 && Boolean(sellerId), "SELLER: KYC application submitted (server forces pending)", `id=${sellerId} status=${kyc.status}`);
 // ACT 3: ADMIN approves the KYC application (the ONLY path that grants seller;

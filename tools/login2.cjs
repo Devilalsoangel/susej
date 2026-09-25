@@ -1,4 +1,9 @@
 const { chromium } = require("C:/Users/TONI/.config/opencode/node_modules/playwright");
+const code = process.env.SUSEJ_ADMIN_2FA;
+if (!code) {
+  console.log("Set SUSEJ_ADMIN_2FA before running this tool.");
+  process.exit(1);
+}
 
 (async () => {
   const browser = await chromium.connectOverCDP("http://127.0.0.1:9222").catch(e => { console.log(e.message); process.exit(1); });
@@ -28,7 +33,7 @@ const { chromium } = require("C:/Users/TONI/.config/opencode/node_modules/playwr
   if (singleInput) {
     console.log("Found input, filling...");
     await singleInput.click();
-    await singleInput.fill("123456");
+    await singleInput.fill(code);
     filled = true;
   }
   

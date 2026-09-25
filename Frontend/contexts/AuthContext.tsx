@@ -13,6 +13,12 @@ const FEED_WELCOME_PREFIX = '@susej_feed_welcome_seen:';
 const ONBOARDING_STEP_KEY_BASE = '@susej_onboarding_step';
 const ONBOARDING_STEP_KEY = ONBOARDING_STEP_KEY_BASE;
 
+function hasLegacyProfile(user: User): boolean {
+  const name = user.name.trim();
+  return Boolean(user.avatar || user.bio || user.location || user.interests?.length) ||
+    (name.length > 0 && !/^User \d{4}$/.test(name));
+}
+
 export interface User {
   name: string;
   username: string;
@@ -42,7 +48,7 @@ interface AuthContextType {
   /** Bumps AFTER the real susej_ token is persisted — safe trigger for
    *  authenticated fetches (sessionSeq can fire while token is still mock). */
   tokenSeq: number;
-  login: (user: User) => Promise<void>;
+  login: (user: User, accessToken?: string, requestId?: number, migrateLegacy?: boolean) => Promise<boolean>;
   /** Real server login via OTP — falls back to local demo identity when offline.
    *  opts.create:true = explicit signup (signup screens only); sign-in omits
    *  it so unknown numbers get needsSignup instead of a ghost account. */
@@ -85,6 +91,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Raised on 401 session-death; login shows it until keystroke/success.
   const [expiredNotice, setExpiredNotice] = useState(false);
   const authTransitionRef = useRef<Promise<void> | null>(null);
+  const authEpochRef = useRef(0);
+  const loginRequestRef = useRef(0);
   const clearExpiredNotice = useCallback(() => setExpiredNotice(false), []);
   const waitForAuthTransition = useCallback(async () => {
     const pending = authTransitionRef.current;
@@ -105,18 +113,47 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           storedUser = userRecord as User;
           setUser(storedUser);
           setIsLoggedIn(true);
-          const [perUser, global, welcomePerUser, welcomeGlobal] = await Promise.all([
-            AsyncStorage.getItem(ONBOARDED_PREFIX + storedUser.username),
+          const username = storedUser.username.trim();
+          const [perUser, legacyOnboarded, welcomePerUser, legacyWelcome] = await Promise.all([
+            AsyncStorage.getItem(ONBOARDED_PREFIX + username),
             AsyncStorage.getItem(ONBOARDED_KEY),
-            AsyncStorage.getItem(FEED_WELCOME_PREFIX + storedUser.username),
+            AsyncStorage.getItem(FEED_WELCOME_PREFIX + username),
             AsyncStorage.getItem(FEED_WELCOME_KEY_BASE),
           ]);
           if (!active) return;
-          setHasOnboarded(perUser === 'true' || global === 'true');
-          setHasSeenFeedWelcomeState(welcomePerUser === 'true' || welcomeGlobal === 'true');
-          if (welcomePerUser === null && welcomeGlobal === 'true') {
-            await AsyncStorage.setItem(FEED_WELCOME_PREFIX + storedUser.username, 'true');
+          const nextHasOnboarded = perUser === 'true' || (perUser === null && legacyOnboarded === 'true');
+          const nextHasSeenWelcome = welcomePerUser === 'true' || (welcomePerUser === null && legacyWelcome === 'true');
+          if (perUser === null && legacyOnboarded === 'true') {
+            await AsyncStorage.setItem(ONBOARDED_PREFIX + username, 'true').catch(() => {});
+            await AsyncStorage.removeItem(ONBOARDED_KEY).catch(() => {});
           }
+          if (welcomePerUser === null && legacyWelcome === 'true') {
+            await AsyncStorage.setItem(FEED_WELCOME_PREFIX + username, 'true').catch(() => {});
+            await AsyncStorage.removeItem(FEED_WELCOME_KEY_BASE).catch(() => {});
+          }
+          setHasOnboarded(nextHasOnboarded);
+          setHasSeenFeedWelcomeState(nextHasSeenWelcome);
+        } else if (userRecord) {
+          const username = String((userRecord as User).username ?? '').trim();
+          const [perUser, legacyOnboarded, welcomePerUser, legacyWelcome] = await Promise.all([
+            AsyncStorage.getItem(ONBOARDED_PREFIX + username),
+            AsyncStorage.getItem(ONBOARDED_KEY),
+            AsyncStorage.getItem(FEED_WELCOME_PREFIX + username),
+            AsyncStorage.getItem(FEED_WELCOME_KEY_BASE),
+          ]);
+          if (!active) return;
+          const nextHasOnboarded = perUser === 'true' || (perUser === null && legacyOnboarded === 'true');
+          const nextHasSeenWelcome = welcomePerUser === 'true' || (welcomePerUser === null && legacyWelcome === 'true');
+          if (perUser === null && legacyOnboarded === 'true') {
+            await AsyncStorage.setItem(ONBOARDED_PREFIX + username, 'true').catch(() => {});
+            await AsyncStorage.removeItem(ONBOARDED_KEY).catch(() => {});
+          }
+          if (welcomePerUser === null && legacyWelcome === 'true') {
+            await AsyncStorage.setItem(FEED_WELCOME_PREFIX + username, 'true').catch(() => {});
+            await AsyncStorage.removeItem(FEED_WELCOME_KEY_BASE).catch(() => {});
+          }
+          setHasOnboarded(nextHasOnboarded);
+          setHasSeenFeedWelcomeState(nextHasSeenWelcome);
         } else {
           const [global, welcome] = await Promise.all([
             AsyncStorage.getItem(ONBOARDED_KEY),
@@ -157,43 +194,53 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => { active = false; };
   }, []);
 
-  const login = useCallback(async (nextUser: User, accessToken = 'mock-token') => {
+  const login = useCallback(async (nextUser: User, accessToken = 'mock-token', requestId?: number, migrateLegacy = false) => {
     if (!nextUser?.username || String(nextUser.username).trim().length < 2) {
       throw new Error('login requires valid username');
     }
+    const activeRequestId = requestId ?? ++loginRequestRef.current;
     if (accessToken === 'mock-token') {
       await sessionStorage.saveUser(nextUser);
       await sessionStorage.saveSession({ accessToken, refreshToken: 'mock-refresh' }, 1);
     } else {
       await sessionStorage.saveAuthenticatedSession(nextUser, accessToken);
     }
+    const abandonIfStale = async () => {
+      if (activeRequestId === loginRequestRef.current) return false;
+      await sessionStorage.clearSessionIfToken(accessToken);
+      return true;
+    };
+    if (await abandonIfStale()) return false;
     const perUser = await AsyncStorage.getItem(ONBOARDED_PREFIX + nextUser.username);
-    let nextHasOnboarded = false;
-    if (perUser === null) {
-      const global = await AsyncStorage.getItem(ONBOARDED_KEY);
-      nextHasOnboarded = global === 'true';
+    let nextHasOnboarded = perUser === 'true';
+    if (perUser === null && migrateLegacy) {
+      const legacyOnboarded = await AsyncStorage.getItem(ONBOARDED_KEY);
+      if (await abandonIfStale()) return false;
+      nextHasOnboarded = legacyOnboarded === 'true';
       if (nextHasOnboarded) {
-        await AsyncStorage.setItem(ONBOARDED_PREFIX + nextUser.username, 'true');
+        await AsyncStorage.setItem(ONBOARDED_PREFIX + nextUser.username, 'true').catch(() => {});
+        if (await abandonIfStale()) return false;
       }
-    } else {
-      nextHasOnboarded = perUser === 'true';
     }
     const wPer = await AsyncStorage.getItem(FEED_WELCOME_PREFIX + nextUser.username);
-    let nextHasSeenFeedWelcome = false;
-    if (wPer === null) {
-      const wGlob = await AsyncStorage.getItem(FEED_WELCOME_KEY_BASE);
-      nextHasSeenFeedWelcome = wGlob === 'true';
+    let nextHasSeenFeedWelcome = wPer === 'true';
+    if (wPer === null && migrateLegacy) {
+      const legacyWelcome = await AsyncStorage.getItem(FEED_WELCOME_KEY_BASE);
+      if (await abandonIfStale()) return false;
+      nextHasSeenFeedWelcome = legacyWelcome === 'true';
       if (nextHasSeenFeedWelcome) {
-        await AsyncStorage.setItem(FEED_WELCOME_PREFIX + nextUser.username, 'true');
+        await AsyncStorage.setItem(FEED_WELCOME_PREFIX + nextUser.username, 'true').catch(() => {});
+        if (await abandonIfStale()) return false;
       }
-    } else {
-      nextHasSeenFeedWelcome = wPer === 'true';
     }
+    if (await abandonIfStale()) return false;
     setHasOnboarded(nextHasOnboarded);
     setHasSeenFeedWelcomeState(nextHasSeenFeedWelcome);
     setUser(nextUser);
     setIsLoggedIn(true);
+    setExpiredNotice(false);
     setSessionSeq((n) => n + 1);
+    return true;
   }, []);
 
   // Identity-bound state must never render as another account's truth when
@@ -269,32 +316,40 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const serverLogin = useCallback(
     async (phone: string, code: string, opts?: { create?: boolean }): Promise<{ ok: boolean; error?: string; needsSignup?: boolean; attemptsLeft?: number; offline?: boolean }> => {
       await waitForAuthTransition();
+      const epoch = authEpochRef.current;
+      const requestId = ++loginRequestRef.current;
       const digits = phone.replace(/\D/g, '');
       // 1. Try the real server first - logs in a REAL user row, or (signup
       //    screens only) creates one with explicit consent. Sign-in typos get
       //    404 needsSignup, never a ghost account.
       const res = await serverApi.verifyOtp(digits, code, opts?.create);
+      if (epoch !== authEpochRef.current || requestId !== loginRequestRef.current) return { ok: false, error: 'Account changed. Please try again.' };
       if (res.ok && res.data?.token) {
         // Identity is about to change - drop the outgoing account's cached
         // money state so it can never flash as the new account's truth.
-        // Guarded: a storage throw here must never break the login handoff.
-        await clearMoneyCache().catch(() => {});
-        await login(res.data.user as unknown as User, res.data.token);
+         // Guarded: a storage throw here must never break the login handoff.
+          await clearMoneyCache().catch(() => {});
+          if (epoch !== authEpochRef.current || requestId !== loginRequestRef.current) return { ok: false, error: 'Account changed. Please try again.' };
+          const migrateLegacy = !opts?.create && hasLegacyProfile(res.data.user as unknown as User);
+          const loggedIn = await login(res.data.user as unknown as User, res.data.token, requestId, migrateLegacy);
+         if (!loggedIn) return { ok: false, error: 'Account changed. Please try again.' };
         // Retry a revoke left pending by an offline logout: that old Bearer
         // is still live server-side until this kills it (new session proves
         // connectivity, so the retry is meaningful now).
         try {
           const pending = await AsyncStorage.getItem(PENDING_REVOKE_KEY);
-          if (pending && pending !== res.data.token) {
-            await serverApi.revokeSession(false, pending).catch(() => undefined);
-          }
-          if (pending) await AsyncStorage.removeItem(PENDING_REVOKE_KEY).catch(() => {});
+           if (pending && pending !== res.data.token) {
+             const revoked = await serverApi.revokeSession(false, pending).catch(() => ({ ok: false, data: null, error: 'server-unreachable' }));
+             if (revoked.ok) await AsyncStorage.removeItem(PENDING_REVOKE_KEY).catch(() => {});
+             else await AsyncStorage.setItem(PENDING_REVOKE_KEY, pending).catch(() => {});
+           } else if (pending === res.data.token) {
+             await AsyncStorage.removeItem(PENDING_REVOKE_KEY).catch(() => {});
+           }
         } catch {}
         // Signal contexts AFTER the real token is on disk so their refetch
         // actually authenticates.
-        setTokenSeq((n) => n + 1);
-        void reconcileIdentity(res.data.token);
-        return { ok: true };
+         setTokenSeq((n) => n + 1);
+         return { ok: true };
       }
       // 2. Server reachable but rejected -> surface the reason (wrong code,
       //    expired, throttled, unknown-number needsSignup). Only a network
@@ -312,13 +367,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const serverEmailLogin = useCallback(
     async (action: 'login' | 'register', email: string, password: string, name?: string) => {
       await waitForAuthTransition();
+      const epoch = authEpochRef.current;
+      const requestId = ++loginRequestRef.current;
       const res = await serverApi.emailAuth(action, email.trim().toLowerCase(), password, name);
+      if (epoch !== authEpochRef.current || requestId !== loginRequestRef.current) return { ok: false, error: 'Account changed. Please try again.' };
       if (res.ok && res.data?.token) {
-        await clearMoneyCache();
-        await login(res.data.user as unknown as User, res.data.token);
-        setTokenSeq((n) => n + 1);
-        void reconcileIdentity(res.data.token);
-        return { ok: true };
+         await clearMoneyCache();
+         if (epoch !== authEpochRef.current || requestId !== loginRequestRef.current) return { ok: false, error: 'Account changed. Please try again.' };
+         const migrateLegacy = action === 'login' && hasLegacyProfile(res.data.user as unknown as User);
+         const loggedIn = await login(res.data.user as unknown as User, res.data.token, requestId, migrateLegacy);
+         if (!loggedIn) return { ok: false, error: 'Account changed. Please try again.' };
+         setTokenSeq((n) => n + 1);
+         return { ok: true };
       }
       if (res.error && res.error !== 'offline') return { ok: false, error: res.error };
       return { ok: false, offline: true };
@@ -329,13 +389,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const serverGoogleLogin = useCallback(
     async (idToken: string, devBypass?: { email: string; name?: string }) => {
       await waitForAuthTransition();
+      const epoch = authEpochRef.current;
+      const requestId = ++loginRequestRef.current;
       const res = await serverApi.googleAuth(idToken, devBypass);
+      if (epoch !== authEpochRef.current || requestId !== loginRequestRef.current) return { ok: false, error: 'Account changed. Please try again.' };
       if (res.ok && res.data?.token) {
-        await clearMoneyCache();
-        await login(res.data.user as unknown as User, res.data.token);
-        setTokenSeq((n) => n + 1);
-        void reconcileIdentity(res.data.token);
-        return { ok: true };
+         await clearMoneyCache();
+         if (epoch !== authEpochRef.current || requestId !== loginRequestRef.current) return { ok: false, error: 'Account changed. Please try again.' };
+         const migrateLegacy = !devBypass && hasLegacyProfile(res.data.user as unknown as User);
+         const loggedIn = await login(res.data.user as unknown as User, res.data.token, requestId, migrateLegacy);
+         if (!loggedIn) return { ok: false, error: 'Account changed. Please try again.' };
+         setTokenSeq((n) => n + 1);
+         return { ok: true };
       }
       if (res.error && res.error !== 'offline') return { ok: false, error: res.error };
       return { ok: false, offline: true };
@@ -348,6 +413,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (existing) return existing;
 
     const run = (async () => {
+      authEpochRef.current += 1;
+      loginRequestRef.current += 1;
       const session = await sessionStorage.getSession().catch(() => null);
       const token = session?.accessToken && session.accessToken.startsWith('susej_') ? session.accessToken : null;
 
@@ -412,8 +479,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     } catch {}
     // No global write: it fed the next account's login migration
-    // (cross-account completion leak). Legacy global residue still migrates
-    // once via login(), then logout clears it for good.
+    // (cross-account completion leak). Legacy global residue is read only
+    // for a profile-gated migration and is never removed during login.
   }, []);
 
   const setHasSeenFeedWelcome = useCallback(async () => {
@@ -429,54 +496,46 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const updateUser = useCallback(
     async (patch: Partial<User>): Promise<true | string> => {
+      const epoch = authEpochRef.current;
       const prevUser = user;
-      setUser((prev) => {
-        const next = { ...(prev ?? ({} as User)), ...patch };
-        sessionStorage.saveUser(next);
-        return next;
-      });
-      // Mirror profile edits to the shared Postgres user row so every
-      // device + the admin panel see the same identity. If server rejects
-      // (409 username taken, validation), rollback optimistic local update
-      // so local/admin do not diverge (HIGH-03 fix).
-      // Returns true on save AND on transient transport trouble (offline /
-      // our server down — optimistic edit kept, reconciles on next login).
-      // Returns the server's reason string on real rejection so the caller
-      // can show WHAT failed instead of a dummy line.
-      const token = await sessionStorage.getSession();
-      if (token?.accessToken?.startsWith('susej_')) {
-        try {
-          // Strip client-only / server-immutable keys before mirroring: phone
-          // lives in the auth layer, username + verification are immutable via
-          // PATCH (a 400 here used to roll back the whole optimistic edit).
-          const { phone: _phone, username: _username, verification: _verification, ...serverPatch } =
-            patch as Record<string, unknown>;
-          if (!Object.keys(serverPatch).length) return true;
-          const res = await serverApi.updateProfile(serverPatch);
-          if (!res.ok) {
-            // Transient transport (truly offline OR our server down): keep the
-            // optimistic edit, it reconciles on next login. Roll back ONLY on
-            // a real server rejection (validation/409) so a blip never wipes
-            // what the user just typed.
-            if (res.error === 'offline' || res.error === 'server-unreachable') return true;
-            setUser(prevUser ?? null);
-            if (prevUser) void sessionStorage.saveUser(prevUser);
-            return typeof res.error === 'string' && res.error
-              ? res.error
-              : 'Something went wrong. Please try again.';
-          }
-          if (res.data?.user) {
-            setUser(res.data.user as unknown as User);
-            void sessionStorage.saveUser(res.data.user as unknown as User);
-          }
-          return true;
-        } catch {
-          setUser(prevUser ?? null);
-          if (prevUser) void sessionStorage.saveUser(prevUser);
-          return 'Something went wrong. Please try again.';
-        }
+      const nextUser = { ...(prevUser ?? ({} as User)), ...patch };
+      setUser(nextUser);
+      const session = await sessionStorage.getSession();
+      const accessToken = session?.accessToken?.startsWith('susej_') ? session.accessToken : null;
+      if (!accessToken) {
+        if (epoch === authEpochRef.current) await sessionStorage.saveUser(nextUser);
+        return true;
       }
-      return true;
+      try {
+        const { phone: _phone, username: _username, verification: _verification, ...serverPatch } =
+          patch as Record<string, unknown>;
+        if (!Object.keys(serverPatch).length) {
+          if (epoch === authEpochRef.current) await sessionStorage.saveUser(nextUser);
+          return true;
+        }
+        const res = await serverApi.updateProfile(serverPatch, accessToken);
+        if (epoch !== authEpochRef.current) return true;
+        if (!res.ok) {
+          if (res.error === 'offline' || res.error === 'server-unreachable') {
+            await sessionStorage.saveUser(nextUser);
+            return true;
+          }
+          setUser(prevUser ?? null);
+          if (prevUser) await sessionStorage.saveUser(prevUser);
+          return typeof res.error === 'string' && res.error
+            ? res.error
+            : 'Something went wrong. Please try again.';
+        }
+        const savedUser = (res.data?.user ?? nextUser) as unknown as User;
+        setUser(savedUser);
+        await sessionStorage.saveUser(savedUser);
+        return true;
+      } catch {
+        if (epoch !== authEpochRef.current) return true;
+        setUser(prevUser ?? null);
+        if (prevUser) await sessionStorage.saveUser(prevUser);
+        return 'Something went wrong. Please try again.';
+      }
     },
     [user]
   );
@@ -485,13 +544,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // is revoked/rotated server-side. Wipe + raise the notice; the root
   // navigator swaps trees on the flip — no navigation call, nothing to race.
   useEffect(() => {
-    onSessionExpired(() => {
+    onSessionExpired(async (token) => {
+      const session = await sessionStorage.getSession().catch(() => null);
+      if (!session || session.accessToken !== token) return;
+      const requestId = loginRequestRef.current;
+      const epoch = authEpochRef.current;
+      const cleared = await sessionStorage.clearSessionIfToken(token);
+      if (!cleared) return;
+      const current = await sessionStorage.getSession().catch(() => null);
+      if (requestId !== loginRequestRef.current || epoch !== authEpochRef.current) return;
+      if (current && current.accessToken !== token) return;
+      authEpochRef.current += 1;
+      loginRequestRef.current += 1;
       setExpiredNotice(true);
       setUser(null);
       setIsLoggedIn(false);
       setSessionSeq((n) => n + 1);
       setTokenSeq((n) => n + 1);
-      void clearMoneyCache();
+      await clearMoneyCache().catch(() => {});
     });
   }, [clearMoneyCache]);
 

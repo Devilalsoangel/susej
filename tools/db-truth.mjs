@@ -3,7 +3,11 @@
 import fs from "node:fs";
 import path from "node:path";
 const BASE = "http://127.0.0.1:3000";
-const KEY = "dev-key";
+const KEY = process.env.SUSEJ_APP_KEY ?? process.env.APP_API_KEY;
+if (!KEY) {
+  console.error("Set SUSEJ_APP_KEY or APP_API_KEY before running this tool.");
+  process.exit(1);
+}
 const resource = process.argv[2] || "counts";
 async function get(r) {
   const res = await fetch(`${BASE}/api/data/${r}`, { headers: { "x-app-key": KEY } });

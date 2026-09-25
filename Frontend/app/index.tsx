@@ -1,5 +1,5 @@
 import { View, Text, StyleSheet } from 'react-native';
-import { router } from 'expo-router';
+import { router, usePathname } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 import { StatusBar } from 'expo-status-bar';
@@ -20,6 +20,7 @@ const ShoppingBagIcon = () => (
 
 export default function SplashScreen() {
   const { hasOnboarded, isLoggedIn, isLoading } = useAuth();
+  const pathname = usePathname();
   // Single-shot guarded redirect: fires ONCE when loading settles (keeps the
   // 2s brand moment), never re-armed by flag flips — the old timer re-fired
   // on every auth transition and its bare replace could land mid-login or
@@ -27,25 +28,29 @@ export default function SplashScreen() {
   const redirected = useRef(false);
   const initialAuth = useRef<{ hasOnboarded: boolean; isLoggedIn: boolean } | null>(null);
   useEffect(() => {
-    if (isLoading) return;
+    if (pathname !== '/') {
+      redirected.current = true;
+      return;
+    }
+    if (isLoading || redirected.current) return;
     if (!initialAuth.current) {
       initialAuth.current = { hasOnboarded, isLoggedIn };
     }
     if (
       initialAuth.current.hasOnboarded !== hasOnboarded ||
-      initialAuth.current.isLoggedIn !== isLoggedIn ||
-      redirected.current
+      initialAuth.current.isLoggedIn !== isLoggedIn
     ) {
+      redirected.current = true;
       return;
     }
     const target = hasOnboarded && isLoggedIn ? '/(tabs)/feed' : '/(onboarding)/welcome';
     const timer = setTimeout(() => {
-      if (redirected.current) return;
+      if (redirected.current || pathname !== '/') return;
       redirected.current = true;
       router.replace(target);
     }, 2000);
     return () => clearTimeout(timer);
-  }, [hasOnboarded, isLoggedIn, isLoading]);
+  }, [hasOnboarded, isLoggedIn, isLoading, pathname]);
 
   return (
     <View style={styles.root}>

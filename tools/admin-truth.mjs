@@ -1,9 +1,13 @@
 // tools/admin-truth.mjs — admin login (password + 2FA) then read live Postgres truth via /api/data/*
 // Usage: node tools/admin-truth.mjs [resource1 resource2 ...]   (default: core counts)
 const BASE = "http://127.0.0.1:3000";
-const ID = "alexrivera";
-const PASS = "Admin@123";
-const TFA = "123456";
+const ID = process.env.SUSEJ_ADMIN_ID;
+const PASS = process.env.SUSEJ_ADMIN_PASSWORD;
+const TFA = process.env.SUSEJ_ADMIN_2FA;
+if (!ID || !PASS || !TFA) {
+  console.error("Set SUSEJ_ADMIN_ID, SUSEJ_ADMIN_PASSWORD, and SUSEJ_ADMIN_2FA before running this tool.");
+  process.exit(1);
+}
 let cookie = "";
 async function j(method, p, body) {
   const res = await fetch(BASE + p, {

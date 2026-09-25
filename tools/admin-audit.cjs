@@ -2,6 +2,13 @@
 const { chromium } = require("C:/Users/TONI/.config/opencode/node_modules/playwright");
 
 const BASE = "https://susej-admin-panel.vercel.app";
+const ADMIN_ID = process.env.SUSEJ_ADMIN_ID;
+const ADMIN_PASSWORD = process.env.SUSEJ_ADMIN_PASSWORD;
+const ADMIN_2FA = process.env.SUSEJ_ADMIN_2FA;
+if (!ADMIN_ID || !ADMIN_PASSWORD || !ADMIN_2FA) {
+  console.error("Set SUSEJ_ADMIN_ID, SUSEJ_ADMIN_PASSWORD, and SUSEJ_ADMIN_2FA before running this tool.");
+  process.exit(1);
+}
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 const PAGES = [
@@ -30,14 +37,14 @@ const PAGES = [
     await sleep(2000);
     const li = await page.$("#loginId"); const pw = await page.$("#password");
     if (li && pw) {
-      await li.fill("alexrivera"); await pw.fill("Admin@123");
+      await li.fill(ADMIN_ID); await pw.fill(ADMIN_PASSWORD);
       const sb = await page.$('button[type="submit"]'); if (sb) { await sb.click(); await sleep(6000); }
     }
     if (page.url().includes("/2fa")) {
       await sleep(2000);
       const boxes = await page.$$('input[maxlength="1"]');
       if (boxes.length >= 6) {
-        const code = "123456";
+        const code = ADMIN_2FA;
         for (let i = 0; i < 6; i++) { await boxes[i].click(); await boxes[i].fill(code[i]); }
         await sleep(3000);
         const vb = await page.$('button:has-text("Verify")'); if (vb) { await vb.click(); await sleep(8000); }
