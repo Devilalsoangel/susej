@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHash, randomInt } from "crypto";
 import { getPrisma } from "@/lib/db";
-import { getAppUser, isIndianPhoneShape, canonPhone } from "@/lib/app-auth";
+import { getAppUser, isIndianPhoneShape, canonPhone, devOtpExposureAllowed } from "@/lib/app-auth";
 import { getClientIp } from "@/lib/auth";
 
 // Per-IP send throttle: the per-phone 45s cooldown alone lets one IP pump
@@ -112,22 +112,14 @@ export async function POST(req: NextRequest) {
   });
 
   const delivered = await sendViaSmsProvider(phone, code);
-  const devMode = process.env.AUTH_DEV_MODE === "1" || (process.env.NODE_ENV !== "production" && process.env.AUTH_DEV_MODE !== "0");
+  const devMode = devOtpExposureAllowed(phone);
   if (!delivered && !devMode) {
-    // No provider configured and dev mode off -> fail closed rather than
-    // pretending a message went out.
     return NextResponse.json({ error: "SMS delivery is not configured" }, { status: 503 });
   }
-  // Explicit AUTH_DEV_MODE=1 exposes the code even in production — DEV/PREVIEW
-  // ONLY (lets testers register without an SMS provider). Never set on a
-  // real public launch; anyone with the number could read codes otherwise.
-  // Default (no flag): codes stay hidden outside development, as before.
-  const exposeDevCode =
-    !delivered && devMode && (process.env.NODE_ENV !== "production" || process.env.AUTH_DEV_MODE === "1");
   return NextResponse.json({
     ok: true,
     message: delivered ? "OTP sent" : "OTP generated (dev mode)",
-    ...(exposeDevCode ? { devCode: code } : {}),
+    ...(!delivered && devMode ? { devCode: code } : {}),
   });
   } catch {
     return NextResponse.json({ error: "Server hiccup. Please try again." }, { status: 500 });
@@ -152,7 +144,7 @@ export async function DELETE(req: NextRequest) {
   if (all) {
     await prisma.appSession.deleteMany({ where: { userId: auth.user.id } });
   } else {
-    await prisma.appSession.deleteMany({ where: { token } });
+    await prisma.appSession.delete({ where: { id: auth.session.id } });
   }
   return NextResponse.json({ ok: true, revoked: all ? "all" : "current" });
 }

@@ -516,9 +516,9 @@ function ApiKeysSettings() {
 
   function generateKey(): string {
     const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    let random = "";
-    for (let i = 0; i < 28; i++) random += chars[Math.floor(Math.random() * chars.length)];
-    return `susej_${random}`;
+    const values = new Uint32Array(28);
+    crypto.getRandomValues(values);
+    return `susej_${Array.from(values, (value) => chars[value % chars.length]).join("")}`;
   }
 
   // Expiry vocab → ISO timestamp (the gateway enforces via Date.parse, and

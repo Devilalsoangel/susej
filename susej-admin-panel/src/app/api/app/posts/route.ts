@@ -316,58 +316,58 @@ export async function POST(req: NextRequest) {
   const allowedTypes = new Set(["product", "service", "food_item"]);
   const reqType = String(body.type ?? "product");
   if (!allowedTypes.has(reqType)) return NextResponse.json({ error: "Invalid type" }, { status: 400 });
-  const post = await prisma.post.create({
-    data: {
-      title: titleStr,
-      authorName: user.businessName || user.name,
-      authorUsername: user.username!,
-      sellerLocation: user.location ?? "",
-      verified: user.verification === "approved",
-      price,
-      mrp,
-      description,
-      category: categoryStr,
-      type: reqType,
-      hashtags: hashtags as never,
-      images: hostedImages as never,
-      likes: 0,
-      comments: 0,
-      status: "published",
-      // Zero-stock listings start sold (out-of-stock shelf state): the client
-      // sends isSold with stockLeft 0, and a 0-stock Active row can never
-      // sell (placement 400s). isSold is honored ONLY in that consistent
-      // pair — never as a free flag.
-      isSold: body.isSold === true && stockLeft === 0,
-      featured: false,
-      condition: body.condition ? String(body.condition) : null,
-      brand: body.brand ? String(body.brand) : null,
-      variants: variants as never,
-      subCategories: subCategories as never,
-      stockLeft,
-      negotiable,
-      deliveryMode,
-      shippingFee,
-      listingLat,
-      listingLng,
-      listingLocation,
-    },
+  const post = await prisma.$transaction(async (tx) => {
+    const created = await tx.post.create({
+      data: {
+        title: titleStr,
+        authorName: user.businessName || user.name,
+        authorUsername: user.username!,
+        sellerLocation: user.location ?? "",
+        verified: user.verification === "approved",
+        price,
+        mrp,
+        description,
+        category: categoryStr,
+        type: reqType,
+        hashtags: hashtags as never,
+        images: hostedImages as never,
+        likes: 0,
+        comments: 0,
+        status: "published",
+        // Zero-stock listings start sold (out-of-stock shelf state): the client
+        // sends isSold with stockLeft 0, and a 0-stock Active row can never
+        // sell (placement 400s). isSold is honored ONLY in that consistent
+        // pair — never as a free flag.
+        isSold: body.isSold === true && stockLeft === 0,
+        featured: false,
+        condition: body.condition ? String(body.condition) : null,
+        brand: body.brand ? String(body.brand) : null,
+        variants: variants as never,
+        subCategories: subCategories as never,
+        stockLeft,
+        negotiable,
+        deliveryMode,
+        shippingFee,
+        listingLat,
+        listingLng,
+        listingLocation,
+      },
+    });
+    await tx.product.create({
+      data: {
+        id: `lst_${created.id}`,
+        title: created.title,
+        images: hostedImages as never,
+        price: created.price ?? 0,
+        category: created.category ?? "",
+        sellerName: `${created.authorName}${created.authorUsername ? ` (@${created.authorUsername})` : ""}`,
+        status: "active",
+        reports: 0,
+        createdAt: created.createdAt,
+      },
+    });
+    return created;
   });
-
-  // Mirror into the admin Product table so listings are moderable
-  // (products page shows real marketplace inventory, not a separate seed).
-  await prisma.product.create({
-    data: {
-      id: `lst_${post.id}`,
-      title: post.title,
-      images: hostedImages as never,
-      price: post.price ?? 0,
-      category: post.category ?? "",
-      sellerName: `${post.authorName}${post.authorUsername ? ` (@${post.authorUsername})` : ""}`,
-      status: "active",
-      reports: 0,
-      createdAt: post.createdAt,
-    },
-  }).catch(() => {});
 
   return NextResponse.json({ post: toAppPost(post) }, { status: 201 });
 }

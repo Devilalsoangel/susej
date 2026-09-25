@@ -19,21 +19,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ user
   if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
   if (!username) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
-  const exactUser = await prisma.user.findFirst({
+  const user = await prisma.user.findFirst({
     where: { username: { equals: username, mode: "insensitive" } },
     orderBy: { joinedAt: "desc" },
-  });
-  const user = exactUser ?? await prisma.user.findFirst({
-    where: {
-      username: { not: null },
-      OR: [
-        { username: { contains: username, mode: "insensitive" } },
-        { name: { contains: username, mode: "insensitive" } },
-        { businessName: { contains: username, mode: "insensitive" } },
-        { location: { contains: username, mode: "insensitive" } },
-      ],
-    },
-    orderBy: [{ isSeller: "desc" }, { joinedAt: "desc" }],
   });
   if (!user || !user.username) return NextResponse.json({ error: "User not found" }, { status: 404 });
   const storedUsername = user.username;
@@ -80,9 +68,6 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ user
       ? {
           tagline: String(sellerRow.tagline ?? ""),
           hours: String(sellerRow.hours ?? ""),
-          email: String(sellerRow.email ?? ""),
-          phone: String(sellerRow.phone ?? ""),
-          address: String(sellerRow.address ?? ""),
         }
       : undefined;
 

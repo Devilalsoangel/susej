@@ -54,6 +54,9 @@ export async function POST(request: NextRequest) {
   let devCode: string | undefined;
 
   if (admin && admin.status === "active") {
+    if (process.env.NODE_ENV === "production") {
+      return NextResponse.json({ error: "Password reset delivery is not configured." }, { status: 503 });
+    }
     const code = randomOtp();
     // Sweep expired rows + cap active tokens per admin: previously every
     // request minted a permanent row (unbounded table, brute-force surface
@@ -85,7 +88,7 @@ export async function POST(request: NextRequest) {
     });
     // Dev passthrough is DEV-ONLY, never production even if the flag leaks
     // into prod env: in prod the code travels by email only, full stop.
-    const passthrough = process.env.NODE_ENV !== "production" && process.env.DEV_RESET_PASSTHROUGH === "true";
+    const passthrough = process.env.DEV_RESET_PASSTHROUGH === "true";
     if (passthrough) {
       devCode = code;
     }

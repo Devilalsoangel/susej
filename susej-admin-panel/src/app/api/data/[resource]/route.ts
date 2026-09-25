@@ -629,7 +629,7 @@ function cleanAdminInput(
 ): Record<string, unknown> | NextResponse {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(data)) {
-    if (SENSITIVE_ADMIN_FIELDS.includes(key as (typeof SENSITIVE_ADMIN_FIELDS)[number])) continue;
+    if (key !== "password" && SENSITIVE_ADMIN_FIELDS.includes(key as (typeof SENSITIVE_ADMIN_FIELDS)[number])) continue;
     if (key === "id" && !isCreate) continue;
     out[key] = value;
   }
@@ -1052,7 +1052,7 @@ function validateResourcePayload(resource: string, data: Record<string, unknown>
   // deleted/hidden are soft-delete states — allowed so DELETE can map to an update.
   const statusAllow: Record<string, Set<string>> = {
     products: new Set(["active", "featured", "hidden", "pending", "approved", "rejected", "deleted"]),
-    orders: new Set(["placed", "confirmed", "preparing", "out_for_delivery", "delivered", "cancelled", "deleted"]),
+    orders: new Set(["placed", "confirmed", "preparing", "out_for_delivery", "delivered", "cancelled"]),
     sellers: new Set(["pending", "approved", "rejected", "suspended", "deleted"]),
     users: new Set(["active", "inactive", "suspended", "banned", "deleted"]),
     categories: new Set(["active", "hidden", "deleted"]),
@@ -1064,6 +1064,10 @@ function validateResourcePayload(resource: string, data: Record<string, unknown>
     // reopen the cross-outcome double-pay hole).
     disputes: new Set(["open", "under_review", "resolved", "closed", "rejected"]),
   };
+  const sellerKycAllow = new Set(["pending", "approved", "rejected", "suspended", "withdrawn"]);
+  if (resource === "sellers" && typeof data.kycStatus === "string" && !sellerKycAllow.has(String(data.kycStatus))) {
+    return `Invalid KYC status '${data.kycStatus}'`;
+  }
   if (typeof data.status === "string" && statusAllow[resource] && !statusAllow[resource].has(String(data.status))) {
     return `Invalid status '${data.status}' for ${resource}`;
   }
@@ -1131,14 +1135,22 @@ function validateResourcePayload(resource: string, data: Record<string, unknown>
   return null;
 }
 
+const ADMIN_ORDER_FLOW = ["placed", "confirmed", "preparing", "out_for_delivery", "delivered"] as const;
+function validAdminOrderTransition(current: string, next: string): boolean {
+  if (current === next) return true;
+  if (next === "cancelled") return ["placed", "confirmed", "preparing"].includes(current);
+  const currentIndex = ADMIN_ORDER_FLOW.indexOf(current as (typeof ADMIN_ORDER_FLOW)[number]);
+  const nextIndex = ADMIN_ORDER_FLOW.indexOf(next as (typeof ADMIN_ORDER_FLOW)[number]);
+  return currentIndex >= 0 && nextIndex === currentIndex + 1;
+}
+
 /**
  * Refund state machine + settlement (single implementation for every desk:
  * the Refunds queue AND the order-detail refund panel). Transitions:
  *   requested → approved | rejected | refunded   (refunded in one step is
  *     super_admin break-glass only)
  *   approved  → refunded | rejected
- * Approving/refunding settles the wallet legs idempotently (buyer re-credit
- * + seller clawback keyed by tracking titles) + immutable ledger reversals.
+ * Approval records the decision; the second reviewer moves money on refunded.
  * Returns { ok:true } or { ok:false, error, status } — callers must not
  * change any display field when settlement fails.
  */
@@ -1174,8 +1186,7 @@ async function transitionRefund(
     });
     if (block) return fail(block, 409);
   }
-  // Non-money terminal states settle nothing — plain update, no lock needed.
-  if (nextStatus !== "approved" && nextStatus !== "refunded") {
+  if (nextStatus !== "refunded") {
     await prisma.refund.update({
       where: { id: String(row0.id) },
       data: { status: nextStatus, respondedAt: new Date().toISOString() },
@@ -1435,6 +1446,22 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   }
   const validationErr = validateResourcePayload(resource, data as Record<string, unknown>);
   if (validationErr) return NextResponse.json({ error: validationErr }, { status: 400 });
+  if (resource === "orders" && typeof (data as Record<string, unknown>).status === "string" && role !== "app") {
+    try {
+      const gdb = (await resolveDb()) as any;
+      if (!gdb) return NextResponse.json({ error: "Could not verify order state — change refused" }, { status: 503 });
+      const current = await gdb.order.findUnique({ where: { id: String(id) }, select: { status: true } });
+      if (!current) return NextResponse.json({ error: "Order not found" }, { status: 404 });
+      const currentStatus = String(current.status ?? "");
+      const nextStatus = String((data as Record<string, unknown>).status ?? "");
+      if (!validAdminOrderTransition(currentStatus, nextStatus)) {
+        return NextResponse.json({ error: `Invalid order transition ${currentStatus} -> ${nextStatus}` }, { status: 409 });
+      }
+    } catch (e) {
+      if (e instanceof NextResponse) throw e;
+      return NextResponse.json({ error: "Could not verify order state — change refused" }, { status: 503 });
+    }
+  }
   // Last-super_admin demote guard (DELETE has the twin — PATCH didn't):
   // demoting the sole super_admin to manager orphans admin management
   // forever (managers can't touch admins/app-settings/audit). Recovery would
@@ -1509,7 +1536,28 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const moneyOwned: Record<string, string[]> = {
     // orders.itemsList drives every settlement basis (goods + per-line fee
     // legs) — hand-editing it re-prices history behind the ledger's back.
-    orders: ["amount", "itemsList"],
+    orders: [
+      "amount",
+      "itemsList",
+      "items",
+      "buyerName",
+      "buyerUsername",
+      "orderNumber",
+      "trackingNumber",
+      "paymentMethod",
+      "paymentStatus",
+      "deliveryStatus",
+      "actualDelivery",
+      "deliveryLog",
+      "shippingCarrier",
+      "estimatedDelivery",
+      "reviewed",
+      "rating",
+      "reviewComment",
+      "kind",
+      "bookingDate",
+      "bookingTime",
+    ],
     withdrawals: ["amount"],
     refunds: ["amount"],
     promotions: ["amountPaid"],
@@ -1651,7 +1699,18 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   // consumed by makerCheck above — persisting it would 500 every override.
   delete (cleanPayload as Record<string, unknown>).dualControlOverride;
   if (resource === "users") {
-    const blockedUserFields = new Set(["walletBalance", "loyaltyPoints", "passwordHash"]);
+    const blockedUserFields = new Set([
+      "email",
+      "phone",
+      "googleSub",
+      "username",
+      "passwordHash",
+      "role",
+      "isSeller",
+      "verification",
+      "walletBalance",
+      "loyaltyPoints",
+    ]);
     for (const k of Object.keys(cleanPayload)) if (blockedUserFields.has(k)) delete (cleanPayload as any)[k];
   }
   // podNote is evidence metadata consumed by the shipment-deliver machine
@@ -1929,6 +1988,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       if (resource === "orders" && role !== "app" && (data as Record<string, unknown>).sellerName !== undefined && (data as Record<string, unknown>).sellerUsername === undefined) {
         return NextResponse.json({ error: "sellerName resolves server-side — bind sellerUsername instead." }, { status: 400 });
       }
+      let withdrawalStatusCommitted = false;
+      let withdrawalRow: any = null;
       // Payout state machine for DESK decisions (industry: money movement is a
       // one-way valve, never a free-form field edit):
       //   requested -> approved | rejected   (finance decision)
@@ -2146,66 +2207,55 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       // the bank rail is manual; "completed" certifies an off-system transfer
       // (attributed audit trail).
       if (resource === "withdrawals" && typeof data.status === "string") {
-        const rawCurrent = String((before as { status?: unknown } | null)?.status ?? "requested");
         const nextStatus = String(data.status);
-        const okTransition =
-          (rawCurrent === "requested" && ["approved", "rejected"].includes(nextStatus)) ||
-          (rawCurrent === "approved" && ["completed", "rejected"].includes(nextStatus));
-        if (!okTransition) {
-          return NextResponse.json(
-            { error: `Invalid payout transition '${rawCurrent}' -> '${nextStatus}'. Allowed: requested→approved/rejected, approved→completed/rejected.` },
-            { status: 409 }
-          );
-        }
-        if (nextStatus === "rejected") {
-          // Rejection refunds the held debit (amount+fee). Race-safe by
-          // construction: the credit row is created FIRST inside one tx, so
-          // concurrent double-rejects serialize on UNIQUE(username,title) —
-          // the loser takes P2002 and its increment rolls back with it (the
-          // old count-then-increment shape double-credited: both passed
-          // count==0, both incremented, the loser's create threw 503 while
-          // +2x stood).
-          try {
-            const revTitle = `Withdrawal rejected refund · ${String(id)}`;
-            // Exact-prefix match (same VPA-embedding class as the payee check
-            // above): substring could refund the wrong row's amount.
-            const debit = await prisma.walletTransaction.findFirst({
-              where: { detail: { startsWith: `Payout request ${String(id)} ` }, amount: { lt: 0 } },
-              orderBy: { ts: "desc" },
-            });
-            if (debit) {
+        try {
+          withdrawalRow = await prisma.$transaction(async (tx: any) => {
+            await tx.$queryRawUnsafe(`SELECT id FROM "Withdrawal" WHERE id = $1 FOR UPDATE`, String(id));
+            const fresh = await tx.withdrawal.findUnique({ where: { id: String(id) } });
+            if (!fresh) throw new Error("__withdrawal_not_found");
+            const currentStatus = String(fresh.status ?? "requested") === "pending"
+              ? "requested"
+              : String(fresh.status ?? "requested");
+            const valid =
+              (currentStatus === "requested" && ["approved", "rejected"].includes(nextStatus)) ||
+              (currentStatus === "approved" && ["completed", "rejected"].includes(nextStatus));
+            if (!valid) throw new Error("__withdrawal_conflict");
+            if (nextStatus === "rejected") {
+              const revTitle = `Withdrawal rejected refund · ${String(id)}`;
+              const debit = await tx.walletTransaction.findFirst({
+                where: { detail: { startsWith: `Payout request ${String(id)} ` }, amount: { lt: 0 } },
+                orderBy: { ts: "desc" },
+              });
+              if (!debit) throw new Error("__withdrawal_no_debit");
               const back = -Number(debit.amount);
-              try {
-                await prisma.$transaction(async (tx: any) => {
-                  await tx.walletTransaction.create({
-                    data: {
-                      username: debit.username,
-                      title: revTitle,
-                      detail: `Rejected payout ${String(id)} refunded (incl. fee)`,
-                      amount: back,
-                    },
-                  });
-                  const owner = await tx.user.findUnique({ where: { username: debit.username } }).catch(() => null);
-                  if (!owner) throw new Error("payout_owner_gone");
-                  await tx.user.update({
-                    where: { id: owner.id },
-                    data: { walletBalance: { increment: back } },
-                  });
-                });
-              } catch (txErr) {
-                // P2002 = a concurrent reject (or replay) already credited
-                // this title — idempotent replay, proceed to the status flip.
-                if ((txErr as { code?: string })?.code !== "P2002") throw txErr;
-              }
-            } else {
-              // Fail-closed: legacy/pre-detail rows have no matching debit —
-              // flipping to rejected would strand the held funds with the desk
-              // believing it refunded. Refuse so ops verifies the balance first.
-              return NextResponse.json({ error: "No matching payout debit found — verify the seller's balance manually before rejecting" }, { status: 409 });
+              if (!Number.isFinite(back) || back <= 0) throw new Error("__withdrawal_bad_debit");
+              await tx.walletTransaction.create({
+                data: {
+                  username: debit.username,
+                  title: revTitle,
+                  detail: `Rejected payout ${String(id)} refunded (incl. fee)`,
+                  amount: back,
+                },
+              });
+              const owner = await tx.user.findUnique({ where: { username: debit.username } });
+              if (!owner) throw new Error("__withdrawal_owner_gone");
+              await tx.user.update({
+                where: { id: owner.id },
+                data: { walletBalance: { increment: back } },
+              });
             }
-          } catch {
-            return NextResponse.json({ error: "Payout rejection refund failed — status not changed" }, { status: 503 });
-          }
+            return tx.withdrawal.update({
+              where: { id: String(id) },
+              data: { status: nextStatus, respondedAt: new Date() },
+            });
+          });
+          withdrawalStatusCommitted = true;
+        } catch (withdrawalError) {
+          const code = withdrawalError instanceof Error ? withdrawalError.message : "";
+          if (code === "__withdrawal_not_found") return NextResponse.json({ error: "Withdrawal not found" }, { status: 404 });
+          if (code === "__withdrawal_conflict") return NextResponse.json({ error: "Withdrawal state changed; refresh and try again" }, { status: 409 });
+          if (code === "__withdrawal_no_debit") return NextResponse.json({ error: "No matching payout debit found; rejection refused" }, { status: 409 });
+          return NextResponse.json({ error: "Payout transition failed; status unchanged" }, { status: 503 });
         }
         // Payout decision tell (fire-and-forget): approved / paid / rejected —
         // sellers otherwise discover it by staring at the wallet.
@@ -3043,7 +3093,74 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
             return NextResponse.json({ error: "Order sync failed — shipment not changed" }, { status: 500 });
         }
       }
-      const row = await prisma[PRISMA_MODELS[resource]].update({ where: { [PRIMARY_KEY[resource] ?? "id"]: id }, data: cleanPayload });
+      const sellerKyc = typeof (cleanPayload as Record<string, unknown>).kycStatus === "string"
+        ? String((cleanPayload as Record<string, unknown>).kycStatus)
+        : null;
+      const sellerCategory = typeof (cleanPayload as Record<string, unknown>).category === "string"
+        ? String((cleanPayload as Record<string, unknown>).category).trim()
+        : null;
+      const sellerPropagationNeeded = resource === "sellers" && role !== "app" && (sellerKyc !== null || sellerCategory !== null);
+      let sellerPropagationApplied = false;
+      const row = withdrawalStatusCommitted
+        ? withdrawalRow
+        : sellerPropagationNeeded
+          ? await prisma.$transaction(async (tx: any) => {
+              const seller = await tx.seller.findUnique({ where: { id: String(id) } });
+              if (!seller) throw new Error("__seller_not_found");
+              const digits = String(seller.phone ?? "").replace(/\D/g, "");
+              const canonical = (value: string) => {
+                const d = value.replace(/\D/g, "");
+                if (d.length === 12 && d.startsWith("91")) return d;
+                if (d.length === 11 && d.startsWith("0")) return `91${d.slice(-10)}`;
+                return d;
+              };
+              const targetPhone = canonical(String(seller.phone ?? ""));
+              if (!targetPhone) throw new Error("__seller_user_missing");
+              const candidates = await tx.user.findMany({
+                where: { OR: [ { phone: seller.phone }, { phone: digits }, { phone: `91${digits}` }, { phone: `0${digits}` } ] },
+                select: { id: true, phone: true, role: true, verification: true },
+              });
+              const linked = candidates.filter((candidate: { phone?: unknown }) => canonical(String(candidate.phone ?? "")) === targetPhone);
+              if (linked.length !== 1) throw new Error(linked.length > 1 ? "__seller_user_ambiguous" : "__seller_user_missing");
+              const user = linked[0];
+              if (sellerKyc === "approved") {
+                const evidenceCount = await tx.sellerDocument.count({ where: { sellerId: String(id) } });
+                const hasFallback = Boolean(seller.selfieUrl) && Boolean(seller.idNumber);
+                if (evidenceCount === 0 && !hasFallback && !(role === "super_admin" && typeof reason === "string" && reason.trim())) {
+                  throw new Error("__seller_evidence_missing");
+                }
+              }
+              const userData: Record<string, unknown> = {};
+              if (sellerKyc !== null) {
+                userData.verification = sellerKyc;
+                userData.isSeller = sellerKyc === "approved";
+                if (sellerKyc === "approved") userData.role = "both";
+                else if (user.role === "both") userData.role = "buyer";
+              }
+              if (sellerCategory) userData.category = sellerCategory;
+              await tx.user.update({ where: { id: user.id }, data: userData });
+              return tx.seller.update({ where: { id: String(id) }, data: cleanPayload as any });
+            })
+          : resource === "products" && String(id).startsWith("lst_") && typeof (data as Record<string, unknown>).status === "string"
+          ? await prisma.$transaction(async (tx: any) => {
+              const productRow = await tx.product.update({
+                where: { id: String(id) },
+                data: cleanPayload as any,
+              });
+              const postId = String(id).slice(4);
+              const productStatus = String((data as Record<string, unknown>).status ?? "");
+              const postStatus = productStatus === "hidden" || productStatus === "deleted" ? "hidden" : "published";
+              await tx.post.update({
+                where: { id: postId },
+                data: {
+                  status: postStatus,
+                  ...(productStatus === "featured" ? { featured: true } : productStatus === "active" ? { featured: false } : {}),
+                },
+              });
+              return productRow;
+            })
+          : await prisma[PRISMA_MODELS[resource]].update({ where: { [PRIMARY_KEY[resource] ?? "id"]: id }, data: cleanPayload });
+      if (sellerPropagationNeeded) sellerPropagationApplied = true;
       // Dispute ruling tell (fire-and-forget, post-commit): both parties hear
       // the verdict with the outcome — rulings otherwise sit silent in the
       // desk while wallets move underneath.
@@ -3072,17 +3189,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           }
         } catch {}
       }
-      // Product moderation flows BACK to the app feed: hidden AND deleted
-      // listings leave the feed (a delete that republishes is a fail-OPEN
-      // moderation bypass), featured ones get the boost, active restores published.
-      if (resource === "products" && typeof data.status === "string" && String(id).startsWith("lst_")) {
-        const postId = String(id).slice(4);
-        const postStatus = data.status === "hidden" || data.status === "deleted" ? "hidden" : "published";
-        await prisma.post.update({
-          where: { id: postId },
-          data: { status: postStatus, ...(data.status === "featured" ? { featured: true } : data.status === "active" ? { featured: false } : {}) },
-        }).catch(() => {});
-      }
             // Seller verification verdicts propagate to the app User row so the
       // in-app verified badge / seller mode follow the admin decision.
       // Store category corrections propagate the same way: one-shop-one-
@@ -3093,7 +3199,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       const cp = cleanPayload as Record<string, unknown>;
       const cpKyc = typeof cp.kycStatus === "string" ? cp.kycStatus : null;
       const cpCat = typeof cp.category === "string" ? cp.category.trim() : null;
-      if (resource === "sellers" && (cpKyc !== null || cpCat)) {
+      if (!sellerPropagationApplied && resource === "sellers" && (cpKyc !== null || cpCat)) {
         const seller = await prisma.seller.findUnique({ where: { id } });
         if (!seller) {
           return NextResponse.json({ error: "Seller not found" }, { status: 404 });
@@ -3711,10 +3817,14 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
       if (softStatus && !hardDelete) {
         const existing = await prisma[PRISMA_MODELS[resource]].findUnique({ where: { [PRIMARY_KEY[resource] ?? "id"]: id } }).catch(() => null);
         if (existing) {
-          await prisma[PRISMA_MODELS[resource]].update({ where: { [PRIMARY_KEY[resource] ?? "id"]: id }, data: { status: softStatus } as any });
           if (resource === "products" && String(id).startsWith("lst_")) {
             const postId = String(id).slice(4);
-            await prisma.post.update({ where: { id: postId }, data: { status: "hidden" } }).catch(() => {});
+            await prisma.$transaction(async (tx: any) => {
+              await tx.product.update({ where: { id: String(id) }, data: { status: softStatus } as any });
+              await tx.post.update({ where: { id: postId }, data: { status: "hidden" } });
+            });
+          } else {
+            await prisma[PRISMA_MODELS[resource]].update({ where: { [PRIMARY_KEY[resource] ?? "id"]: id }, data: { status: softStatus } as any });
           }
           await writeAuditSafe({
             action: "data.soft_delete",
@@ -3849,10 +3959,14 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
           }
         } catch {}
       }
-      await prisma[PRISMA_MODELS[resource]].delete({ where: { [PRIMARY_KEY[resource] ?? "id"]: id } });
       if (resource === "products" && String(id).startsWith("lst_")) {
         const postId = String(id).slice(4);
-        await prisma.post.delete({ where: { id: postId } }).catch(() => {});
+        await prisma.$transaction(async (tx: any) => {
+          await tx.product.delete({ where: { id: String(id) } });
+          await tx.post.deleteMany({ where: { id: postId } });
+        });
+      } else {
+        await prisma[PRISMA_MODELS[resource]].delete({ where: { [PRIMARY_KEY[resource] ?? "id"]: id } });
       }
       // Seller identity reset: seller rows are id-keyed `app_<username>`, so
       // deleting the row without touching the linked User left a ghost seller

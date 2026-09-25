@@ -81,6 +81,7 @@ export async function GET(req: NextRequest) {
        pinnedUntil: t.pinnedUntil ? epoch(t.pinnedUntil) : null,
     };
   });
+  return out;
   };
   const out = await cachedRead(cacheKey("chat", "threads-v2", username), loadThreads, { freshMs: 5_000, staleMs: 300_000, maxBytes: 256_000 });
   return NextResponse.json({ threads: out });
@@ -110,7 +111,9 @@ export async function POST(req: NextRequest) {
     if (await blockBetween(prisma, username, other)) {
       return NextResponse.json({ error: "You can't message this user." }, { status: 403 });
     }
-  } catch {}
+  } catch {
+    return NextResponse.json({ error: "Messaging is temporarily unavailable." }, { status: 503 });
+  }
 
   let thread = await prisma.chatThread.findFirst({
     where: {
@@ -145,6 +148,9 @@ export async function POST(req: NextRequest) {
       if (!thread) throw e;
     }
   }
-  await invalidateCache(cacheKey("chat", "threads-v2", username));
+  await Promise.all([
+    invalidateCache(cacheKey("chat", "threads-v2", username)),
+    invalidateCache(cacheKey("chat", "threads-v2", other)),
+  ]);
   return NextResponse.json({ thread: { id: thread.id, otherUsername: other } }, { status: 201 });
 }

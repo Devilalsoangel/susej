@@ -444,10 +444,9 @@ export default function NotificationsPage() {
                             <p className="text-xs text-gray-400">To: [Recipient]</p>
                             <p className="mt-1 text-sm font-medium text-[#18181B] ">{subject || "Email Subject"}</p>
                           </div>
-                          <div
-                            className="prose prose-sm max-w-none text-sm text-gray-600"
-                            dangerouslySetInnerHTML={{ __html: emailBody ? previewBody(emailBody) : "<p>Your email content will appear here</p>" }}
-                          />
+                          <div className="max-w-none whitespace-pre-wrap text-sm text-gray-600">
+                            {emailBody ? previewBody(emailBody) : "Your email content will appear here"}
+                          </div>
                         </div>
                       </div>
                       <div className="mt-4 space-y-2">
@@ -617,10 +616,9 @@ export default function NotificationsPage() {
                 <p className="mt-1 text-xs text-gray-400">to [Recipient]</p>
                 <p className="mt-2 text-base font-semibold text-[#18181B] ">{subject || "Email Subject"}</p>
               </div>
-              <div
-                className="prose prose-sm max-w-none text-sm text-gray-600"
-                dangerouslySetInnerHTML={{ __html: emailBody ? previewBody(emailBody) : "<p>No content</p>" }}
-              />
+              <div className="max-w-none whitespace-pre-wrap text-sm text-gray-600">
+                {emailBody ? previewBody(emailBody) : "No content"}
+              </div>
               <div className="border-t border-[#E4E4E7] pt-4 text-center">
                 <p className="text-xs text-gray-400">SUSEJ Marketplace</p>
                 <p className="mt-1 text-xs text-gray-400">

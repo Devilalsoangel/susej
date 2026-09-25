@@ -25,11 +25,9 @@ const roleOptions = [
 
 function generatePassword(): string {
   const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*";
-  let pwd = "";
-  for (let i = 0; i < 16; i++) {
-    pwd += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return pwd;
+  const values = new Uint32Array(20);
+  crypto.getRandomValues(values);
+  return Array.from(values, (value) => chars[value % chars.length]).join("");
 }
 
 export function AdminForm({ open, onClose, onSave, editAdmin }: AdminFormProps) {

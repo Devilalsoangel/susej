@@ -200,7 +200,33 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     data.shippingFee = Math.floor(feeRaw);
   }
 
-  const updated = await prisma.post.update({ where: { id }, data });
+  const updated = await prisma.$transaction(async (tx) => {
+    const row = await tx.post.update({ where: { id }, data });
+    const status = row.status === "published" ? (row.featured ? "featured" : "active") : "hidden";
+    await tx.product.upsert({
+      where: { id: `lst_${id}` },
+      update: {
+        title: row.title,
+        images: row.images as never,
+        price: row.price ?? 0,
+        category: row.category ?? "",
+        sellerName: `${row.authorName}${row.authorUsername ? ` (@${row.authorUsername})` : ""}`,
+        status,
+      },
+      create: {
+        id: `lst_${id}`,
+        title: row.title,
+        images: row.images as never,
+        price: row.price ?? 0,
+        category: row.category ?? "",
+        sellerName: `${row.authorName}${row.authorUsername ? ` (@${row.authorUsername})` : ""}`,
+        status,
+        reports: 0,
+        createdAt: row.createdAt,
+      },
+    });
+    return row;
+  });
 
   // Price-drop fan-out (one-shot): watchers whose baseline exceeds the new
   // price get a notification (cross-device truth via the bell) and their
@@ -262,16 +288,6 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     }
   } catch {}
 
-  // Keep the admin Product mirror in sync (status vocab: active/featured/hidden).
-  const productData: Record<string, unknown> = {};
-  if (data.title !== undefined) productData.title = data.title;
-  if (data.price !== undefined) productData.price = data.price;
-  if (data.category !== undefined) productData.category = data.category;
-  if (data.images !== undefined) productData.images = data.images;
-  if (Object.keys(productData).length) {
-    await prisma.product.update({ where: { id: `lst_${id}` }, data: productData }).catch(() => {});
-  }
-
   return NextResponse.json({ ok: true, post: { id: updated.id, isSold: updated.isSold, featured: updated.featured } });
 }
 
@@ -290,8 +306,24 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   if (!delCaller || delCaller !== delOwner) {
     return NextResponse.json({ error: "Not your post" }, { status: 403 });
   }
-  await prisma.post.update({ where: { id }, data: { status: "removed" } });
-  await prisma.product.delete({ where: { id: `lst_${id}` } }).catch(() => {});
+  await prisma.$transaction(async (tx) => {
+    const removed = await tx.post.update({ where: { id }, data: { status: "removed" } });
+    await tx.product.upsert({
+      where: { id: `lst_${id}` },
+      update: { status: "hidden" },
+      create: {
+        id: `lst_${id}`,
+        title: removed.title,
+        images: removed.images as never,
+        price: removed.price ?? 0,
+        category: removed.category ?? "",
+        sellerName: `${removed.authorName}${removed.authorUsername ? ` (@${removed.authorUsername})` : ""}`,
+        status: "hidden",
+        reports: 0,
+        createdAt: removed.createdAt,
+      },
+    });
+  });
   // Orphan-lot guard: live auctions backed by this listing would keep
   // accepting funded bids on a removed item (cover join misses, winner
   // settles via chat for nothing). End them with the listing.

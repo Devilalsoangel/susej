@@ -96,7 +96,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (await blockBetween(prisma, username, receiver)) {
       return NextResponse.json({ error: "You can't message this user." }, { status: 403 });
     }
-  } catch {}
+  } catch {
+    return NextResponse.json({ error: "Messaging is temporarily unavailable." }, { status: 503 });
+  }
 
   let body: { body?: string; offer?: { amount?: unknown; productId?: unknown; productName?: unknown } };
   try {
@@ -116,18 +118,34 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return NextResponse.json({ error: "Invalid offer amount" }, { status: 400 });
     }
     if (!productId) return NextResponse.json({ error: "Offer needs a listing" }, { status: 400 });
+    const listing = await prisma.post.findUnique({
+      where: { id: productId },
+      select: { authorUsername: true, status: true, isSold: true, stockLeft: true },
+    });
+    if (
+      !listing ||
+      String(listing.authorUsername ?? "").toLowerCase() !== receiver.toLowerCase() ||
+      listing.status !== "active" ||
+      listing.isSold ||
+      (listing.stockLeft !== null && listing.stockLeft <= 0)
+    ) {
+      return NextResponse.json({ error: "This listing is no longer available for offers" }, { status: 409 });
+    }
     offerData = { offerAmount: Math.round(amount), offerProductId: productId, offerProductName: productName, offerStatus: "pending" };
   }
   const text = String(body.body ?? "").trim() || (offerData ? `Offer ${offerData.offerAmount} for ${offerData.offerProductName}` : "");
   if (!text) return NextResponse.json({ error: "Message required" }, { status: 400 });
   if (text.length > 2000) return NextResponse.json({ error: "Message too long (max 2000)" }, { status: 400 });
 
-  const message = await prisma.chatMessage.create({
-    data: { threadId: id, sender: username, receiver, body: text, ...(offerData ?? {}) },
-  });
-  await prisma.chatThread.update({
-    where: { id },
-    data: { lastMessage: text, lastAt: new Date() },
+  const message = await prisma.$transaction(async (tx) => {
+    const created = await tx.chatMessage.create({
+      data: { threadId: id, sender: username, receiver, body: text, ...(offerData ?? {}) },
+    });
+    await tx.chatThread.update({
+      where: { id },
+      data: { lastMessage: text, lastAt: new Date() },
+    });
+    return created;
   });
   await invalidateCache(
     cacheKey("chat", "messages-v2", id, "latest"),
@@ -178,6 +196,15 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (!["accepted", "declined", "countered"].includes(next)) {
     return NextResponse.json({ error: "Invalid offer status" }, { status: 400 });
   }
+  const receiver = thread.participantA === username ? thread.participantB : thread.participantA;
+  try {
+    const { blockBetween } = await import("@/lib/blocks");
+    if (await blockBetween(prisma, username, receiver)) {
+      return NextResponse.json({ error: "You can't act on this conversation." }, { status: 403 });
+    }
+  } catch {
+    return NextResponse.json({ error: "Messaging is temporarily unavailable." }, { status: 503 });
+  }
   const msg = await prisma.chatMessage.findFirst({ where: { id: messageId, threadId: id } });
   if (!msg || typeof (msg as unknown as { offerAmount?: unknown }).offerAmount !== "number") {
     return NextResponse.json({ error: "Offer not found" }, { status: 404 });
@@ -191,7 +218,31 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (next === "accepted" && String((msg as unknown as { sender?: unknown }).sender ?? "") === username) {
     return NextResponse.json({ error: "You can't accept your own offer" }, { status: 400 });
   }
-  await prisma.chatMessage.update({ where: { id: messageId }, data: { offerStatus: next } });
+  if (next === "accepted") {
+    const productId = String((msg as unknown as { offerProductId?: unknown }).offerProductId ?? "");
+    const listing = productId
+      ? await prisma.post.findUnique({
+          where: { id: productId },
+          select: { authorUsername: true, status: true, isSold: true, stockLeft: true },
+        })
+      : null;
+    if (
+      !listing ||
+      String(listing.authorUsername ?? "").toLowerCase() !== receiver.toLowerCase() ||
+      listing.status !== "active" ||
+      listing.isSold ||
+      (listing.stockLeft !== null && listing.stockLeft <= 0)
+    ) {
+      return NextResponse.json({ error: "This listing is no longer available" }, { status: 409 });
+    }
+  }
+  const changed = await prisma.chatMessage.updateMany({
+    where: { id: messageId, threadId: id, offerStatus: "pending" },
+    data: { offerStatus: next },
+  });
+  if (changed.count !== 1) {
+    return NextResponse.json({ error: "Offer already decided" }, { status: 409 });
+  }
   await invalidateCache(
     cacheKey("chat", "messages-v2", id, "latest"),
     cacheKey("chat", "threads-v2", thread.participantA),

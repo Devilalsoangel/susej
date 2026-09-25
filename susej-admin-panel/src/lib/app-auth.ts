@@ -102,6 +102,16 @@ export function canonPhone(phone: string): string {
   return digits;
 }
 
+export function devOtpExposureAllowed(phone: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.NODE_ENV !== "production") return env.AUTH_DEV_MODE !== "0";
+  if (env.VERCEL_ENV !== "preview" || env.AUTH_DEV_MODE !== "1") return false;
+  const allowed = (env.AUTH_DEV_TEST_PHONES ?? "")
+    .split(",")
+    .map((value) => canonPhone(value.trim()))
+    .filter(Boolean);
+  return allowed.includes(canonPhone(phone));
+}
+
 /**
  * Pure phone lookup (used by OTP verify). NEVER creates — creation is an
  * explicit signup decision (see createUserByPhone). Silent auto-provision on
@@ -132,12 +142,6 @@ export async function findUserByPhone(phone: string) {
   // double-country bug spawned a ghost account.
   const national = digits.slice(-10);
   const normalized = `91${national}`;
-  // Deterministic priority: exact normalized first, then exact raw forms,
-  // and only then the endsWith fallback. A single findFirst with OR is
-  // ambiguous when a ghost duplicate exists (tony 911556848908 vs ghost
-  // 91911556848908 both end with 1556848908) — the DB could return either.
-  // Exact forms first (same note: no `{ not: null }` combined with
-  // `equals`/`endsWith` — Prisma runtime rejects it with a 500).
   const exactFirst = await prisma.user.findFirst({
     where: {
       OR: [
@@ -149,10 +153,6 @@ export async function findUserByPhone(phone: string) {
     },
   });
   if (exactFirst) return exactFirst;
-  const candidate = await prisma.user.findFirst({
-    where: { phone: { endsWith: national } as never },
-  });
-  if (candidate) return candidate;
   return null;
 }
 

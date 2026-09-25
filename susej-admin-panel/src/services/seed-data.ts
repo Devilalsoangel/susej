@@ -31,14 +31,6 @@ export const seedAdmins: SeedAdmin[] = [
     role: "super_admin",
     status: "active",
   },
-  {
-    id: "adm_manager",
-    name: "Shop Manager",
-    loginId: "manager",
-    email: "manager@susej.com",
-    role: "manager",
-    status: "active",
-  },
 ];
 
 export interface SeedCategory {

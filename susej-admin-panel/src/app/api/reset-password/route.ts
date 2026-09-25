@@ -89,11 +89,20 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Database unavailable. Password reset is disabled." }, { status: 503 });
     }
 
-    await prisma.$transaction([
-      prisma.admin.update({ where: { id: row.adminId }, data: { passwordHash: hashPassword(password), failedAttempts: 0, lockedUntil: null } }),
-      prisma.passwordResetToken.update({ where: { id: row.id }, data: { usedAt: new Date() } }),
-      prisma.passwordResetToken.deleteMany({ where: { adminId: row.adminId, usedAt: null } }),
-    ]);
+    const resetApplied = await prisma.$transaction(async (tx) => {
+      const consumed = await tx.passwordResetToken.updateMany({
+        where: { id: row.id, usedAt: null, expiresAt: { gt: new Date() } },
+        data: { usedAt: new Date() },
+      });
+      if (consumed.count !== 1) return false;
+      await tx.admin.update({
+        where: { id: row.adminId },
+        data: { passwordHash: hashPassword(password), failedAttempts: 0, lockedUntil: null },
+      });
+      await tx.passwordResetToken.deleteMany({ where: { adminId: row.adminId, usedAt: null } });
+      return true;
+    });
+    if (!resetApplied) return slowFail({ error: "This reset code is invalid or has expired." }, 400);
 
     await writeAudit({
       action: "auth.password_reset",
