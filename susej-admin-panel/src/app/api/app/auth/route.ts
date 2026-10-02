@@ -91,7 +91,12 @@ export async function POST(req: NextRequest) {
 
   try {
     const issued = await prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${authPhoneLockKey(phone)}, 0))`;
+      // pg_advisory_xact_lock returns void, and Prisma's driver adapter cannot
+// deserialise a void column: the raw call failed with P2010
+// (UnsupportedNativeDataType), which took the whole OTP send down. Running
+// the lock inside a CTE and selecting an integer makes the call return a
+// mappable row while still holding the lock for the transaction.
+await tx.$queryRaw`WITH susej_lock AS (SELECT pg_advisory_xact_lock(hashtextextended(${authPhoneLockKey(phone)}, 0))) SELECT 1 AS locked FROM susej_lock`;
       const key = `otp:${phone}`;
       const existing = await tx.appSetting.findUnique({ where: { key } });
       const previous = existing?.value && typeof existing.value === "object" && !Array.isArray(existing.value)
@@ -150,7 +155,12 @@ export async function POST(req: NextRequest) {
     const devMode = devOtpExposureAllowed(phone);
     if (!delivered && !devMode) {
       await prisma.$transaction(async (tx) => {
-        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${authPhoneLockKey(phone)}, 0))`;
+        // pg_advisory_xact_lock returns void, and Prisma's driver adapter cannot
+// deserialise a void column: the raw call failed with P2010
+// (UnsupportedNativeDataType), which took the whole OTP send down. Running
+// the lock inside a CTE and selecting an integer makes the call return a
+// mappable row while still holding the lock for the transaction.
+await tx.$queryRaw`WITH susej_lock AS (SELECT pg_advisory_xact_lock(hashtextextended(${authPhoneLockKey(phone)}, 0))) SELECT 1 AS locked FROM susej_lock`;
         const current = await tx.appSetting.findUnique({ where: { key: issued.key } });
         if (!current || !sameStoredChallenge(current.value, issued.value)) return;
         if (issued.hadPrevious) {
@@ -182,7 +192,12 @@ export async function POST(req: NextRequest) {
       },
       { headers: { "Cache-Control": "no-store" } }
     );
-  } catch {
+  } catch (error) {
+    // An empty catch here turned every OTP failure into an identical opaque 500
+    // with no server-side trace, which is what made the regression this shipped
+    // undiagnosable from the outside. Log the real cause; the client still gets
+    // the same generic message so nothing internal leaks.
+    console.error("[auth] OTP send failed:", error);
     return NextResponse.json({ error: "Server hiccup. Please try again.", code: "SERVER_ERROR" }, { status: 500 });
   }
 }

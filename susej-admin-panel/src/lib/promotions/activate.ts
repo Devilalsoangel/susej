@@ -201,7 +201,10 @@ export async function activatePromotion(checkoutRef: string, providerPaymentId?:
     // checkoutRef rows never lock each other, so the count alone raced).
     // Feed pins all actives; home serves 3.
     try {
-      await (tx as any).$queryRawUnsafe?.(`SELECT pg_advisory_xact_lock(hashtext('spotlight-activate'))`);
+      // pg_advisory_xact_lock returns void; Prisma's driver adapter cannot
+// deserialise a void column (P2010 UnsupportedNativeDataType). Select an
+// integer from a CTE so the lock is taken and the result stays mappable.
+await (tx as any).$queryRawUnsafe?.(`WITH susej_lock AS (SELECT pg_advisory_xact_lock(hashtext('spotlight-activate'))) SELECT 1 AS locked FROM susej_lock`);
     } catch {
       return { ok: false as const, error: "activation_failed" };
     }

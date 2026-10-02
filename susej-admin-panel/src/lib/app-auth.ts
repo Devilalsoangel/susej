@@ -331,7 +331,14 @@ export function challengeIntentsMatch(stored: StoredAuthIntent, verify: AppAuthI
 
 export function devOtpExposureAllowed(phone: string, env: NodeJS.ProcessEnv = process.env): boolean {
   if (env.NODE_ENV !== "production") return env.AUTH_DEV_MODE !== "0";
-  if (env.VERCEL_ENV !== "preview" || env.AUTH_DEV_MODE !== "1") return false;
+  // Production exposure is opt-in AND allowlisted: AUTH_DEV_MODE=1 opens the
+  // dev-code path, and only for the numbers in AUTH_DEV_TEST_PHONES. Gating
+  // this on VERCEL_ENV === "preview" as well made the production alias
+  // unusable - the app points at prod, no SMS provider is configured, so every
+  // OTP request fell through to the SMS-unavailable path and nobody could
+  // sign in at all. The phone allowlist is the control that keeps the
+  // production dev-code path narrow.
+  if (env.AUTH_DEV_MODE !== "1") return false;
   const allowed = (env.AUTH_DEV_TEST_PHONES ?? "")
     .split(",")
     .map((value) => canonPhone(value.trim()))

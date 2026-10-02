@@ -117,7 +117,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
         // usernames must not break the SQL). Fail-closed: lock failure aborts,
         // never proceeds unlocked.
         await (tx as any).$queryRawUnsafe?.(
-          `SELECT pg_advisory_xact_lock(hashtext($1))`,
+          `WITH susej_lock AS (SELECT pg_advisory_xact_lock(hashtext($1))) SELECT 1 AS locked FROM susej_lock`,
           `chat-pin:${username}`
         );
         const activePins = await tx.chatThread.count({
@@ -188,7 +188,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   try {
     const pinnedUntil = await prisma.$transaction(async (tx) => {
       await (tx as any).$queryRawUnsafe?.(
-        `SELECT pg_advisory_xact_lock(hashtext($1))`,
+        `WITH susej_lock AS (SELECT pg_advisory_xact_lock(hashtext($1))) SELECT 1 AS locked FROM susej_lock`,
         `chat-pin:${username}`
       );
       const activePins = await tx.chatThread.count({

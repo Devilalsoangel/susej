@@ -115,7 +115,10 @@ export async function POST(req: NextRequest) {
 
   try {
     const result = await prisma.$transaction(async (tx): Promise<VerifyResult> => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${authPhoneLockKey(phone)}, 0))`;
+      // pg_advisory_xact_lock returns void, which Prisma's driver adapter cannot
+// deserialise (P2010 UnsupportedNativeDataType) - same fix as the send path:
+// take the lock in a CTE and select an integer so the result is mappable.
+await tx.$queryRaw`WITH susej_lock AS (SELECT pg_advisory_xact_lock(hashtextextended(${authPhoneLockKey(phone)}, 0))) SELECT 1 AS locked FROM susej_lock`;
       const otpKey = `otp:${phone}`;
       const rec = await tx.appSetting.findUnique({ where: { key: otpKey } });
       const data = rec?.value && typeof rec.value === "object" && !Array.isArray(rec.value)
