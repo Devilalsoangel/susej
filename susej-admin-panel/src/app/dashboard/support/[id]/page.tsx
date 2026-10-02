@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useEffect, useMemo, useState } from "react";
+import { use, useMemo, useRef, useState } from "react";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/shared/status-badge";
@@ -8,6 +8,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { EmptyState } from "@/components/shared/empty-state";
+import { ErrorState } from "@/components/shared/error-state";
+import { LoadingState } from "@/components/shared/loading-state";
+import { toast } from "@/components/ui/toast";
 import { useDbResource } from "@/hooks/use-db-resource";
 import { apiPatch, apiPost } from "@/lib/api-mutate";
 import { formatDate } from "@/lib/utils";
@@ -42,25 +45,18 @@ interface ThreadMessage {
 
 export default function SupportTicketPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const { data: tickets, refresh } = useDbResource<SupportTicket>("tickets", { id });
-  const { data: messageRows, refresh: refreshMessages } = useDbResource<MessageRow>("messages", { take: 100 });
-  const { data: adminRows } = useDbResource<AdminUser>("admins");
+  const { data: tickets, error: ticketError, loading: ticketLoading, refresh } = useDbResource<SupportTicket>("tickets", { id });
+  const { data: messageRows, error: messageError, refresh: refreshMessages } = useDbResource<MessageRow>("messages", { q: id, take: 100 });
+  const { data: adminRows, error: adminError } = useDbResource<AdminUser>("admins");
   const adminUser = useAuthStore((s) => s.user);
   const [assignee, setAssignee] = useState("");
   const [reply, setReply] = useState("");
-  const [ticket, setTicket] = useState<SupportTicket | null>(null);
+  const [ticketDraft, setTicketDraft] = useState<{ id: string; ticket: SupportTicket } | null>(null);
+  const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
 
-  const fetched = useMemo(() => tickets?.find((t) => t.id === id) ?? null, [tickets, id]);
-
-  useEffect(() => {
-    if (fetched) setTicket(fetched);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetched]);
-
-  useEffect(() => {
-    refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  const fetched = useMemo(() => tickets?.find((ticketRow) => ticketRow.id === id) ?? null, [tickets, id]);
+  const ticket = ticketDraft?.id === id ? ticketDraft.ticket : fetched;
 
   const thread = useMemo<ThreadMessage[]>(() => {
     return (messageRows ?? [])
@@ -74,17 +70,18 @@ export default function SupportTicketPage({ params }: { params: Promise<{ id: st
       }));
   }, [messageRows, id]);
 
-  const assigneeOptions = useMemo(
-    () =>
-      Array.from(new Set((adminRows ?? []).map((a) => a.name).filter(Boolean))).map((name) => ({
-        label: name,
-        value: name,
-      })),
-    [adminRows]
-  );
+  const assigneeOptions = Array.from(new Set([
+    ...(adminRows ?? []).filter((admin) => admin.status === "active").map((admin) => admin.name).filter(Boolean),
+    ...(ticket?.assignee ? [ticket.assignee] : []),
+  ])).map((name) => ({
+    label: name,
+    value: name,
+  }));
 
   async function sendReply() {
-    if (!reply.trim() || !ticket) return;
+    if (!reply.trim() || !ticket || sendingRef.current) return;
+    sendingRef.current = true;
+    setSending(true);
     try {
       await apiPost("messages", {
         threadId: ticket.id,
@@ -94,11 +91,26 @@ export default function SupportTicketPage({ params }: { params: Promise<{ id: st
         createdAt: new Date().toISOString(),
       });
       setReply("");
-      refreshMessages();
+      await refreshMessages();
+      toast.success("Reply sent.");
     } catch (e) {
-      console.error(e);
+      toast.error(e instanceof Error ? e.message : "Reply failed — the draft was preserved.");
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
     }
   }
+
+  if (ticketError) {
+    return (
+      <div className="space-y-6">
+        <Breadcrumb items={[{ label: "Support", href: "/dashboard/support" }, { label: "Ticket" }]} />
+        <ErrorState title="Ticket unavailable" message={ticketError} onRetry={() => void refresh()} />
+      </div>
+    );
+  }
+
+  if (ticketLoading && !ticket) return <LoadingState rows={4} />;
 
   if (!ticket) {
     return (
@@ -123,15 +135,17 @@ export default function SupportTicketPage({ params }: { params: Promise<{ id: st
   async function patchTicket(patch: Partial<SupportTicket>) {
     const current = ticket;
     if (!current) return;
-    setTicket({ ...current, ...patch });
+    setTicketDraft({ id: current.id, ticket: { ...current, ...patch } });
     try {
       await apiPatch("tickets", current.id, patch);
+      await refresh();
+      setTicketDraft(null);
+      toast.success("Ticket updated.");
     } catch (e) {
-      console.error(e);
+      setTicketDraft(null);
+      toast.error(e instanceof Error ? e.message : "Ticket update failed — nothing was changed.");
     }
   }
-
-  const resolved = ticket.status !== "open";
 
   return (
     <div className="space-y-6">
@@ -178,7 +192,13 @@ export default function SupportTicketPage({ params }: { params: Promise<{ id: st
               <CardTitle>Conversation</CardTitle>
             </CardHeader>
             <CardContent>
-              {thread.length === 0 ? (
+              {messageError ? (
+                <ErrorState
+                  title="Conversation unavailable"
+                  message={messageError}
+                  onRetry={() => void refreshMessages()}
+                />
+              ) : thread.length === 0 ? (
                 <EmptyState
                   icon={<MessageSquare className="h-8 w-8 text-gray-300" />}
                   title="No messages in this thread yet"
@@ -214,7 +234,7 @@ export default function SupportTicketPage({ params }: { params: Promise<{ id: st
                   />
                   <Button
                     variant="primary"
-                    disabled={!reply.trim()}
+                    disabled={!reply.trim() || Boolean(messageError) || sending}
                     onClick={sendReply}
                   >
                     <Send className="h-4 w-4" /> Send
@@ -277,17 +297,18 @@ export default function SupportTicketPage({ params }: { params: Promise<{ id: st
                 <div>
                   <p className="mb-1.5 text-xs text-gray-500">Assignee</p>
                   <Select
-                    value={assignee}
+                    value={assignee || ticket.assignee || ""}
                     onChange={(e) => setAssignee(e.target.value)}
                     options={assigneeOptions}
                     placeholder={assigneeOptions.length > 0 ? "Select assignee" : "No admins available"}
-                    disabled={assigneeOptions.length === 0}
+                    disabled={assigneeOptions.length === 0 || Boolean(adminError)}
                   />
+                  {adminError && <p className="mt-2 text-xs text-red-600">{adminError}</p>}
                 </div>
                 <Button
                   variant="secondary"
                   className="w-full"
-                  disabled={!assignee}
+                  disabled={!assignee || Boolean(adminError)}
                   onClick={() => {
                     patchTicket({ assignee });
                   }}

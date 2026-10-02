@@ -207,6 +207,8 @@ interface OrderContextType {
    * "No orders yet" empty state — while this is false.
    */
   loaded: boolean;
+  serverError: boolean;
+  refreshOrders: () => void;
 }
 
 export const ORDER_STATUS_FLOW: OrderStatus[] = [
@@ -257,7 +259,7 @@ export function toOrderFromServer(hit: any): Order | null {
           name: String(i.name ?? 'Item'),
           price: Number(i.price ?? 0),
           quantity: Number(i.quantity ?? 1),
-          ...(i.imageUrl ? { imageUrl: String(i.imageUrl) } : {}),
+          ...(i.imageUrl || i.image ? { imageUrl: String(i.imageUrl ?? i.image) } : {}),
           ...(typeof i.variantLabel === 'string' && i.variantLabel ? { variantLabel: i.variantLabel } : {}),
           ...(typeof i.bundleId === 'string' && i.bundleId ? { bundleId: i.bundleId } : {}),
           ...(typeof i.netPrice === 'number' && Number.isFinite(i.netPrice) ? { netPrice: i.netPrice } : {}),
@@ -324,6 +326,8 @@ const OrderContext = createContext<OrderContextType | null>(null);
 export function OrderProvider({ children }: { children: React.ReactNode }) {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [serverError, setServerError] = useState(false);
+  const [refreshNonce, setRefreshNonce] = useState(0);
   const { user, tokenSeq } = useAuth();
   const { decrementStock } = usePosts();
   // Acked orders whose lines already decremented local cache stock (exactly-
@@ -349,6 +353,7 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
     const key = user?.username ? `${ORDERS_KEY_BASE}:${user.username}` : ORDERS_KEY_BASE;
     // Reset authority when switching identities so new user's cache can load.
     serverAuthoritative.current = false;
+    setServerError(false);
     setLoaded(false);
     AsyncStorage.getItem(key)
       .then((data) => {
@@ -380,8 +385,17 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
   // account sees the same orders on any device). A successful pull REPLACES
   // the cache — stale local/demo rows can never masquerade as real orders.
   const loadedOrdersFor = useRef('');
+
+  const refreshOrders = useCallback(() => {
+    loadedOrdersFor.current = '';
+    setServerError(false);
+    setLoaded(false);
+    setRefreshNonce((value) => value + 1);
+  }, []);
+
   useEffect(() => {
     if (!user?.username) {
+      setServerError(false);
       setLoaded(true);
       return;
     }
@@ -392,11 +406,13 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
     // mine=all: one pull returns BOTH purchase history and sales — every
     // screen (buyer orders, seller dashboard/orders) filters locally.
      serverApi.getOrders('all').then((res) => {
-       if (cancelled) return;
+      if (cancelled) return;
        if (!res.ok || !res.data?.orders) {
+        setServerError(true);
          setLoaded(true);
          return;
        }
+      setServerError(false);
       serverAuthoritative.current = true;
       // Merge, never wholesale replace: the server row lacks client-side
       // fields (deliveryFee/promoCode/booking/reviewAnonymous) that have no
@@ -434,7 +450,11 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
                   name: String(i.name ?? 'Item'),
                   price: Number(i.price ?? 0),
                   quantity: Number(i.quantity ?? 1),
-                  ...(i.imageUrl ? { imageUrl: String(i.imageUrl) } : {}),
+                  ...(i.imageUrl || i.image
+                    ? { imageUrl: String(i.imageUrl ?? i.image) }
+                    : priorItemsByListing.get(String(i.listingId ?? i.postId ?? ''))?.imageUrl
+                      ? { imageUrl: priorItemsByListing.get(String(i.listingId ?? i.postId ?? ''))!.imageUrl }
+                      : {}),
                   ...(typeof i.bundleId === 'string' && i.bundleId ? { bundleId: i.bundleId } : {}),
                   ...((typeof i.variantLabel === 'string' && i.variantLabel
                     ? { variantLabel: i.variantLabel }
@@ -571,10 +591,11 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
       setLoaded(true);
     }).catch(() => {
       if (cancelled) return;
+      setServerError(true);
       setLoaded(true);
     });
     return () => { cancelled = true; };
-  }, [user?.username, tokenSeq]);
+  }, [user?.username, tokenSeq, refreshNonce]);
 
   const persist = useCallback((next: Order[]) => {
     AsyncStorage.setItem(ordersKey, JSON.stringify(next)).catch(() => {});
@@ -1184,6 +1205,8 @@ export function OrderProvider({ children }: { children: React.ReactNode }) {
         respondRefund,
         cancelOrder,
         loaded,
+        serverError,
+        refreshOrders,
       }}
     >
       {children}

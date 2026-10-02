@@ -1,19 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, ScrollView } from 'react-native';
-import { router } from 'expo-router';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { View, Text, TextInput, TouchableOpacity, ScrollView, BackHandler } from 'react-native';
+import { replaceRoute } from '../../utils/navigation';
 import * as Location from 'expo-location';
 import { ChevronLeftIcon, SearchIcon, GpsTargetIcon } from '../../utils/icons';
 import { colors } from '../../utils/theme';
 import { LeafletMapHost } from '../../components/LeafletMap';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../contexts/AuthContext';
-
-const cities = [
-  { name: 'Bangalore' },
-  { name: 'Mumbai' },
-  { name: 'Delhi' },
-  { name: 'Goa' },
-];
+import { serverApi } from '../../utils/serverApi';
+import { formatDistance } from '../../utils/placeSearch';
 
 // Searchable location database (major Indian cities with coordinates) used to
 // suggest nearby places when the user types and to resolve the GPS fix to a
@@ -373,17 +368,59 @@ const DEMO_CENTER = { latitude: 18.5204, longitude: 73.8567 };
 
 export default function LocationScreen() {
   const insets = useSafeAreaInsets();
-  const { updateUser } = useAuth();
-  const [selectedCity, setSelectedCity] = useState<string | null>(null);
+  const { user, updateUser, setOnboardingStep } = useAuth();
+  // "Popular cities" used to be a hardcoded four-city array - a label that had no
+// relationship to where anyone actually is. It now comes from real rows
+// (User.location written by this very screen + AddressBookEntry.city) via
+// /api/app/cities, and when the DB has none the list stays EMPTY and the map +
+// search carry the screen. There is deliberately no fallback list.
+const [popularCities, setPopularCities] = useState<Array<{ name: string; users: number; addresses: number }>>([]);
+const [citiesSource, setCitiesSource] = useState<'db' | 'loading' | 'unavailable'>('loading');
+
+useEffect(() => {
+  let cancelled = false;
+  (async () => {
+    try {
+      const res = await serverApi.getPopularCities();
+      if (cancelled) return;
+      const cities = res.ok && res.data?.cities ? res.data.cities : [];
+      setPopularCities(cities);
+      setCitiesSource(res.ok ? res.data?.source ?? 'db' : 'unavailable');
+    } catch {
+      if (!cancelled) setCitiesSource('unavailable');
+    }
+  })();
+  return () => { cancelled = true; };
+}, []);
+const [selectedCity, setSelectedCity] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [nearestCity, setNearestCity] = useState<{ name: string; state: string } | null>(null);
   const [userLoc, setUserLoc] = useState<{ latitude: number; longitude: number } | null>(null);
   const [locDenied, setLocDenied] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const advancing = useRef(false);
   const [centerTarget, setCenterTarget] = useState<{ lat: number; lng: number; zoom: number }>({
     lat: DEMO_CENTER.latitude,
     lng: DEMO_CENTER.longitude,
     zoom: 12,
   });
+  const locationOwner = useRef('');
+
+  useEffect(() => {
+    const identity = user?.username?.trim() ?? '';
+    if (!identity) return;
+    if (locationOwner.current && locationOwner.current !== identity) {
+      locationOwner.current = '';
+      setSelectedCity(null);
+      setQuery('');
+    }
+    const saved = typeof user?.location === 'string' ? user.location.trim() : '';
+    if (!saved || locationOwner.current === identity) return;
+    locationOwner.current = identity;
+    setSelectedCity(saved);
+    setQuery(saved);
+  }, [user?.location, user?.username]);
 
   // Live map results from OpenStreetMap Nominatim geocoding - real streets,
   // areas and landmarks from map data, bounded to the box around the GPS fix
@@ -471,58 +508,28 @@ export default function LocationScreen() {
   // GPS fix is known. The list is topped up with nearby places so it never
   // looks selective.
   const suggestions = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return [];
-    const cityRows = CITY_DB.map((c) => ({ ...c, kind: 'City' as const, city: c.name }));
-    const pool = [...cityRows, ...PLACES_DB];
-    const matches = pool.filter(
-      (c) =>
-        c.name.toLowerCase().includes(q) ||
-        c.city.toLowerCase().includes(q) ||
-        c.state.toLowerCase().includes(q),
-    );
-    const rank = (a: (typeof pool)[number], b: (typeof pool)[number]) =>
-      userLoc
-        ? distanceKm(userLoc.latitude, userLoc.longitude, a.lat, a.lng) -
-          distanceKm(userLoc.latitude, userLoc.longitude, b.lat, b.lng)
-        : a.city.localeCompare(b.city) || a.name.localeCompare(b.name);
-    matches.sort(rank);
-    const out: (typeof pool)[number][] = [];
+    // Nearest-first from the live geocoder, using the GPS fix when we have one
+    // and the map centre otherwise. This is the "suggest what you are typing,
+    // near you" behaviour, measured rather than assumed.
+    const origin = userLoc
+      ? { lat: userLoc.latitude, lng: userLoc.longitude }
+      : { lat: centerTarget.lat, lng: centerTarget.lng };
+    const ranked = livePlaces
+      .map((p) => ({ p, d: distanceKm(origin.lat, origin.lng, p.lat, p.lng) }))
+      .sort((a, b) => a.d - b.d)
+      .map(({ p }) => p);
+
     const seen = new Set<string>();
-    for (const p of livePlaces) {
+    const out: typeof ranked = [];
+    for (const p of ranked) {
       const key = `${p.name.toLowerCase()}|${p.kind}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        out.push(p as (typeof pool)[number]);
-      }
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(p);
+      if (out.length >= 10) break;
     }
-    for (const m of matches) {
-      const key = `${m.name.toLowerCase()}|${m.kind}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        out.push(m);
-      }
-    }
-    // No live results and nothing matched -> nearest places when GPS is on.
-    if (out.length === 0 && userLoc) {
-      for (const p of [...pool].sort(rank)) {
-        if (out.length >= 10) break;
-        out.push(p);
-      }
-    }
-    // Few results -> top up with nearby places from the first result's city.
-    if (out.length < 10 && out[0]) {
-      const homeCity = out[0].city || out[0].name;
-      const fillers = pool
-        .filter((c) => c.city === homeCity && !seen.has(`${c.name.toLowerCase()}|${c.kind}`))
-        .sort(rank);
-      for (const f of fillers) {
-        if (out.length >= 10) break;
-        out.push(f);
-      }
-    }
-    return out.slice(0, 10);
-  }, [query, userLoc, livePlaces]);
+    return out;
+  }, [query, userLoc, livePlaces, centerTarget]);
 
   const pickSuggestion = useCallback((name: string, city: string, kind: string) => {
     const label = kind === 'City' ? name : city ? `${name}, ${city}` : `${name}`;
@@ -578,6 +585,83 @@ export default function LocationScreen() {
     })();
   }, [applyGpsFix]);
 
+  const goToProfile = useCallback(async () => {
+    if (advancing.current || saving) return;
+    advancing.current = true;
+    setSaveError('');
+    try {
+      const stepSaved = await setOnboardingStep(1);
+      if (!stepSaved) {
+        setSaveError('Could not go back. Please try again.');
+        advancing.current = false;
+        return;
+      }
+      const navigated = await replaceRoute('/(onboarding)/profile-setup');
+      if (!navigated) {
+        setSaveError('Could not go back. Please try again.');
+        advancing.current = false;
+      }
+    } catch {
+      setSaveError('Could not go back. Please try again.');
+      advancing.current = false;
+    }
+  }, [saving, setOnboardingStep]);
+
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (saving || advancing.current) return true;
+      void goToProfile();
+      return true;
+    });
+    return () => sub.remove();
+  }, [goToProfile, saving]);
+
+  const finishLocation = useCallback(async (skip: boolean) => {
+    if (advancing.current || saving) return;
+    advancing.current = true;
+    setSaving(true);
+    setSaveError('');
+    let failed = false;
+    try {
+      if (!skip) {
+        const location = selectedCity ?? nearestCity?.name ?? '';
+        if (!location) {
+          setSaveError('Choose a location or skip for now.');
+          failed = true;
+          return;
+        }
+        const saved = await updateUser({ location });
+        if (saved !== true) {
+          setSaveError(saved || 'Could not save your location. Please try again.');
+          failed = true;
+          return;
+        }
+      }
+      const stepSaved = await setOnboardingStep(3);
+      if (!stepSaved) {
+        setSaveError('Could not save your location progress. Please try again.');
+        failed = true;
+        return;
+      }
+      const navigated = await replaceRoute('/(onboarding)/interests');
+      if (!navigated) {
+        setSaveError('Could not open the next step. Please try again.');
+        failed = true;
+      }
+    } catch {
+      setSaveError('Could not continue. Please try again.');
+      failed = true;
+    } finally {
+      setSaving(false);
+      if (failed) advancing.current = false;
+    }
+  }, [nearestCity, saving, selectedCity, setOnboardingStep, updateUser]);
+
+  // Fail closed: this screen's only exits write through the session, so
+  // rendering it without a live user is an interactive screen whose Continue
+  // and Skip can never succeed.
+  if (!user) return null;
+
   return (
     <View className="flex-1" style={{ backgroundColor: colors.surface }}>
       {/* Header */}
@@ -585,7 +669,7 @@ export default function LocationScreen() {
         className="flex-row items-center justify-between h-[62px] px-5"
         style={{ backgroundColor: colors.surface, height: 62 + insets.top, paddingTop: insets.top }}
       >
-        <TouchableOpacity onPress={() => router.back()} className="w-10 h-10 items-center justify-center">
+        <TouchableOpacity onPress={goToProfile} className="w-10 h-10 items-center justify-center">
           <ChevronLeftIcon size={18} color={colors.primary} />
         </TouchableOpacity>
         {/* Step indicators - 4 of 6 */}
@@ -637,7 +721,10 @@ export default function LocationScreen() {
             className="font-inter-400 text-center mb-8"
             style={{ fontSize: 14, lineHeight: 20, color: '#767586' }}
           >
-            Discover items and friends in your{'\n'}neighborhood. We only use your location{'\n'}to show local feeds.
+            {/* Hardcoded newlines here forced three short ragged lines and broke
+              under font scaling (the same fix already applied to /welcome,
+              /auth and /otp). One sentence, left to wrap. */}
+          Discover items and friends in your neighbourhood. We only use your location to show local feeds.
           </Text>
 
           {/* Allow Location Access Button - requests real GPS, centers the map
@@ -797,7 +884,7 @@ export default function LocationScreen() {
           </Text>
 
           <View className="gap-3 pb-4">
-            {cities.map((city) => (
+            {popularCities.map((city) => (
               <TouchableOpacity
                 key={city.name}
                 className="flex-row items-center h-14 px-4 rounded-figma-16"
@@ -818,12 +905,25 @@ export default function LocationScreen() {
                     </Text>
                   </View>
                 </View>
-                <Text
-                  className="flex-1 font-inter-400"
-                  style={{ fontSize: 16, lineHeight: 24, color: colors.textPrimary }}
-                >
-                  {city.name}
-                </Text>
+                <View className="flex-1">
+                  <Text
+                    className="font-inter-400"
+                    style={{ fontSize: 16, lineHeight: 24, color: colors.textPrimary }}
+                  >
+                    {city.name}
+                  </Text>
+                  {/* Why is it called "popular"? Because the app counted it. */}
+                  <Text
+                    className="font-inter-400"
+                    style={{ fontSize: 12, lineHeight: 16, color: colors.textSecondary }}
+                  >
+                    {city.users > 0 && city.addresses > 0
+                      ? `${city.users} ${city.users === 1 ? 'person' : 'people'} · ${city.addresses} ${city.addresses === 1 ? 'address' : 'addresses'}`
+                      : city.users > 0
+                        ? `${city.users} ${city.users === 1 ? 'person' : 'people'} on susej`
+                        : `${city.addresses} saved ${city.addresses === 1 ? 'address' : 'addresses'}`}
+                  </Text>
+                </View>
                 {selectedCity === city.name && (
                   <View
                     className="w-6 h-6 rounded-full items-center justify-center"
@@ -834,30 +934,67 @@ export default function LocationScreen() {
                 )}
               </TouchableOpacity>
             ))}
+
+            {/* No fallback list. If the DB has no city rows yet, the map and
+                search above are the whole screen - an honest empty state beats
+                four invented "popular" cities. */}
+            {citiesSource === 'loading' && popularCities.length === 0 ? (
+              <Text
+                className="font-inter-400"
+                style={{ fontSize: 13, lineHeight: 18, color: colors.textSecondary }}
+              >
+                Loading cities people are using…
+              </Text>
+            ) : null}
+            {citiesSource !== 'loading' && popularCities.length === 0 ? (
+              <Text
+                className="font-inter-400"
+                style={{ fontSize: 13, lineHeight: 18, color: colors.textSecondary }}
+              >
+                {citiesSource === 'unavailable'
+                  ? 'Popular cities are unavailable right now — search above or drop a pin on the map.'
+                  : 'No cities yet — popular ones will appear here as people join. Search above or drop a pin on the map.'}
+              </Text>
+            ) : null}
           </View>
         </View>
       </ScrollView>
 
       {/* Footer */}
       <View className="px-5 pt-4 pb-8" style={{ backgroundColor: colors.surface, paddingBottom: insets.bottom + 32 }}>
+        {saveError ? (
+          <Text
+            className="font-inter-500 text-center mb-3"
+            style={{ fontSize: 13, lineHeight: 18, color: colors.error }}
+          >
+            {saveError}
+          </Text>
+        ) : null}
         <TouchableOpacity
           className="w-full h-14 items-center justify-center rounded-figma-16 mb-3"
-          style={{ backgroundColor: colors.primary }}
-          onPress={() => {
-            updateUser({ location: selectedCity ?? nearestCity?.name ?? '' });
-            router.push('/(onboarding)/profile-setup');
-          }}
+          style={{ backgroundColor: colors.primary, opacity: saving ? 0.7 : 1 }}
+          onPress={() => void finishLocation(false)}
+          disabled={saving}
         >
           <Text
             className="font-inter-600"
             style={{ fontSize: 14, lineHeight: 16, letterSpacing: 0.14, color: '#FFFFFF' }}
           >
-            Continue
+            {saving ? 'Saving…' : 'Continue'}
           </Text>
         </TouchableOpacity>
+        {/* "Skip for now" measured 39px (13dp) on the real device - a bare
+            <Text> with no height. Inline children do not grow their parent's
+            a11y bounds, so this is a real dead-ish tap target, not a styling
+            nit. 44dp, and it says what it does. */}
         <TouchableOpacity
-          className="items-center"
-          onPress={() => router.push('/(onboarding)/profile-setup')}
+          className="items-center justify-center"
+          style={{ minHeight: 44, paddingHorizontal: 16 }}
+          onPress={() => void finishLocation(true)}
+          disabled={saving}
+          accessibilityRole="button"
+          accessibilityLabel="Skip location for now"
+          accessibilityState={{ disabled: saving }}
         >
           <Text
             className="font-inter-500"

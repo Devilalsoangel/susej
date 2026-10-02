@@ -91,7 +91,7 @@ function resourceUrl(resource: DbResource, opts?: DbResourceOptions): string {
 
 export function useDbResource<T>(resource: DbResource, opts?: DbResourceOptions) {
   const optionsKey = useMemo(() => JSON.stringify(opts ?? null), [opts]);
-  const url = useMemo(() => resourceUrl(resource, opts ? JSON.parse(optionsKey) as DbResourceOptions : undefined), [resource, optionsKey]);
+  const url = resourceUrl(resource, opts);
   const query = useQuery<DbResponse<T>>({
     queryKey: ["db-resource", resource, optionsKey],
     queryFn: async ({ signal }) => {
@@ -106,9 +106,18 @@ export function useDbResource<T>(resource: DbResource, opts?: DbResourceOptions)
       }, 8000);
       try {
         const response = await fetch(url, { cache: "no-store", credentials: "include", signal: controller.signal });
-        const body = (await response.json()) as DbResponse<T>;
-        if (!response.ok) throw new Error(body.error ?? "Failed to load");
-        return { rows: Array.isArray(body.rows) ? body.rows : [], total: typeof body.total === "number" ? body.total : undefined };
+        const text = await response.text();
+        let body: DbResponse<T> = {};
+        try {
+          body = text ? JSON.parse(text) as DbResponse<T> : {};
+        } catch {
+          throw new Error(`Database request failed (${response.status})`);
+        }
+        if (!response.ok) throw new Error(body.error ?? `Database request failed (${response.status})`);
+        if (!Array.isArray(body.rows)) {
+          throw new Error(body.error ?? "Database returned an invalid response");
+        }
+        return { rows: body.rows, total: typeof body.total === "number" ? body.total : undefined };
       } catch (error) {
         if (timedOut) throw new Error("Request timed out — database may be unavailable");
         throw error;
@@ -122,13 +131,15 @@ export function useDbResource<T>(resource: DbResource, opts?: DbResourceOptions)
     retry: 1,
     refetchOnWindowFocus: false,
   });
+  const refetch = query.refetch;
   const refresh = useCallback(async () => {
-    await query.refetch();
-  }, [query.refetch]);
+    await refetch();
+  }, [refetch]);
 
   return {
     data: query.data?.rows ?? null,
     error: query.error ? (query.error instanceof Error ? query.error.message : "Failed to load data") : null,
+    isError: query.isError,
     loading: query.isFetching,
     total: query.data?.total ?? null,
     refresh,

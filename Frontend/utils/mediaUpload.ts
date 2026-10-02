@@ -119,6 +119,32 @@ export async function uploadToServer(localUri: string, mime = 'image/jpeg'): Pro
   return resolveImageUrl(res.data.url, base);
 }
 
+export async function uploadVideoToServer(localUri: string, mime = 'video/mp4'): Promise<string> {
+  const uri = String(localUri ?? '').trim();
+  if (!uri) throw new Error('Video file is empty');
+  if (isHostedImageUrl(uri)) return uri;
+  const ticket = await serverApi.getVideoUploadSignature();
+  if (!ticket.ok || !ticket.data) throw new Error(ticket.error || 'Video host unavailable');
+  const source = await (await fetch(uri)).blob();
+  if (source.size > 50 * 1024 * 1024) throw new Error('Video is too large (max 50MB)');
+  const extension = mime.includes('quicktime') ? 'mov' : mime.includes('webm') ? 'webm' : 'mp4';
+  const form = new FormData();
+  form.append('file', { uri, name: `reel-${Date.now()}.${extension}`, type: mime } as unknown as Blob);
+  form.append('api_key', ticket.data.apiKey);
+  form.append('timestamp', String(ticket.data.timestamp));
+  form.append('folder', ticket.data.folder);
+  form.append('resource_type', ticket.data.resourceType);
+  form.append('allowed_formats', ticket.data.allowedFormats.join(','));
+  form.append('signature', ticket.data.signature);
+  const response = await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(ticket.data.cloudName)}/video/upload`, {
+    method: 'POST',
+    body: form,
+  });
+  const body = await response.json().catch(() => null) as { secure_url?: string; error?: { message?: string } } | null;
+  if (!response.ok || !body?.secure_url) throw new Error(body?.error?.message ?? 'Video upload failed');
+  return body.secure_url;
+}
+
 /**
  * Upload every local URI in a media list; already-hosted URLs pass through
  * unchanged. Returns per-item results so callers can REPORT partial failure

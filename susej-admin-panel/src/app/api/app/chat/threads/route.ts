@@ -81,10 +81,19 @@ export async function GET(req: NextRequest) {
        pinnedUntil: t.pinnedUntil ? epoch(t.pinnedUntil) : null,
     };
   });
-  return out;
+  // A list route must ALWAYS answer with a list. Returning a non-array (or
+  // nothing) hands the client `{threads: undefined}`, which it correctly reads
+  // as a failure, and used to crash the cache layer instead of degrading here.
+  return Array.isArray(out) ? out : [];
   };
-  const out = await cachedRead(cacheKey("chat", "threads-v2", username), loadThreads, { freshMs: 5_000, staleMs: 300_000, maxBytes: 256_000 });
-  return NextResponse.json({ threads: out });
+   try {
+     const out = await cachedRead(cacheKey("chat", "threads-v3", username), loadThreads, { freshMs: 5_000, staleMs: 300_000, maxBytes: 256_000 });
+     // A list route must ALWAYS answer with a list. `{threads: undefined}` is
+     // what the client correctly reads as "failed to load", so never emit it.
+     return NextResponse.json({ threads: Array.isArray(out) ? out : [] });
+   } catch {
+     return NextResponse.json({ threads: [], degraded: true });
+   }
 }
 
 export async function POST(req: NextRequest) {
@@ -149,8 +158,8 @@ export async function POST(req: NextRequest) {
     }
   }
   await Promise.all([
-    invalidateCache(cacheKey("chat", "threads-v2", username)),
-    invalidateCache(cacheKey("chat", "threads-v2", other)),
+    invalidateCache(cacheKey("chat", "threads-v3", username)),
+    invalidateCache(cacheKey("chat", "threads-v3", other)),
   ]);
   return NextResponse.json({ thread: { id: thread.id, otherUsername: other } }, { status: 201 });
 }

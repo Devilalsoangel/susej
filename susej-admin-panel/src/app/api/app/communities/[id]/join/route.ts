@@ -17,13 +17,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const joined = !!body.joined;
   const username = auth.user.username!;
   const updated = await prisma.$transaction(async (tx) => {
+    await tx.$queryRawUnsafe(`SELECT id FROM "Community" WHERE id = $1 FOR UPDATE`, id);
     const community = await tx.community.findUnique({ where: { id } });
     if (!community) return null;
+    if (joined && String(community.status ?? "active").toLowerCase() !== "active") {
+      return { error: "Community is not active", status: 403 as const };
+    }
     const rawList: unknown = (community as unknown as { memberList?: unknown }).memberList;
     const list: unknown[] = Array.isArray(rawList) ? rawList : [];
+    const target = username.trim().toLowerCase();
     const isMember = list.some((m) => {
-      if (typeof m === "string") return m === username;
-      if (m && typeof m === "object") return (m as { username?: string }).username === username;
+      if (typeof m === "string") return m.trim().toLowerCase() === target;
+      if (m && typeof m === "object") return String((m as { username?: string }).username ?? "").trim().toLowerCase() === target;
       return false;
     });
     if (joined === isMember) {
@@ -36,8 +41,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       nextMembers = community.members + 1;
     } else {
       nextList = list.filter((m) => {
-        if (typeof m === "string") return m !== username;
-        if (m && typeof m === "object") return (m as { username?: string }).username !== username;
+        if (typeof m === "string") return m.trim().toLowerCase() !== target;
+        if (m && typeof m === "object") return String((m as { username?: string }).username ?? "").trim().toLowerCase() !== target;
         return true;
       });
       nextMembers = Math.max(0, community.members - 1);
@@ -49,5 +54,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return { ok: true, joined, memberCount: nextMembers, noChange: false as const };
   });
   if (!updated) return NextResponse.json({ error: "Community not found" }, { status: 404 });
+  if ("error" in updated) return NextResponse.json({ error: updated.error }, { status: updated.status });
   return NextResponse.json({ ok: true, joined: updated.joined, memberCount: updated.memberCount });
 }

@@ -8,6 +8,7 @@ import { useRecentlyViewed } from '../../contexts/RecentlyViewedContext';
 import { usePosts } from '../../contexts/PostContext';
 import { extractHashtags } from '../../contexts/HashtagContext';
 import { CommentsSheet, LikersSheet, ShareSheet } from '../sheets/PostEngagementSheets';
+import { UserAvatar } from '../UserAvatar';
 
 interface ProductCardProps {
   id?: string;
@@ -64,6 +65,10 @@ export function ProductCard({
 }: ProductCardProps) {
   const [menuVisible, setMenuVisible] = useState(false);
   const [menuSection, setMenuSection] = useState<'main' | 'report'>('main');
+  // A photo handed in by a caller wins; otherwise the account is resolved by
+  // handle and initials are drawn when there is no picture. The card used to
+  // paint the shared blank placeholder, so every seller read as "no PFP".
+  const avatarUri = typeof sellerAvatar === 'string' ? sellerAvatar : sellerAvatar && typeof sellerAvatar === 'object' && 'uri' in sellerAvatar ? String((sellerAvatar as { uri: string }).uri) : null;
   const [sheet, setSheet] = useState<null | 'comments' | 'likers' | 'share'>(null);
   const { isBookmarked, toggleBookmark } = useBookmark();
   const { record } = useRecentlyViewed();
@@ -162,11 +167,7 @@ export function ProductCard({
       <View className="flex-row items-center px-4" style={{ height: 72 }}>
         <TouchableOpacity onPress={handleSellerPress} className="flex-1 flex-row items-center">
           <View className="w-10 h-10 rounded-full bg-surfaceContainer items-center justify-center overflow-hidden">
-            {sellerAvatar ? (
-              <Image source={imageSource(sellerAvatar)} className="w-10 h-10 rounded-full" />
-            ) : (
-              <View className="w-8 h-8 rounded-full bg-surfaceContainerLow" />
-            )}
+            <UserAvatar name={sellerName || sellerUsername || 'susej'} username={sellerUsername} uri={avatarUri} size={40} />
           </View>
           <View className="flex-1 ml-3">
             <View className="flex-row items-center" style={{ gap: 4 }}>

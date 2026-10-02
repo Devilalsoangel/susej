@@ -66,6 +66,26 @@ export default function EditListingScreen() {
             sellerLocation: String(p.sellerLocation ?? ''),
             verified: Boolean(p.verified),
             stockLeft: typeof p.stockLeft === 'number' ? p.stockLeft : undefined,
+            // Variants MUST survive the cold-cache mapping: `variantsTracked`
+            // below is what hides the base stock field on a per-value-stocked
+            // listing. Dropping them made a fetched listing look untracked, so
+            // the seller typed a base stock the server silently nulls (two
+            // stock truths, edit does nothing).
+            variants: Array.isArray((p as { variants?: unknown }).variants)
+              ? ((p as { variants: Array<{ name?: unknown; values?: unknown }> }).variants as unknown[])
+                  .map((g) => ({
+                    name: String((g as { name?: unknown }).name ?? ''),
+                    values: (Array.isArray((g as { values?: unknown }).values) ? (g as { values: unknown[] }).values : []).map((v) => {
+                      const vv = v as { label?: unknown; priceDelta?: unknown; stock?: unknown };
+                      return {
+                        label: String(vv.label ?? ''),
+                        ...(typeof vv.priceDelta === 'number' ? { priceDelta: vv.priceDelta } : {}),
+                        ...(typeof vv.stock === 'number' ? { stock: vv.stock } : {}),
+                      };
+                    }),
+                  }))
+                  .filter((g) => g.name && g.values.length > 0)
+              : undefined,
             negotiable: typeof p.negotiable === 'boolean' ? p.negotiable : undefined,
           });
         } else if (!cancelled) {
@@ -269,6 +289,7 @@ export default function EditListingScreen() {
       price: post.price,
       mrp: post.mrp ?? null,
       stockLeft: post.stockLeft,
+      isSold: post.isSold,
       negotiable: post.negotiable,
       status: post.status,
       images: post.images,
@@ -315,6 +336,11 @@ export default function EditListingScreen() {
       price: Math.round(numericPrice),
       ...(numericMrp !== null ? { mrp: numericMrp } : { mrp: null }),
       ...(!variantsTracked && numericStock !== null ? { stockLeft: numericStock } : {}),
+      // Zero-stock invariant: saving 0 marks the listing sold and saving stock
+      // revives it locally, so the hub card never reads Active while the PDP
+      // refuses the sale. The server derives the same value from the stock it
+      // is sent; tracked-variant listings keep per-value stock and send neither.
+      ...(!variantsTracked && numericStock !== null ? { isSold: numericStock <= 0 } : {}),
       negotiable,
       ...(statusChanged ? { status: nextStatus } : {}),
       ...(photosChanged ? { images: hostedPhotos, ...(hostedPhotos[0] ? { image: hostedPhotos[0] } : {}) } : {}),
@@ -332,11 +358,29 @@ export default function EditListingScreen() {
         negotiable,
         ...(statusChanged ? { status: nextStatus } : {}),
       };
-      if (!variantsTracked && numericStock !== null) sp.stockLeft = numericStock;
+      if (!variantsTracked && numericStock !== null) {
+        sp.stockLeft = numericStock;
+        sp.isSold = numericStock <= 0;
+      }
       if (photosChanged) sp.images = hostedPhotos;
       const res = await serverApi.updatePost(post.id, sp);
       if (!res.ok) throw new Error(res.error || 'Could not save. Check your connection and try again.');
-      Alert.alert('Saved', 'Your listing is updated everywhere.', [{ text: 'OK', onPress: () => router.back() }]);
+      // Server-wins sold state: the server derives isSold from the inventory it
+      // holds (per-value variant stock when the listing is tracked), so a sold
+      // variant listing can be revived by a save without delete-and-repost.
+      // Adopt that truth locally instead of leaving the hub card reading the
+      // pre-save value until the next pull.
+      const serverSold = (res.data as { post?: { isSold?: unknown } } | null)?.post?.isSold;
+      if (typeof serverSold === 'boolean' && serverSold !== post.isSold) {
+        updatePost(post.id, { isSold: serverSold }, { localOnly: true });
+      }
+      Alert.alert(
+        'Saved',
+        serverSold === true
+          ? 'Your listing is updated — it now reads Sold out (no stock left).'
+          : 'Your listing is updated everywhere.',
+        [{ text: 'OK', onPress: () => router.back() }]
+      );
     } catch (e) {
       updatePost(post.id, prev, { localOnly: true });
       Alert.alert('Not saved', e instanceof Error ? e.message : 'Could not save. Try again.');

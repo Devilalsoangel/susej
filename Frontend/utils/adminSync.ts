@@ -39,7 +39,14 @@ export const ADMIN_URL_KEY = '@susej_admin_url';
 // production sync to a dead localhost — seller applications never reached the
 // admin queue at all.
 // Vercel = Neon DB with all 19 users + real data. Auth works with AUTH_DEV_MODE=1.
-export const DEFAULT_ADMIN_URL = 'https://susej-admin-panel-theta.vercel.app';
+// EXPO_PUBLIC_ADMIN_URL is honoured so the documented override actually works -
+// it used to be exported by .env.local and read NOWHERE, which made this base
+// URL effectively hard-wired: no env, no UI, and no way to point a device at
+// another backend. The released APK bakes in the same theta host, so honouring
+// the variable changes nothing for an existing install.
+const CONFIGURED_ADMIN_URL = process.env.EXPO_PUBLIC_ADMIN_URL?.trim() ?? '';
+export const DEFAULT_ADMIN_URL =
+  CONFIGURED_ADMIN_URL || 'https://susej-admin-panel-theta.vercel.app';
 export const APP_KEY_KEY = '@susej_app_key';
 export const DEFAULT_APP_KEY = process.env.EXPO_PUBLIC_APP_KEY?.trim() ?? '';
 
@@ -52,16 +59,18 @@ export async function getAdminUrl(): Promise<string> {
   if (cachedUrl) return cachedUrl;
   if (urlPromise) return urlPromise;
   urlPromise = (async () => {
+    let next: string;
     try {
       const stored = await AsyncStorage.getItem(ADMIN_URL_KEY);
       const candidate = stored?.trim() || '';
       const isStaleProductionHost = candidate === 'https://susej-admin-panel.vercel.app';
-      cachedUrl = candidate && !isStaleProductionHost ? candidate : DEFAULT_ADMIN_URL;
-      if (isStaleProductionHost) await AsyncStorage.setItem(ADMIN_URL_KEY, DEFAULT_ADMIN_URL).catch(() => {});
+      next = candidate && !isStaleProductionHost ? candidate : DEFAULT_ADMIN_URL;
+      if (isStaleProductionHost) await AsyncStorage.setItem(ADMIN_URL_KEY, next).catch(() => {});
     } catch {
-      cachedUrl = DEFAULT_ADMIN_URL;
+      next = DEFAULT_ADMIN_URL;
     }
-    return cachedUrl;
+    cachedUrl = next;
+    return next;
   })().finally(() => { urlPromise = null; });
   return urlPromise;
 }

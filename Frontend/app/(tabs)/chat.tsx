@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useFocusEffect, useIsFocused } from 'expo-router';
-import { resolveAvatar } from '../../utils/productImages';
+import { UserAvatar } from '../../components/UserAvatar';
 import { View, Text, FlatList, TouchableOpacity, TextInput, Alert, Image, ScrollView, KeyboardAvoidingView, Platform, BackHandler } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -11,10 +11,12 @@ import { colors, formatCount, formatPrice } from '../../utils/theme';
 import { useCommunities } from '../../contexts/CommunityContext';
 
 import { useAuth } from '../../contexts/AuthContext';
-import { serverApi } from '../../utils/serverApi';
+import { serverApi, type SearchUserHit } from '../../utils/serverApi';
+import { NewChatSheet } from '../../components/NewChatSheet';
 import { BROADCAST_CHANNELS } from '../broadcasts';
 import { loadMarketplaceConfig, getChatPinPrice, getChatPinDays, resetMarketplaceConfig } from '../../utils/marketplace';
 import { setImmersiveNav } from '../../utils/immersiveNav';
+import { pushBlockRemote } from '../../utils/blockedSellers';
 
 type TabType = 'messages' | 'community' | 'broadcast';
 
@@ -29,6 +31,9 @@ interface ChatItem {
   statusColor: string;
   hasUnread: boolean;
   username?: string;
+  /** The other party's REAL picture (server row). A visitor with no photo must
+   *  never be replaced by the shared blank placeholder. */
+  avatar?: string | null;
   productName?: string;
   hasPendingOffer?: boolean;
   /** Set when this chat is backed by a real server thread (multi-user sync). */
@@ -209,6 +214,7 @@ export default function ChatScreen() {
   useEffect(() => () => setImmersiveNav(false), []);
   const [threadMessages, setThreadMessages] = useState<ThreadMessage[]>([]);
   const [threadLoading, setThreadLoading] = useState(false);
+  const [threadError, setThreadError] = useState(false);
   const [olderLoading, setOlderLoading] = useState(false);
   const [hasOlderMessages, setHasOlderMessages] = useState(false);
   const threadPollInFlight = useRef(false);
@@ -217,10 +223,14 @@ export default function ChatScreen() {
   const threadServerSettled = useRef(false);
   const [serverChats, setServerChats] = useState<ChatItem[]>([]);
   const [threadsLoading, setThreadsLoading] = useState(true);
+  const [threadsError, setThreadsError] = useState(false);
   const threadsServerLoaded = useRef(false);
   const threadsInFlight = useRef(false);
-  const [composer, setComposer] = useState('');
-  const [offerMode, setOfferMode] = useState(false);
+  const threadsRequestId = useRef(0);
+  const usernameRef = useRef(user?.username);
+  useEffect(() => { usernameRef.current = user?.username; }, [user?.username]);
+  const [newChatOpen, setNewChatOpen] = useState(false);
+  const [composer, setComposer] = useState('');  const [offerMode, setOfferMode] = useState(false);
   const [offerAmount, setOfferAmount] = useState('');
   const [countering, setCountering] = useState<ThreadMessage | null>(null);
   const [creatingOrder, setCreatingOrder] = useState(false);
@@ -336,7 +346,10 @@ export default function ChatScreen() {
     let cancelled = false;
     const key = user?.username ? `${THREADS_CACHE_KEY_BASE}:${user.username}` : THREADS_CACHE_KEY_BASE;
     threadsServerLoaded.current = false;
+    threadsRequestId.current += 1;
+    threadsInFlight.current = false;
     setThreadsLoading(true);
+    setThreadsError(false);
     setServerChats([]);
     AsyncStorage.getItem(key).then((raw) => {
       if (cancelled || !raw || threadsServerLoaded.current) return;
@@ -357,17 +370,25 @@ export default function ChatScreen() {
   // duplicate IN-FLIGHT fetches only — never a one-shot latch (the old
   // identity-keyed latch starved refocuses for 8s+ on unchanged identity).
   const fetchServerThreads = () => {
-    if (!user?.username || threadsInFlight.current) return;
-    const key = `${THREADS_CACHE_KEY_BASE}:${user.username}`;
+    const requestUser = user?.username;
+    if (!requestUser || threadsInFlight.current) return;
+    const requestId = ++threadsRequestId.current;
+    const key = `${THREADS_CACHE_KEY_BASE}:${requestUser}`;
     threadsInFlight.current = true;
     serverApi
       .getThreads()
       .then((res) => {
-        if (!res.ok || !res.data?.threads) return;
+        if (requestId !== threadsRequestId.current || usernameRef.current !== requestUser) return;
+        if (!res.ok || !res.data?.threads) {
+          setThreadsError(true);
+          return;
+        }
+        setThreadsError(false);
         const items: ChatItem[] = res.data.threads.map((t) => ({
           id: t.id,
           name: t.otherName ?? t.otherUsername ?? 'User',
           username: t.otherUsername,
+          avatar: typeof t.otherAvatar === 'string' ? t.otherAvatar : null,
           time: formatThreadTime(t.lastAt),
           message: t.lastMessage ?? 'Say hello',
           messageWeight: 400,
@@ -375,8 +396,6 @@ export default function ChatScreen() {
           statusBg: colors.surfaceContainerLow,
           statusColor: colors.secondary,
           hasUnread: (t.unread ?? 0) > 0,
-          // Server-computed: an inbound pending offer exists in this thread.
-          // Powers the Offers filter honestly on every device.
           hasPendingOffer: t.hasPendingOffer === true,
           serverThreadId: t.id,
           pinnedUntil: typeof t.pinnedUntil === 'number' ? t.pinnedUntil : undefined,
@@ -386,10 +405,14 @@ export default function ChatScreen() {
         setThreadsLoading(false);
         AsyncStorage.setItem(key, JSON.stringify(items)).catch(() => {});
       })
-      .catch(() => {})
+      .catch(() => {
+        if (requestId === threadsRequestId.current && usernameRef.current === requestUser) setThreadsError(true);
+      })
       .finally(() => {
-        threadsInFlight.current = false;
-        setThreadsLoading(false);
+        if (requestId === threadsRequestId.current) {
+          threadsInFlight.current = false;
+          setThreadsLoading(false);
+        }
       });
   };
 
@@ -409,21 +432,22 @@ export default function ChatScreen() {
       return;
     }
     const username = activeChat.username;
-    // Device-local hide + server block (cross-device enforcement: the server
-    // 403s threads/messages across a block in either direction). Local stays
-    // on server failure. Abuse still reaches the platform through Support.
     Alert.alert(`Block ${activeChat.name}?`, "Their messages will be hidden and they won't be able to message you. To stop them everywhere, report the chat via Support.", [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Block',
         style: 'destructive',
-        onPress: () => {
-          setBlockedUsers((prev) =>
-            prev.some((b) => b.username.toLowerCase() === username.toLowerCase())
-              ? prev
-              : [...prev, { username, name: activeChat.name, at: Date.now() }]
-          );
-          void import('../../utils/blockedSellers').then(({ pushBlockRemote }) => pushBlockRemote(username)).catch(() => {});
+        onPress: async () => {
+          const alreadyBlocked = blockedUsers.some((b) => b.username.toLowerCase() === username.toLowerCase());
+          if (!alreadyBlocked) {
+            setBlockedUsers((prev) => [...prev, { username, name: activeChat.name, at: Date.now() }]);
+          }
+          const remote = await pushBlockRemote(username);
+          if (!remote) {
+            if (!alreadyBlocked) setBlockedUsers((prev) => prev.filter((b) => b.username.toLowerCase() !== username.toLowerCase()));
+            Alert.alert('Block not saved', 'The server did not accept the block. Check your connection and try again.');
+            return;
+          }
           Alert.alert('Blocked', 'Their messages are hidden and they can no longer message you. Report via Support to stop them everywhere.');
           setActiveChat(null);
         },
@@ -475,7 +499,7 @@ export default function ChatScreen() {
               } catch {}
             }
             try {
-              const res = await serverApi.pinThread(threadId, pinDays, ref);
+              const res = await serverApi.pinThread(threadId, pinDays, ref, pinPrice);
               if (!res.ok || !res.data?.pinnedUntil) {
                 // 409 (price moved / ref collision): the server explicitly
                 // orders a FRESH ref — drop the sticky one so the next tap
@@ -483,9 +507,12 @@ export default function ChatScreen() {
                 if (String(res?.error ?? "").includes("fresh request")) {
                   try { await AsyncStorage.removeItem(PIN_REF_KEY); } catch {}
                 }
+                const livePrice = Number((res.data as { currentPrice?: unknown } | null)?.currentPrice);
                 const msg = res.error === 'offline'
                   ? 'Could not reach the server — no money was charged.'
-                  : String(res.error || 'The pin could not be saved — no money was charged.');
+                  : Number.isFinite(livePrice) && livePrice >= 0
+                    ? `The pin price is now ₹${livePrice}. No money was charged; review and try again.`
+                    : String(res.error || 'The pin could not be saved — no money was charged.');
                 Alert.alert('Pin not applied', msg);
                 return;
               }
@@ -731,8 +758,42 @@ export default function ChatScreen() {
   }));
   const visibleCommunityRows = communityRows.filter((c) => !q || c.name.toLowerCase().includes(q));
 
-  const openChat = (chat: ChatItem) => {
-    const requestId = ++openChatRequest.current;
+  /**
+   * Start a conversation from a picked person.
+   *
+   * The thread is created on the SERVER first, so the conversation is real and
+   * cross-device immediately - it is not a local row that vanishes on reload.
+   * A failure is reported honestly and the picker stays open so the user can try
+   * the next person instead of landing on a blank screen.
+   */
+  const startChatWith = async (hit: SearchUserHit) => {
+    const username = hit.username;
+    if (!username) return;
+    const displayName = hit.businessName || hit.displayName || hit.name || username;
+    const created = await serverApi.createThread(username);
+    const threadId = created.ok ? (created.data?.thread?.id as string | undefined) : undefined;
+    if (!threadId) {
+      Alert.alert('Conversation not created', 'The server did not accept the new conversation. Check your connection and try again.');
+      return;
+    }
+    setNewChatOpen(false);
+    openChat({
+      id: `local_${threadId}`,
+      name: displayName,
+      username,
+      avatar: typeof hit.avatar === 'string' ? hit.avatar : null,
+      time: '',
+      message: '',
+      messageWeight: 400,
+      status: 'MESSAGE',
+      statusBg: colors.surfaceContainerLow,
+      statusColor: colors.secondary,
+      hasUnread: false,
+      serverThreadId: threadId,
+    });
+  };
+
+  const openChat = (chat: ChatItem) => {    const requestId = ++openChatRequest.current;
     threadHistoryReady.current = false;
     threadServerSettled.current = false;
     markChatRead(chat.id);
@@ -743,6 +804,7 @@ export default function ChatScreen() {
     setOfferListingId(undefined);
     setOfferMode(false);
     setCountering(null);
+    setThreadError(false);
     if (chat.serverThreadId) {
       // Real thread: paint the last real history first, then reconcile with the server.
       setThreadMessages([]);
@@ -773,9 +835,11 @@ export default function ChatScreen() {
           if (requestId !== openChatRequest.current) return;
           threadServerSettled.current = true;
           if (!res.ok || !res.data?.messages) {
+            setThreadError(true);
             if (threadHistoryReady.current) setThreadLoading(false);
             return;
           }
+          setThreadError(false);
           const data = res.data;
           const mapped = data.messages.map((m) => mapServerMessage(m, user?.username));
           setThreadMessages((prev) => mergeThreadMessages(prev, mapped));
@@ -784,6 +848,7 @@ export default function ChatScreen() {
         })
         .catch(() => {
           if (requestId === openChatRequest.current) {
+            setThreadError(true);
             threadServerSettled.current = true;
             if (threadHistoryReady.current) setThreadLoading(false);
           }
@@ -808,59 +873,54 @@ export default function ChatScreen() {
   const sendMessage = () => {
     const text = composer.trim();
     if (!text) return;
-    // Blocked counterpart: refuse the send on this device (unblock first).
-    // Server-side block enforcement is still open (no user-block column —
-    // needs a schema build): a blocked user on ANOTHER device can still
-    // deliver until then. This guard stops this device from reaching them.
     const peer = String(activeChat?.username ?? '').trim().toLowerCase();
     if (peer && blockedSet.has(peer)) {
       Alert.alert('Unblock to chat', 'You blocked this user. Unblock them from Profile > Blocked users to send messages.');
       return;
     }
-    // Unique echo id (timestamp + random): same-ms double-sends used to mint
-    // one id for two echoes, and the ack-swap then fused them into one row.
     const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     setThreadMessages((prev) => [...prev, { id, text, mine: true, status: 'sent' }]);
     setComposer('');
-    // Real thread: persist to the server (fire-and-forget, offline falls back
-    // to local only). No auto-replies — sent messages keep their sent status.
-    // Ack-swap: replace the echo with the server row so the next poll can't
-    // render the same text twice.
+    const fail = () => {
+      setThreadMessages((prev) => prev.filter((m) => m.id !== id));
+      setComposer((current) => (current.trim() ? current : text));
+      Alert.alert('Message not sent', 'The server did not accept this message. Check your connection and try again.');
+    };
     if (activeChat?.serverThreadId) {
       const tid = activeChat.serverThreadId;
       const who = user?.username;
-      serverApi
-        .sendMessage(tid, text)
-        .then((res) => {
-          const msg = (res as { ok?: boolean; data?: { message?: unknown } })?.data?.message;
-          if (res.ok && msg) {
-            setThreadMessages((prev) => prev.map((m) => (m.id === id ? { ...mapServerMessage(msg, who), mine: true } : m)));
-          }
-        })
-        .catch(() => {});
-    } else if (activeChat?.username) {
-      // No server thread yet (e.g. product-page enquiry before upgrade
-      // completes): create it now so the message reaches the seller instead
-      // of staying device-local, then persist this message.
-      const uname = activeChat.username;
-      serverApi
-        .createThread(uname)
-        .then((res) => {
-          const threadId = res.ok ? (res.data?.thread?.id as string | undefined) : undefined;
-          if (!threadId) return;
-          setActiveChat((cur) => (cur ? { ...cur, id: threadId, serverThreadId: threadId } : cur));
-          return serverApi.sendMessage(threadId, text).then((sent) => {
-            // Ack-swap like the main path (twin-kill) — the fallback path
-            // never swapped, so every pre-upgrade enquiry rendered twice.
-            const msg = (sent as { ok?: boolean; data?: { message?: unknown } })?.data?.message;
-            if ((sent as { ok?: boolean })?.ok && msg) {
-              const who = user?.username;
-              setThreadMessages((prev) => prev.map((m) => (m.id === id ? { ...mapServerMessage(msg, who), mine: true } : m)));
-            }
-          });
-        })
-        .catch(() => {});
+      void serverApi.sendMessage(tid, text).then((res) => {
+        const msg = res.data?.message;
+        if (!res.ok || !msg) {
+          fail();
+          return;
+        }
+        setThreadMessages((prev) => prev.map((m) => (m.id === id ? { ...mapServerMessage(msg, who), mine: true } : m)));
+      }).catch(fail);
+      return;
     }
+    if (!activeChat?.username) {
+      fail();
+      return;
+    }
+    const uname = activeChat.username;
+    void serverApi.createThread(uname).then((res) => {
+      const threadId = res.ok ? (res.data?.thread?.id as string | undefined) : undefined;
+      if (!threadId) {
+        fail();
+        return;
+      }
+      setActiveChat((cur) => (cur ? { ...cur, id: threadId, serverThreadId: threadId } : cur));
+      return serverApi.sendMessage(threadId, text).then((sent) => {
+        const msg = sent.data?.message;
+        if (!sent.ok || !msg) {
+          fail();
+          return;
+        }
+        const who = user?.username;
+        setThreadMessages((prev) => prev.map((m) => (m.id === id ? { ...mapServerMessage(msg, who), mine: true } : m)));
+      }).catch(fail);
+    }).catch(fail);
   };
 
   // Delivery receipts: local sends stay 'sent' until real server status arrives
@@ -915,10 +975,16 @@ export default function ChatScreen() {
     setOlderLoading(true);
     try {
       const res = await serverApi.getMessages(threadId, oldest);
-      if (!res.ok || !res.data?.messages) return;
+      if (!res.ok || !res.data?.messages) {
+        setThreadError(true);
+        return;
+      }
+      setThreadError(false);
       const mapped = res.data.messages.map((m) => mapServerMessage(m, user?.username));
       setThreadMessages((prev) => mergeThreadMessages(prev, mapped));
       setHasOlderMessages(res.data.hasMore === true);
+    } catch {
+      setThreadError(true);
     } finally {
       setOlderLoading(false);
     }
@@ -926,88 +992,91 @@ export default function ChatScreen() {
 
   const productName = offerProduct ?? 'Product offer';
 
-  const submitOffer = () => {
+  const submitOffer = async () => {
     const amount = Number(offerAmount);
-    // Offers are anchored to a REAL listing — no product attached, no negotiation.
-    // Upper bound matches the server's order-placement clamp (absurd cards rejected).
     if (!offerProduct || !offerListingId) return;
     if (!amount || amount <= 0 || amount > 10000000 || creatingOrder || sendingOffer || sendingOfferRef.current) return;
-    // Blocked counterpart: offers are messages with money attached — same
-    // send-guard as text (server-side block still needs the schema build).
     const offerPeer = String(activeChat?.username ?? '').trim().toLowerCase();
     if (offerPeer && blockedSet.has(offerPeer)) {
       Alert.alert('Unblock to negotiate', 'You blocked this user. Unblock them from Profile > Blocked users to make offers.');
       return;
     }
+    const chat = activeChat;
+    if (!chat) return;
+    const originalCounter = countering;
+    const counteredId = originalCounter?.id && !String(originalCounter.id).startsWith('offer_') ? String(originalCounter.id) : null;
+    const now = Date.now();
+    const echoId = `offer_${now}`;
+    const offer: ThreadOffer = { amount, productName, productId: offerListingId, status: 'pending' };
+    let counterCommitted = false;
     sendingOfferRef.current = true;
     setSendingOffer(true);
-    const now = Date.now();
-    const offer: ThreadOffer = {
-      amount,
-      productName,
-      productId: offerListingId,
-      status: 'pending',
-    };
     setThreadMessages((prev) => {
-      const next = countering
-        ? prev.map((m) =>
-            m.id === countering.id && m.offer
-              ? { ...m, offer: { ...m.offer, status: 'countered' as OfferStatus } }
-              : m
-          )
+      const next = originalCounter
+        ? prev.map((m) => m.id === originalCounter.id && m.offer ? { ...m, offer: { ...m.offer, status: 'countered' as OfferStatus } } : m)
         : prev;
-      return [...next, { id: `offer_${now}`, senderId: 'me', mine: true, offer }];
+      return [...next, { id: echoId, senderId: 'me', mine: true, offer }];
     });
-    // Sync the offer to the server so the OTHER side sees and can act on it
-    // (OLX-style negotiation). Fire-and-forget: the local card already renders.
-    // A counter both closes the old offer server-side AND posts the new terms.
-    // The in-flight guard releases when the send settles (or after 8s so an
-    // offline tap never wedges the composer).
-    if (activeChat?.serverThreadId) {
-      const tid = activeChat.serverThreadId;
-      const who = user?.username;
-      const echoId = `offer_${now}`;
-      const counteredId = countering?.id && !String(countering.id).startsWith('offer_') ? String(countering.id) : null;
-      if (counteredId) {
-        // Revert the optimistic 'countered' flip if the server refuses
-        // (already-decided/validation) — a false countered card on both sides
-        // is a negotiation lie. Guarded to still-countered rows: the 6s poll
-        // may have flipped it to accepted meanwhile, which must never be
-        // clobbered back to pending.
-        const revertCounter = () => {
-          setThreadMessages((prev) => prev.map((m) =>
-            m.id === counteredId && m.offer && m.offer.status === 'countered'
-              ? { ...m, offer: { ...m.offer, status: 'pending' as OfferStatus } }
-              : m
-          ));
-        };
-        void serverApi.updateOfferStatus(tid, counteredId, 'countered').then((res) => {
-          if (!res.ok) revertCounter();
-        }).catch(revertCounter);
-      }
-      void serverApi
-        .sendMessage(
-          tid,
-          `Offer ${amount} for ${productName}`,
-          { amount, productId: offerListingId, productName }
-        )
-        .then((res) => {
-          // Ack-swap the echo for the server row (same twin-kill as texts).
-          const msg = (res as { ok?: boolean; data?: { message?: unknown } })?.data?.message;
-          if (res.ok && msg) {
-            setThreadMessages((prev) => prev.map((m) => (m.id === echoId ? { ...mapServerMessage(msg, who), mine: true } : m)));
-          }
-        })
-        .catch(() => {})
-        .finally(() => { sendingOfferRef.current = false; setSendingOffer(false); });
-      setTimeout(() => { sendingOfferRef.current = false; setSendingOffer(false); }, 8000);
-    } else {
+    const restoreForm = () => {
+      setOfferMode(true);
+      setCountering(originalCounter);
+      setOfferAmount(String(amount));
       sendingOfferRef.current = false;
       setSendingOffer(false);
+    };
+    const fail = (message: string) => {
+      setThreadMessages((prev) => prev
+        .filter((m) => m.id !== echoId)
+        .map((m) => !counterCommitted && counteredId && m.id === counteredId && m.offer?.status === 'countered'
+          ? { ...m, offer: { ...m.offer, status: 'pending' as OfferStatus } }
+          : m)
+      );
+      restoreForm();
+      Alert.alert('Offer not sent', message);
+    };
+    try {
+      let tid = chat.serverThreadId;
+      if (!tid && chat.username) {
+        const created = await serverApi.createThread(chat.username);
+        const createdId = created.ok ? (created.data?.thread?.id as string | undefined) : undefined;
+        if (!createdId) {
+          fail('The conversation could not be created. Check your connection and try again.');
+          return;
+        }
+        tid = createdId;
+        setActiveChat((cur) => (cur ? { ...cur, id: tid!, serverThreadId: tid! } : cur));
+      }
+      if (!tid) {
+        fail('This offer needs a linked conversation. Reopen the seller chat and try again.');
+        return;
+      }
+      if (counteredId) {
+        const counterResult = await serverApi.updateOfferStatus(tid, counteredId, 'countered');
+        if (!counterResult.ok) {
+          fail('The previous offer could not be countered. Refresh the chat and try again.');
+          return;
+        }
+        counterCommitted = true;
+      }
+      const sent = await serverApi.sendMessage(
+        tid,
+        `Offer ${amount} for ${productName}`,
+        { amount, productId: offerListingId, productName }
+      );
+      const msg = sent.data?.message;
+      if (!sent.ok || !msg) {
+        fail('The server did not accept this offer. Check your connection and try again.');
+        return;
+      }
+      setThreadMessages((prev) => prev.map((m) => (m.id === echoId ? { ...mapServerMessage(msg, user?.username), mine: true } : m)));
+      setOfferMode(false);
+      setCountering(null);
+      setOfferAmount('');
+      sendingOfferRef.current = false;
+      setSendingOffer(false);
+    } catch {
+      fail('The offer could not be sent. Check your connection and try again.');
     }
-    setOfferMode(false);
-    setCountering(null);
-    setOfferAmount('');
   };
 
   // Accepted offers NEVER mint orders here (BUYER-C1: the old code created a
@@ -1315,6 +1384,17 @@ export default function ChatScreen() {
                   <View key={`message-skeleton-${key}`} className="mb-3 h-12 rounded-2xl" style={{ width: key % 2 === 0 ? '72%' : '58%', alignSelf: key % 2 === 0 ? 'flex-start' : 'flex-end', backgroundColor: colors.surfaceContainerLow }} />
                 ))}
               </View>
+            ) : threadError ? (
+              <View className="items-center px-8 py-16">
+                <Text className="font-inter-400 text-textSecondary text-center" style={{ fontSize: 14, lineHeight: 20 }}>
+                  Messages couldn&apos;t load. Check your connection and try again.
+                </Text>
+                <TouchableOpacity className="mt-4 px-5 py-2 rounded-full" style={{ backgroundColor: colors.primaryContainer }} onPress={() => activeChat && openChat(activeChat)}>
+                  <Text className="font-inter-600 text-white" style={{ fontSize: 13, lineHeight: 18 }}>
+                    Try again
+                  </Text>
+                </TouchableOpacity>
+              </View>
             ) : (
               <View className="items-center px-8 py-16">
                 <Text className="font-inter-400 text-textSecondary text-center" style={{ fontSize: 14, lineHeight: 20 }}>No messages yet. Start the conversation.</Text>
@@ -1413,6 +1493,12 @@ export default function ChatScreen() {
 
   return (
     <View className="flex-1" style={{ backgroundColor: colors.surfaceContainerLowest }}>
+      <NewChatSheet
+        visible={newChatOpen}
+        selfUsername={user?.username}
+        onClose={() => setNewChatOpen(false)}
+        onPick={startChatWith}
+      />
       {/* Header - TopAppBar — Figma 1:3387: hamburger, left-aligned susej, bag icon right */}
       <View className="flex-row items-center px-5" style={{ height: 52 + insets.top, paddingTop: insets.top, backgroundColor: colors.surface }}>
         <Text className="font-inter-700 text-primary" style={{ fontSize: 20, lineHeight: 28, letterSpacing: -0.5 }}>
@@ -1460,20 +1546,51 @@ export default function ChatScreen() {
             </View>
           ) : (
             <View className="px-8 py-12 items-center">
-              <Text className="font-inter-400 text-textSecondary text-center" style={{ fontSize: 14, lineHeight: 20 }}>
-                {tab === 'broadcast'
-                  ? 'No broadcast channels yet. Sellers create channels to announce drops and deals.'
-                  : tab === 'community'
-                  ? 'Join communities from the Communities Hub to chat with members'
-                  : filter === 'unread'
-                  ? 'No unread chats'
-                  : filter === 'offers'
-                  ? 'No offers yet'
-                  : q
-                  ? 'No conversations match your search'
-                  : 'No conversations yet — tap Message on any product to start one'}
-              </Text>
-            </View>
+                {tab === 'messages' && threadsError ? (
+                  <>
+                    <Text className="font-inter-400 text-textSecondary text-center" style={{ fontSize: 14, lineHeight: 20 }}>
+                      Chats couldn&apos;t load. Check your connection and try again.
+                    </Text>
+                    <View className="flex-row mt-4" style={{ gap: 10 }}>
+                      <TouchableOpacity className="px-5 py-2 rounded-full" style={{ backgroundColor: colors.primaryContainer }} onPress={fetchServerThreads}>
+                        <Text className="font-inter-600 text-white" style={{ fontSize: 13, lineHeight: 18 }}>
+                          Try again
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity className="px-5 py-2 rounded-full" style={{ backgroundColor: colors.primary }} onPress={() => setNewChatOpen(true)}>
+                        <Text className="font-inter-600 text-white" style={{ fontSize: 13, lineHeight: 18 }}>
+                          New message
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </>
+                ) : (
+                  <Text className="font-inter-400 text-textSecondary text-center" style={{ fontSize: 14, lineHeight: 20 }}>
+                    {tab === 'broadcast'
+                      ? 'No broadcast channels yet. Sellers create channels to announce drops and deals.'
+                      : tab === 'community'
+                        ? 'Join communities from the Communities Hub to chat with members'
+                        : filter === 'unread'
+                          ? 'No unread chats'
+                          : filter === 'offers'
+                            ? 'No offers yet'
+                              : q
+                                ? 'No conversations match your search'
+                                : 'No conversations yet — tap Message on any product to start one'}
+                  </Text>
+                )}
+                {tab === 'messages' && !threadsError ? (
+                  <TouchableOpacity
+                    className="mt-4 px-5 py-2 rounded-full"
+                    style={{ backgroundColor: colors.primary }}
+                    onPress={() => setNewChatOpen(true)}
+                  >
+                    <Text className="font-inter-600 text-white" style={{ fontSize: 13, lineHeight: 18 }}>
+                      New message
+                    </Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
           )
         }
         ListHeaderComponent={
@@ -1584,11 +1701,7 @@ export default function ChatScreen() {
             <View className="mr-4 relative">
               <View className="w-[60px] h-[60px] rounded-full items-center justify-center overflow-hidden" style={{ backgroundColor: tab === 'broadcast' ? colors.primaryContainer : colors.secondaryContainer }}>
                 {item.username ? (
-                  <Image
-                    source={resolveAvatar(item.username)}
-                    className="w-full h-full"
-                    resizeMode="cover"
-                  />
+                  <UserAvatar name={item.name} username={item.username} uri={item.avatar} size={60} />
                 ) : (
                   <Text className="font-inter-700" style={{ fontSize: 20, lineHeight: 24, color: tab === 'broadcast' ? colors.surfaceContainerLowest : colors.primary }}>
                     {item.name.charAt(0).toUpperCase()}

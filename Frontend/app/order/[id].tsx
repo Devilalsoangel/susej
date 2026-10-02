@@ -430,12 +430,32 @@ export default function OrderDetailsScreen() {
               const fee = Number(order.deliveryFee);
               const feeServed = Number.isFinite(fee) && fee >= 0;
               const hasDiscount = Number.isFinite(d) && d > 0;
-              const itemsLine = feeServed ? Math.max(0, Math.round(order.total - fee)) : order.total;
+              // The item line has to ADD UP to the amount charged. Deriving it
+              // as `total - fee` printed a receipt that did not reconcile
+              // (2,187 + 12 != 2,211 on a real order): on orders the server
+              // priced with an explicit delivery fee, `total` is already the
+              // items net, so subtracting the fee a second time quietly ate it.
+              // The line items are the honest source - use them when they
+              // agree with what was charged, and only fall back to the
+              // subtraction for legacy rows that serve no usable lines.
+              const charged = Math.round(order.chargedTotal ?? order.total);
+              const itemSum = Math.round(
+                (order.items ?? []).reduce(
+                  (sum, item) => sum + (item.netPrice ?? item.price) * (item.quantity || 1),
+                  0,
+                ),
+              );
+              const totalIsItemNet = itemSum > 0 && Math.abs(itemSum - Math.round(order.total)) <= 1;
+              const itemsLine = totalIsItemNet
+                ? itemSum
+                : feeServed
+                  ? Math.max(0, charged - fee)
+                  : Math.round(order.total);
               const savings = hasDiscount
                 ? Math.round(d)
                 : feeServed
                   ? 0
-                  : Math.max(0, Math.round(order.total + (order.deliveryFee ?? 0) - (order.chargedTotal ?? order.total)));
+                  : Math.max(0, Math.round(charged + (order.deliveryFee ?? 0) - (order.chargedTotal ?? order.total)));
               return (
                 <>
                   <View className="flex-row justify-between">

@@ -18,7 +18,7 @@ import { router } from 'expo-router';
 import Svg, { Path } from 'react-native-svg';
 import { SendIcon, HeartIcon, CloseIcon } from '../../utils/icons';
 import { colors } from '../../utils/theme';
-import { resolveAvatar } from '../../utils/productImages';
+import { UserAvatar } from '../UserAvatar';
 import { useAuth } from '../../contexts/AuthContext';
 import { serverApi } from '../../utils/serverApi';
 
@@ -155,25 +155,11 @@ interface CommentRow {
 }
 
 function CommentAvatar({ author, username, size = 32 }: { author: string; username?: string | null; size?: number }) {
-  const [failed, setFailed] = useState(false);
-  const src = username && !username.startsWith('local_') ? resolveAvatar(username) : null;
-  const px = size;
-  if (!src || failed) {
-    return (
-      <View className="rounded-full items-center justify-center" style={{ width: px, height: px, backgroundColor: colors.surfaceContainer }}>
-        <Text className="font-inter-600 text-textSecondary" style={{ fontSize: px * 0.42, lineHeight: px * 0.5 }}>
-          {initialsAvatar(author)}
-        </Text>
-      </View>
-    );
-  }
-  return (
-    <Image
-      source={src}
-      style={{ width: px, height: px, borderRadius: px / 2, backgroundColor: colors.surfaceContainer }}
-      onError={() => setFailed(true)}
-    />
-  );
+  // resolveAvatar() always returned a source, so the initials branch below was
+  // unreachable and every commenter rendered the shared blank circle - the
+  // fallback existed but could never fire. <UserAvatar> resolves the account's
+  // real picture by handle and falls back to initials itself.
+  return <UserAvatar name={author || username || 'susej'} username={username} size={size} />;
 }
 
 export function CommentsSheet({
@@ -196,6 +182,8 @@ export function CommentsSheet({
   const [comments, setComments] = useState<CommentRow[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [replyTo, setReplyTo] = useState<CommentRow | null>(null);
@@ -208,6 +196,8 @@ export function CommentsSheet({
   useEffect(() => {
     if (!visible || !postId) return;
     let alive = true;
+    setLoadError(false);
+    setLoaded(false);
     if (isLocalPost) {
       setComments(
         (fallbackComments ?? []).map((c, i) => ({
@@ -224,29 +214,34 @@ export function CommentsSheet({
       setLoaded(true);
       return;
     }
+    setComments([]);
     setLoading(true);
     serverApi.getComments(postId).then((res) => {
       if (!alive) return;
-      setComments(Array.isArray(res.data?.comments) ? res.data.comments : []);
+      if (!res.ok || !res.data || !Array.isArray(res.data.comments)) {
+        setLoadError(true);
+      } else {
+        setComments(res.data.comments);
+      }
       setLoaded(true);
       setLoading(false);
     }).catch(() => {
       if (!alive) return;
+      setLoadError(true);
       setLoaded(true);
       setLoading(false);
     });
     return () => {
       alive = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, postId]);
+     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, postId, reloadKey]);
 
   const submit = useCallback(async () => {
     const t = text.trim();
     if (!t || sending) return;
     setSending(true);
     const parentId = replyTo && !replyTo.id.startsWith('local_') ? replyTo.id : undefined;
-    // Optimistic append; reconcile with server response when it lands.
     const displayAuthor = canStorePersona && asStore ? user!.businessName! : user?.name || 'You';
     const optimistic: CommentRow = {
       id: `local_${Date.now()}`,
@@ -262,10 +257,14 @@ export function CommentsSheet({
     setText('');
     const clearedReplyTo = replyTo;
     setReplyTo(null);
+    const rollback = () => {
+      setComments((prev) => prev.filter((c) => c.id !== optimistic.id));
+      setText(t);
+      setReplyTo(clearedReplyTo);
+    };
     try {
       if (isLocalPost) {
         onCountChange?.(1);
-        setSending(false);
         return;
       }
       const res = await serverApi.addComment(
@@ -275,40 +274,39 @@ export function CommentsSheet({
         canStorePersona && asStore ? user!.businessName! : undefined
       );
       const serverComment = res.ok ? res.data?.comment : null;
-      if (serverComment) {
-        setComments((prev) =>
-          prev.map((c) =>
-            c.id === optimistic.id
-              ? {
-                  ...c,
-                  id: String(serverComment.id),
-                  author: String(serverComment.author ?? c.author),
-                  username: serverComment.username ?? c.username,
-                  parentId: serverComment.parentId ?? c.parentId,
-                  text: String(serverComment.text ?? c.text),
-                  time: Number(serverComment.time ?? c.time),
-                }
-              : c
-          )
-        );
-      } else if (clearedReplyTo) {
-        // Server rejected the reply (offline) — restore reply context so the
-        // user doesn't silently lose what they were replying to.
-        setReplyTo(clearedReplyTo);
+      if (!serverComment) {
+        rollback();
+        return;
       }
+      setComments((prev) =>
+        prev.map((c) =>
+          c.id === optimistic.id
+            ? {
+                ...c,
+                id: String(serverComment.id),
+                author: String(serverComment.author ?? c.author),
+                username: serverComment.username ?? c.username,
+                parentId: serverComment.parentId ?? c.parentId,
+                text: String(serverComment.text ?? c.text),
+                time: Number(serverComment.time ?? c.time),
+              }
+            : c
+        )
+      );
       onCountChange?.(1);
     } catch {
-      onCountChange?.(1);
+      rollback();
+    } finally {
+      setSending(false);
     }
-    setSending(false);
   }, [text, sending, postId, onCountChange, replyTo, isLocalPost, user, asStore, canStorePersona]);
 
   const toggleLike = useCallback(
     async (row: CommentRow) => {
-      if (row.id.startsWith('local_') || isLocalPost) return; // nothing persisted locally yet
+      if (row.id.startsWith('local_') || isLocalPost) return;
+      const previous = row;
       const nextLiked = !row.likedByMe;
       const nextLikes = Math.max(0, (row.likes ?? 0) + (nextLiked ? 1 : -1));
-      // Optimistic flip, then reconcile with the server verdict
       setComments((prev) =>
         prev.map((c) => (c.id === row.id ? { ...c, likedByMe: nextLiked, likes: nextLikes } : c))
       );
@@ -317,6 +315,8 @@ export function CommentsSheet({
         setComments((prev) =>
           prev.map((c) => (c.id === row.id ? { ...c, likes: res.data!.likes, likedByMe: res.data!.likedByMe } : c))
         );
+      } else {
+        setComments((prev) => prev.map((c) => (c.id === row.id ? previous : c)));
       }
     },
     [postId, isLocalPost]
@@ -394,6 +394,20 @@ export function CommentsSheet({
         {loading ? (
           <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
             <ActivityIndicator color={colors.primaryContainer} />
+          </View>
+        ) : loadError ? (
+          <View className="flex-1 items-center justify-center px-8">
+            <Text className="font-inter-600 text-textPrimary" style={{ fontSize: 15, lineHeight: 20 }}>
+              Comments couldn&apos;t load
+            </Text>
+            <Text className="font-inter-400 text-textSecondary text-center mt-1" style={{ fontSize: 13, lineHeight: 18 }}>
+              The listing may be available, but the conversation could not be reached.
+            </Text>
+            <TouchableOpacity className="mt-4 px-5 py-2 rounded-full" style={{ backgroundColor: colors.primaryContainer }} onPress={() => setReloadKey((value) => value + 1)}>
+              <Text className="font-inter-600 text-white" style={{ fontSize: 13, lineHeight: 18 }}>
+                Try again
+              </Text>
+            </TouchableOpacity>
           </View>
         ) : comments.length === 0 ? (
           <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32 }}>
@@ -512,20 +526,29 @@ export function LikersSheet({
 }) {
   const [likers, setLikers] = useState<Array<{ username: string; name: string }>>([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     if (!visible || !postId) return;
     let alive = true;
+    setLoadError(false);
+    setLikers([]);
     setLoading(true);
     serverApi.getLikers(postId).then((res) => {
       if (!alive) return;
-      setLikers(Array.isArray(res.data?.likes) ? res.data.likes : []);
+      if (!res.ok || !res.data || !Array.isArray(res.data.likes)) setLoadError(true);
+      else setLikers(res.data.likes);
       setLoading(false);
-    }).catch(() => alive && setLoading(false));
+    }).catch(() => {
+      if (!alive) return;
+      setLoadError(true);
+      setLoading(false);
+    });
     return () => {
       alive = false;
     };
-  }, [visible, postId]);
+  }, [visible, postId, reloadKey]);
 
   return (
     <BottomSheet visible={visible} onClose={onClose} title="Likes">
@@ -533,6 +556,17 @@ export function LikersSheet({
         {loading ? (
           <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
             <ActivityIndicator color={colors.primaryContainer} />
+          </View>
+        ) : loadError ? (
+          <View className="flex-1 items-center justify-center px-8">
+            <Text className="font-inter-600 text-textPrimary" style={{ fontSize: 15, lineHeight: 20 }}>
+              Likes couldn&apos;t load
+            </Text>
+            <TouchableOpacity className="mt-4 px-5 py-2 rounded-full" style={{ backgroundColor: colors.primaryContainer }} onPress={() => setReloadKey((value) => value + 1)}>
+              <Text className="font-inter-600 text-white" style={{ fontSize: 13, lineHeight: 18 }}>
+                Try again
+              </Text>
+            </TouchableOpacity>
           </View>
         ) : likers.length === 0 ? (
           <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32 }}>
@@ -554,9 +588,7 @@ export function LikersSheet({
                   className="w-11 h-11 rounded-full items-center justify-center"
                   style={{ backgroundColor: colors.surfaceContainer }}
                 >
-                  <Text className="font-inter-600 text-textSecondary" style={{ fontSize: 16, lineHeight: 20 }}>
-                    {initialsAvatar(item.name)}
-                  </Text>
+                  <UserAvatar name={item.name} username={item.username} size={44} />
                 </View>
                 <View className="flex-1">
                   <Text className="font-inter-600 text-textPrimary" style={{ fontSize: 14, lineHeight: 18 }} numberOfLines={1}>
@@ -596,6 +628,11 @@ export function ShareSheet({
 }) {
   const [threads, setThreads] = useState<Array<{ id: string; name: string; sent?: boolean }>>([]);
   const [communities, setCommunities] = useState<Array<{ id: string; name: string; sent?: boolean }>>([]);
+  const [threadsError, setThreadsError] = useState(false);
+  const [communitiesError, setCommunitiesError] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const sendingTargets = useRef(new Set<string>());
+  const [reloadKey, setReloadKey] = useState(0);
   const [loading, setLoading] = useState(false);
 
   const priceLabel = post ? `Rs${post.price.toLocaleString('en-IN')}` : '';
@@ -607,49 +644,72 @@ export function ShareSheet({
   useEffect(() => {
     if (!visible || !post) return;
     let alive = true;
+    setThreadsError(false);
+    setCommunitiesError(false);
     setLoading(true);
     Promise.all([
       serverApi.getThreads().catch(() => ({ ok: false, data: null })),
       serverApi.getCommunities().catch(() => ({ ok: false, data: null })),
     ]).then(([tRes, cRes]) => {
       if (!alive) return;
-      const rawThreads = Array.isArray(tRes?.data?.threads) ? tRes.data.threads : [];
-      setThreads(
-        rawThreads.map((t: any) => ({
+      if (tRes?.ok && Array.isArray(tRes.data?.threads)) {
+        setThreads(tRes.data.threads.map((t: any) => ({
           id: String(t.id),
           name: String(t.name || t.participantName || t.participant || 'Chat'),
-        }))
-      );
-      const rawComms = Array.isArray(cRes?.data?.communities) ? cRes.data.communities : [];
-      setCommunities(
-        rawComms.map((c: any) => ({
+        })));
+      } else {
+        setThreadsError(true);
+      }
+      if (cRes?.ok && Array.isArray(cRes.data?.communities)) {
+        setCommunities(cRes.data.communities.map((c: any) => ({
           id: String(c.id),
           name: String(c.name || 'Community'),
-        }))
-      );
+        })));
+      } else {
+        setCommunitiesError(true);
+      }
       setLoading(false);
     });
     return () => {
       alive = false;
     };
-  }, [visible, post]);
+  }, [visible, post, reloadKey]);
 
   const sendToThread = async (threadId: string, name: string) => {
+    const key = `thread:${threadId}`;
+    if (sendingTargets.current.has(key)) return;
+    sendingTargets.current.add(key);
     try {
-      await serverApi.sendMessage(threadId, shareText);
+      const res = await serverApi.sendMessage(threadId, shareText);
+      if (!res.ok) {
+        setSendError(`${name} was not sent. Try again.`);
+        return;
+      }
+      setSendError(null);
       setThreads((prev) => prev.map((t) => (t.id === threadId ? { ...t, sent: true } : t)));
     } catch {
-      // leave unchecked on failure
+      setSendError(`${name} was not sent. Try again.`);
+    } finally {
+      sendingTargets.current.delete(key);
     }
-    void name;
   };
 
   const sendToCommunity = async (communityId: string) => {
+    const key = `community:${communityId}`;
+    if (sendingTargets.current.has(key)) return;
+    sendingTargets.current.add(key);
     try {
-      await serverApi.sendCommunityMessage(communityId, shareText);
+      const res = await serverApi.sendCommunityMessage(communityId, shareText);
+      if (!res.ok) {
+        setSendError('That community post was not sent. Try again.');
+        return;
+      }
+      setSendError(null);
       setCommunities((prev) => prev.map((c) => (c.id === communityId ? { ...c, sent: true } : c)));
     } catch {
-      // leave unchecked on failure
+      setSendError('That community post was not sent. Try again.');
+    } finally {
+      sendingTargets.current.delete(key);
     }
   };
 
@@ -713,7 +773,25 @@ export function ShareSheet({
               </View>
             ) : (
               <>
-                {threads.length > 0 && (
+                {sendError ? (
+                  <View className="mx-4 mt-3 px-3 py-2 rounded-figma-12" style={{ backgroundColor: colors.errorContainer }}>
+                    <Text className="font-inter-500 text-error text-center" style={{ fontSize: 12, lineHeight: 18 }}>
+                      {sendError}
+                    </Text>
+                  </View>
+                ) : null}
+                {threadsError ? (
+                  <View className="px-4 pt-3 items-center">
+                    <Text className="font-inter-400 text-textSecondary text-center" style={{ fontSize: 13, lineHeight: 18 }}>
+                      Chats couldn&apos;t load.
+                    </Text>
+                    <TouchableOpacity className="mt-2 px-4 py-2 rounded-full" style={{ backgroundColor: colors.surfaceContainer }} onPress={() => setReloadKey((value) => value + 1)}>
+                      <Text className="font-inter-600 text-textPrimary" style={{ fontSize: 12, lineHeight: 16 }}>
+                        Try again
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : threads.length > 0 ? (
                   <>
                     <Text className="font-inter-700 text-textPrimary px-4 pt-2 pb-1" style={{ fontSize: 13, lineHeight: 16 }}>
                       Send in a chat
@@ -722,8 +800,19 @@ export function ShareSheet({
                       <Row key={t.id} label={t.name} sub="Direct message" sent={t.sent} onPress={() => sendToThread(t.id, t.name)} />
                     ))}
                   </>
-                )}
-                {communities.length > 0 && (
+                ) : null}
+                {communitiesError ? (
+                  <View className="px-4 pt-3 items-center">
+                    <Text className="font-inter-400 text-textSecondary text-center" style={{ fontSize: 13, lineHeight: 18 }}>
+                      Communities couldn&apos;t load.
+                    </Text>
+                    <TouchableOpacity className="mt-2 px-4 py-2 rounded-full" style={{ backgroundColor: colors.surfaceContainer }} onPress={() => setReloadKey((value) => value + 1)}>
+                      <Text className="font-inter-600 text-textPrimary" style={{ fontSize: 12, lineHeight: 16 }}>
+                        Try again
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : communities.length > 0 ? (
                   <>
                     <Text className="font-inter-700 text-textPrimary px-4 pt-3 pb-1" style={{ fontSize: 13, lineHeight: 16 }}>
                       Share to communities
@@ -732,8 +821,8 @@ export function ShareSheet({
                       <Row key={c.id} label={c.name} sub="Community post" sent={c.sent} onPress={() => sendToCommunity(c.id)} />
                     ))}
                   </>
-                )}
-                {threads.length === 0 && communities.length === 0 && (
+                ) : null}
+                {!threadsError && !communitiesError && threads.length === 0 && communities.length === 0 && (
                   <View style={{ paddingVertical: 28, alignItems: 'center', paddingHorizontal: 32 }}>
                     <Text className="font-inter-400 text-textSecondary text-center" style={{ fontSize: 13, lineHeight: 18 }}>
                       No chats or communities yet — share to other apps below.

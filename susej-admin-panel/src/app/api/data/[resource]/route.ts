@@ -5,6 +5,7 @@ import { checkAppKeyAsync, getMintedKeyScope } from "@/lib/promotions/api-auth";
 import { getAppUser } from "@/lib/app-auth";
 import { resolveCommissionRate, settlementGoodsBasis, settledFeeFromLegs } from "@/lib/commission";
 import { notifyUser } from "@/lib/notifications";
+import { cacheKey, invalidateCache } from "@/lib/cache";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -81,13 +82,36 @@ const READ_ONLY_RESOURCES = new Set(["audit-logs"]);
 // them (chat moderation mute/block included). Broadcast (notification
 // templates/history) is manager+ only: a triage account must never push
 // app-wide blasts — the single-user warn path covers their need.
-const MODERATOR_RESOURCES = new Set(["communities", "reviews", "tickets", "reported-messages", "reported-products", "reported-comments", "reported-users", "blocked", "posts", "hashtags", "disputes"]);
+const MODERATOR_RESOURCES = new Set(["communities", "reviews", "tickets", "messages", "reported-messages", "reported-products", "reported-comments", "reported-users", "blocked", "posts", "hashtags", "disputes"]);
 // Finance desk: money decisions only (payout/refund queues + their money
 // tables). Explicit — never inherited from the moderator set.
 const FINANCE_RESOURCES = new Set(["withdrawals", "refunds", "transactions", "ledger", "orders"]);
 // Money tables no non-finance staff role may ever write (explicit deny closes
 // the implicit-fallthrough hole for current AND future staff roles).
 const MONEY_RESOURCES = new Set(["withdrawals", "refunds", "transactions", "ledger", "commission"]);
+
+const MODERATOR_PATCH_FIELDS: Record<string, ReadonlySet<string>> = {
+  communities: new Set(["status", "reports", "postingLocked", "commentsDisabled"]),
+  reviews: new Set(["status"]),
+  tickets: new Set(["status", "priority", "assignee"]),
+  blocked: new Set(["reason", "kind"]),
+  posts: new Set(["status", "reports", "warningReason"]),
+  hashtags: new Set(["status"]),
+  disputes: new Set(["status"]),
+  "reported-messages": new Set(),
+  "reported-products": new Set(),
+  "reported-comments": new Set(),
+  messages: new Set(),
+};
+
+const MODERATOR_STATUS_ALLOW: Record<string, ReadonlySet<string>> = {
+  communities: new Set(["active", "suspended", "banned"]),
+  reviews: new Set(["reported", "approved", "pending", "rejected", "removed"]),
+  tickets: new Set(["open", "resolved", "closed"]),
+  posts: new Set(["active", "published", "hidden", "removed", "flagged", "pending"]),
+  hashtags: new Set(["active", "blocked"]),
+  disputes: new Set(["under_review"]),
+};
 
 // Resources the mobile app may write to via the device API key (x-app-key).
 // The app is never allowed to READ admin data — it only mirrors activity.
@@ -173,15 +197,13 @@ const FINANCE_READ_RESOURCES = new Set([...FINANCE_RESOURCES, "commission", "sel
 function readAllowed(resource: string, role: Role): boolean {
   if (role === "app") return false; // the app never reads admin data
   if (role === "super_admin") return true;
-  // Manager reads everything EXCEPT the admin-credential + audit-trail
-  // stores (mirrors proxy.ts managerBlockedPrefixes — page ACL and API ACL
-  // share one matrix; blocking the page while leaving the API open is
-  // theater that fails pen-test). app-settings joins the deny set: the System
-  // page is manager-blocked, and promoPrices/rolePermissions/secrets-adjacent
-  // config must not leak through the API door.
-  if (role === "manager") return resource !== "admins" && resource !== "audit-logs" && resource !== "app-settings";
+  // Manager reads everything EXCEPT audit logs and system settings. The admins
+  // resource is projected to a support directory (id/name/role/status only),
+  // so ticket assignment works without exposing credentials.
+  if (role === "manager") return resource !== "audit-logs" && resource !== "app-settings";
   if (role === "finance") return FINANCE_READ_RESOURCES.has(resource);
-  return MODERATOR_RESOURCES.has(resource);
+  if (role === "moderator") return resource === "admins" || MODERATOR_RESOURCES.has(resource);
+  return false;
 }
 
 function writeAllowed(resource: string, role: Role): boolean {
@@ -274,6 +296,36 @@ function stripSensitive(row: Record<string, unknown>): Record<string, unknown> {
   const copy = { ...row };
   for (const key of SENSITIVE_ADMIN_FIELDS) delete copy[key];
   return copy;
+}
+
+const FINANCE_SELLER_PII_FIELDS = ["idNumber", "nameOnId", "dob", "pan", "bankAccount", "selfieUrl", "idType"] as const;
+
+function redactSellerForFinance(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactSellerForFinance);
+  if (value === null || typeof value !== "object") return value;
+  const copy = { ...(value as Record<string, unknown>) };
+  for (const key of FINANCE_SELLER_PII_FIELDS) delete copy[key];
+  delete copy.documents;
+  delete copy.auditLogs;
+  return copy;
+}
+
+function projectAdminDirectory(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(projectAdminDirectory);
+  if (value === null || typeof value !== "object") return value;
+  const row = value as Record<string, unknown>;
+  return {
+    id: row.id,
+    name: row.name,
+    role: row.role,
+    status: row.status,
+  };
+}
+
+function redactForRole(value: unknown, resource: string, role: Role): unknown {
+  if (resource === "sellers" && role === "finance") return redactSellerForFinance(value);
+  if (resource === "admins" && (role === "manager" || role === "moderator")) return projectAdminDirectory(value);
+  return value;
 }
 
 function serialize(value: unknown, resource?: string): unknown {
@@ -402,6 +454,39 @@ const SELLER_APP_FIELDS = new Set([
   "selfieUrl",
 ]);
 
+const SELLER_PROTECTED_FIELDS = ["phone", "email", "taxId", "idType", "idNumber", "nameOnId", "dob", "pan", "bankAccount", "selfieUrl", "documents"] as const;
+const SELLER_DOCUMENT_INPUT_FIELDS = new Set(["id", "type", "label", "fileName", "url"]);
+
+function sellerDocumentInputError(value: unknown): string | null {
+  if (value === undefined) return null;
+  if (!Array.isArray(value)) return "documents must be an array";
+  if (value.length > 12) return "A seller can submit at most 12 KYC documents";
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return "Each KYC document must be an object";
+    const row = entry as Record<string, unknown>;
+    for (const key of ["type", "label", "fileName", "url"]) {
+      if (typeof row[key] !== "string" || !String(row[key]).trim()) return `KYC document ${key} is required`;
+    }
+  }
+  return null;
+}
+
+function sanitizeSellerDocuments(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) return [];
+  return value.map((entry) => {
+    const row = entry && typeof entry === "object" && !Array.isArray(entry)
+      ? entry as Record<string, unknown>
+      : {};
+    const out: Record<string, unknown> = {};
+    for (const key of SELLER_DOCUMENT_INPUT_FIELDS) {
+      if (row[key] !== undefined) out[key] = typeof row[key] === "string" ? row[key].trim() : row[key];
+    }
+    out.uploadedAt = new Date();
+    out.verified = false;
+    return out;
+  });
+}
+
 function sanitizeStorefrontBannerForApp(
   raw: Record<string, unknown>,
   appUser: Record<string, unknown>,
@@ -466,6 +551,7 @@ function sanitizeSellerForApp(raw: Record<string, unknown>, appUser: Record<stri
     out.kycStatus = "pending";
     out.gstStatus = "pending";
   }
+  if (raw.documents !== undefined) out.documents = sanitizeSellerDocuments(raw.documents);
   // Never trust client-supplied scores or counters.
   delete (out as Record<string, unknown>).score;
   delete (out as Record<string, unknown>).productsCount;
@@ -602,6 +688,16 @@ function sanitizeMessageForApp(raw: Record<string, unknown>, appUser: Record<str
   return out;
 }
 
+function sanitizeMessageForStaff(raw: Record<string, unknown>, adminName: string): Record<string, unknown> {
+  return {
+    threadId: String(raw.threadId ?? "").trim(),
+    sender: String(adminName ?? "Support").trim() || "Support",
+    senderRole: "agent",
+    body: String(raw.body ?? "").trim(),
+    createdAt: new Date(),
+  };
+}
+
 // Timestamps are server-owned: requestedAt is stamped at creation, and
 // respondedAt only ever moves via the desk decision machines (a client-set
 // respondedAt backdated the queue cosmetics).
@@ -619,6 +715,88 @@ function sanitizeRefundForApp(raw: Record<string, unknown>, appUser: Record<stri
   out.amount = 0;
   // sellerName is server-derived from the order, not client-settable here.
   return out;
+}
+
+function splitReportedParticipants(raw: unknown): string[] {
+  const parts = String(raw ?? "")
+    .split(/\s*(?:,|;|\||&|•|·|\bvs\.?\b|\bwith\b)\s*/i)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const seen = new Set<string>();
+  return parts.filter((value) => {
+    const key = value.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+type ReportUser = { id: string; username: string; name: string; email: string; status: string };
+
+async function resolveReportedMessageTarget(
+  prisma: any,
+  report: { threadId?: unknown; participants?: unknown },
+  requested: unknown
+): Promise<
+  | { ok: true; target: ReportUser; counterpart: ReportUser }
+  | { ok: false; error: string; status: number }
+> {
+  const threadId = String(report.threadId ?? "").trim();
+  const thread = threadId
+    ? await prisma.chatThread.findUnique({
+        where: { id: threadId },
+        select: { participantA: true, participantB: true },
+      })
+    : null;
+  const candidates = thread
+    ? [String(thread.participantA ?? "").trim(), String(thread.participantB ?? "").trim()].filter(Boolean)
+    : splitReportedParticipants(report.participants);
+  if (candidates.length < 2) {
+    return { ok: false, error: "The reported thread participants could not be resolved. Leave this report pending and repair the source thread.", status: 409 };
+  }
+  const uniqueCandidates = [...new Map(candidates.map((value) => [value.toLowerCase(), value])).values()];
+  const users = await prisma.user.findMany({
+    where: {
+      OR: uniqueCandidates.flatMap((value) => [
+        { username: { equals: value, mode: "insensitive" as const } },
+        { name: { equals: value, mode: "insensitive" as const } },
+      ]),
+    },
+    select: { id: true, username: true, name: true, email: true, status: true },
+  }) as Array<{ id?: unknown; username?: unknown; name?: unknown; email?: unknown; status?: unknown }>;
+  const norm = (value: unknown) => String(value ?? "").trim().toLowerCase();
+  const resolved: ReportUser[] = [];
+  const seenIds = new Set<string>();
+  for (const candidate of uniqueCandidates) {
+    const match = users.find((user) => norm(user.username) === norm(candidate) || norm(user.name) === norm(candidate));
+    const id = String(match?.id ?? "");
+    if (!match || !id || seenIds.has(id)) continue;
+    const username = String(match.username ?? "").trim();
+    if (!username) continue;
+    seenIds.add(id);
+    resolved.push({
+      id,
+      username,
+      name: String(match.name ?? username),
+      email: String(match.email ?? ""),
+      status: String(match.status ?? "active"),
+    });
+  }
+  if (resolved.length < 2) {
+    return { ok: false, error: "Both participants must resolve to real user accounts before Mute or Block. The report was left pending.", status: 409 };
+  }
+  const requestedName = String(requested ?? "").trim().toLowerCase();
+  const target = requestedName
+    ? resolved.find((user) => user.username.toLowerCase() === requestedName || user.name.toLowerCase() === requestedName)
+    : resolved.length === 2 ? null : resolved[0];
+  if (!target) {
+    return { ok: false, error: "Select the offending participant before applying Mute or Block.", status: 400 };
+  }
+  const counterpart = resolved.find((user) => user.id !== target.id);
+  if (!counterpart) {
+    return { ok: false, error: "The other participant could not be resolved. The report was left pending.", status: 409 };
+  }
+  return { ok: true, target, counterpart };
 }
 
 function cleanAdminInput(
@@ -697,6 +875,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     reviews: ["reviewerName", "text"],
     communities: ["name", "description"],
     tickets: ["subject", "userName"],
+    messages: ["threadId", "sender", "body"],
     // Money queues (server-searchable — client-side filtering of the loaded
     // 100 used to make rows past the window unfindable from the desk):
     disputes: ["orderId", "buyerName", "sellerName", "reason", "status"],
@@ -778,7 +957,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
           ...((base as Record<string, unknown>) ?? {}),
           where: { [PRIMARY_KEY[resource] ?? "id"]: idFilter },
         });
-        const rowsOut = one ? (serialize([one], resource) as Record<string, unknown>[]) : [];
+        const rowsOut = one
+          ? (serialize(redactForRole([one], resource, role), resource) as Record<string, unknown>[])
+          : [];
         return NextResponse.json({ rows: rowsOut, total: rowsOut.length });
       }
       if (Object.keys(where).length) findArgs.where = where;
@@ -791,22 +972,25 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       }
       if (take) { findArgs.take = take; findArgs.skip = skip; }
       const totalPromise = hasPagination
-        ? prisma[PRISMA_MODELS[resource]].count({ where: Object.keys(where).length ? where : undefined }).catch(() => null)
+        ? prisma[PRISMA_MODELS[resource]].count({ where: Object.keys(where).length ? where : undefined })
         : null;
       const list = hasPagination
         ? await prisma[PRISMA_MODELS[resource]].findMany(findArgs)
         : await prisma[PRISMA_MODELS[resource]].findMany(EXTENDED[resource] ?? {});
-      let rowsOut = serialize(list, resource) as Record<string, unknown>[];
-      // Finance PII minimization: payout clerks need seller identity +
-      // payee destination (resolved above for withdrawals), never KYC
-      // internals (PAN/DOB/ID numbers/bank numbers/selfies). Stripped
-      // server-side — page-level hiding alone would leave the API door open.
-      if (resource === "sellers" && role === "finance") {
-        const PII = ["idNumber", "nameOnId", "dob", "pan", "bankAccount", "selfieUrl", "idType"];
-        rowsOut = rowsOut.map((r) => {
-          const copy = { ...r };
-          for (const k of PII) delete copy[k];
-          return copy;
+      let rowsOut = serialize(redactForRole(list, resource, role), resource) as Record<string, unknown>[];
+      if (resource === "reported-messages" && rowsOut.length) {
+        const threadIds = rowsOut.map((row) => String(row.threadId ?? "")).filter(Boolean);
+        const threads = await prisma.chatThread.findMany({
+          where: { id: { in: threadIds } },
+          select: { id: true, participantA: true, participantB: true },
+        }) as Array<{ id: string; participantA: string; participantB: string }>;
+        const byThread = new Map(threads.map((thread) => [String(thread.id), thread]));
+        rowsOut = rowsOut.map((row) => {
+          const thread = byThread.get(String(row.threadId ?? ""));
+          const participantUsernames = thread
+            ? [String(thread.participantA ?? "").trim(), String(thread.participantB ?? "").trim()].filter(Boolean)
+            : splitReportedParticipants(row.participants);
+          return { ...row, participantUsernames };
         });
       }
       // Withdrawals: destination resolution (read-time join, no schema
@@ -936,7 +1120,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
             let dirty = false;
             const migrated = (val as Array<Record<string, unknown>>).map((e) => {
               if (!e || typeof e !== "object") return e;
-              let out = { ...e };
+              const out = { ...e };
               if (!out.keyHash && typeof out.key === "string" && out.key) {
                 const full = String(out.key);
                 out.keyHash = createHash("sha256").update(full).digest("hex");
@@ -1030,7 +1214,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     }
   }
 
-  return NextResponse.json({ rows: [], error: "Database unavailable" });
+  return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
 }
 
 // Simple in-memory rate limiter for write endpoints (per-IP, per-minute).
@@ -1056,6 +1240,7 @@ function validateResourcePayload(resource: string, data: Record<string, unknown>
     sellers: new Set(["pending", "approved", "rejected", "suspended", "deleted"]),
     users: new Set(["active", "inactive", "suspended", "banned", "deleted"]),
     categories: new Set(["active", "hidden", "deleted"]),
+    tickets: new Set(["open", "resolved", "closed"]),
     // Unified payout state machine (see PATCH transition guard below).
     withdrawals: new Set(["requested", "approved", "rejected", "completed"]),
     coupons: new Set(["active", "disabled", "expired", "deleted"]),
@@ -1070,6 +1255,12 @@ function validateResourcePayload(resource: string, data: Record<string, unknown>
   }
   if (typeof data.status === "string" && statusAllow[resource] && !statusAllow[resource].has(String(data.status))) {
     return `Invalid status '${data.status}' for ${resource}`;
+  }
+  if (resource === "tickets" && data.priority !== undefined) {
+    const priority = String(data.priority);
+    if (!["low", "medium", "high", "urgent"].includes(priority)) {
+      return `Invalid ticket priority '${priority}'`;
+    }
   }
   // Price/amount must be finite non-negative.
   if (data.price !== undefined) {
@@ -1423,6 +1614,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if (!id || typeof data !== "object" || data === null) {
     return NextResponse.json({ error: "id and data are required" }, { status: 400 });
   }
+  if (resource === "withdrawals") {
+    delete data.respondedAt;
+  }
   // Paid-rail content is engine-owned: manager/finance may flip status (the
   // fraud kill-switch) but never rewrite paid content (price/name/priority).
   // Super_admin break-glass only, audited.
@@ -1435,6 +1629,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       }
     }
   }
+  if (resource === "seller-documents" && role !== "app") {
+    const keys = Object.keys(data);
+    if (keys.length !== 1 || keys[0] !== "verified" || typeof data.verified !== "boolean") {
+      return forbidden("Seller document evidence is immutable here; only a staff verification decision may change verified.");
+    }
+  }
+
   // Moderator dispute triage (read + under_review only): the queue needs the
   // fastest human review, but resolving moves money — manager/super_admin
   // only. POST/DELETE stay denied below; resolve PATCH is refused here.
@@ -1444,8 +1645,187 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       return NextResponse.json({ error: "Moderators can triage disputes (mark under review) — resolution moves money and needs a manager." }, { status: 403 });
     }
   }
+
+  const moderationAction = String(data.action ?? "").trim().toLowerCase();
+  const isCommentDelete =
+    role !== "app" &&
+    resource === "reported-comments" &&
+    moderationAction === "delete" &&
+    Object.keys(data).every((key) => key === "action");
+  const isMessageModeration =
+    role !== "app" &&
+    resource === "reported-messages" &&
+    ["mute", "block"].includes(moderationAction) &&
+    Object.keys(data).every((key) => key === "action" || key === "target");
+  if (role === "moderator" && !isCommentDelete && !isMessageModeration) {
+    const allowed = MODERATOR_PATCH_FIELDS[resource];
+    const keys = Object.keys(data);
+    if (!allowed || keys.length === 0 || keys.some((key) => !allowed.has(key))) {
+      return forbidden("Moderator field update refused. Use the supported moderation action for this queue.");
+    }
+    const statusAllow = MODERATOR_STATUS_ALLOW[resource];
+    if (data.status !== undefined && (!statusAllow || !statusAllow.has(String(data.status)))) {
+      return NextResponse.json({ error: `Invalid ${resource} status '${String(data.status)}'` }, { status: 400 });
+    }
+    if (data.reports !== undefined && (!Number.isInteger(data.reports) || Number(data.reports) < 0)) {
+      return NextResponse.json({ error: "reports must be a non-negative integer" }, { status: 400 });
+    }
+    for (const key of ["postingLocked", "commentsDisabled"]) {
+      if (data[key] !== undefined && typeof data[key] !== "boolean") {
+        return NextResponse.json({ error: `${key} must be boolean` }, { status: 400 });
+      }
+    }
+    if (resource === "blocked" && data.kind !== undefined && !["blocked", "banned"].includes(String(data.kind))) {
+      return NextResponse.json({ error: "Invalid blocked-user kind" }, { status: 400 });
+    }
+  }
+
+  if (isCommentDelete) {
+    const gdb = (await resolveDb()) as any;
+    if (!gdb) return NextResponse.json({ error: "Database unavailable — comment not deleted" }, { status: 503 });
+    try {
+      const result = await gdb.$transaction(async (tx: any) => {
+        await tx.$queryRawUnsafe(`SELECT id FROM "ReportedComment" WHERE id = $1 FOR UPDATE`, String(id));
+        const report = await tx.reportedComment.findUnique({ where: { id: String(id) } });
+        if (!report) throw new Error("__report_not_found");
+        const commentId = String(report.commentId ?? "").trim();
+        if (!commentId) throw new Error("__comment_target_missing");
+        const comment = await tx.postComment.findUnique({ where: { id: commentId }, select: { id: true, postId: true } });
+        let deleted = 0;
+        if (comment) {
+          await tx.postComment.delete({ where: { id: commentId } });
+          deleted = 1;
+          if (String(comment.postId ?? "").trim()) {
+            await tx.post.updateMany({
+              where: { id: String(comment.postId), comments: { gt: 0 } },
+              data: { comments: { decrement: 1 } },
+            });
+          }
+        }
+        await tx.reportedComment.delete({ where: { id: String(id) } });
+        return { commentDeleted: deleted, reportDeleted: 1 };
+      });
+      await writeAuditSafe({
+        action: "moderation.comment.delete",
+        entity: resource,
+        entityId: String(id),
+        details: `Deleted reported comment ${String(id)}; linked comment removed=${result.commentDeleted === 1}`,
+        adminName: session.name,
+        ip,
+      });
+      return NextResponse.json({ ok: true, ...result });
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "";
+      if (code === "__report_not_found") return NextResponse.json({ error: "Report not found" }, { status: 404 });
+      if (code === "__comment_target_missing") {
+        return NextResponse.json({ error: "The report has no comment target. Repair or dismiss the report instead of deleting blindly." }, { status: 409 });
+      }
+      return NextResponse.json({ error: "Comment moderation failed — report and comment were left unchanged." }, { status: 503 });
+    }
+  }
+
+  if (isMessageModeration) {
+    const gdb = (await resolveDb()) as any;
+    if (!gdb) return NextResponse.json({ error: "Database unavailable — report left pending" }, { status: 503 });
+    try {
+      const report = await gdb.reportedMessage.findUnique({ where: { id: String(id) } });
+      if (!report) return NextResponse.json({ error: "Report not found" }, { status: 404 });
+      const blockId = `mod_${String(id)}`;
+      const result = await gdb.$transaction(async (tx: any) => {
+        await tx.$queryRawUnsafe(`SELECT id FROM "ReportedMessage" WHERE id = $1 FOR UPDATE`, String(id));
+        const fresh = await tx.reportedMessage.findUnique({ where: { id: String(id) } });
+        if (!fresh) throw new Error("__report_not_found");
+        const resolved = await resolveReportedMessageTarget(tx, fresh, data.target);
+        if (!resolved.ok) {
+          throw Object.assign(new Error(resolved.error), { moderationStatus: resolved.status });
+        }
+        const { target, counterpart } = resolved;
+        const reasonText = String(fresh.reason ?? "Reported chat abuse").trim().slice(0, 400);
+        await tx.block.upsert({
+          where: { blockerUsername_blockedUsername: { blockerUsername: counterpart.username, blockedUsername: target.username } },
+          update: {},
+          create: { id: blockId, blockerUsername: counterpart.username, blockedUsername: target.username },
+        });
+        await tx.blockedUser.upsert({
+          where: { id: blockId },
+          update: {
+            userName: target.username,
+            email: target.email,
+            reason: moderationAction === "mute" ? `Muted from reported chat: ${reasonText}` : `Blocked from reported chat: ${reasonText}`,
+            bannedBy: session.name,
+            bannedAt: new Date(),
+            kind: "blocked",
+          },
+          create: {
+            id: blockId,
+            userName: target.username,
+            email: target.email,
+            reason: moderationAction === "mute" ? `Muted from reported chat: ${reasonText}` : `Blocked from reported chat: ${reasonText}`,
+            bannedBy: session.name,
+            bannedAt: new Date(),
+            kind: "blocked",
+          },
+        });
+        if (moderationAction === "block") {
+          await tx.user.update({
+            where: { id: target.id },
+            data: { status: ["banned", "deleted"].includes(target.status) ? target.status : "suspended" },
+          });
+        }
+        await tx.reportedMessage.delete({ where: { id: String(id) } });
+        return {
+          target: target.username,
+          counterpart: counterpart.username,
+          action: moderationAction,
+          reportDeleted: 1,
+        };
+      });
+      await Promise.all([
+        invalidateCache(cacheKey("chat", "threads-v3", result.target)),
+        invalidateCache(cacheKey("chat", "threads-v3", result.counterpart)),
+      ]).catch((error) => console.error("[chat-moderation-cache]", error));
+      await writeAuditSafe({
+        action: `moderation.message.${moderationAction}`,
+        entity: resource,
+        entityId: String(id),
+        details: `${moderationAction} enforced for @${result.target} against @${result.counterpart}`,
+        adminName: session.name,
+        ip,
+      });
+      return NextResponse.json({ ok: true, ...result });
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "";
+      if (code === "__report_not_found") return NextResponse.json({ error: "Report not found" }, { status: 404 });
+      const moderationStatus = Number((error as { moderationStatus?: unknown }).moderationStatus ?? 0);
+      if (moderationStatus >= 400 && moderationStatus < 500) {
+        return NextResponse.json({ error: error instanceof Error ? error.message : "Moderation target is invalid" }, { status: moderationStatus });
+      }
+      return NextResponse.json({ error: "Chat moderation failed — the report remains pending and no partial action was kept." }, { status: 503 });
+    }
+  }
+
   const validationErr = validateResourcePayload(resource, data as Record<string, unknown>);
   if (validationErr) return NextResponse.json({ error: validationErr }, { status: 400 });
+  if (resource === "tickets" && data.assignee !== undefined && role !== "app") {
+    const assignee = String(data.assignee ?? "").trim();
+    if (!assignee) {
+      data.assignee = null;
+    } else {
+      try {
+        const gdb = (await resolveDb()) as any;
+        if (!gdb) return NextResponse.json({ error: "Could not verify ticket assignees — assignment refused." }, { status: 503 });
+        const matches = await gdb.admin.findMany({
+          where: { name: assignee, status: "active" },
+          select: { id: true },
+        });
+        if (matches.length !== 1) {
+          return NextResponse.json({ error: "Assignee must match one active admin exactly." }, { status: matches.length === 0 ? 422 : 409 });
+        }
+      } catch {
+        return NextResponse.json({ error: "Could not verify ticket assignees — assignment refused." }, { status: 503 });
+      }
+    }
+  }
   if (resource === "orders" && typeof (data as Record<string, unknown>).status === "string" && role !== "app") {
     try {
       const gdb = (await resolveDb()) as any;
@@ -1558,7 +1938,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       "bookingDate",
       "bookingTime",
     ],
-    withdrawals: ["amount"],
+    withdrawals: ["amount", "userName", "method", "fee", "requestedAt"],
     refunds: ["amount"],
     promotions: ["amountPaid"],
   };
@@ -1619,6 +1999,16 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     } else if (resource === "sellers") {
       const username = String(appUser.username ?? "").trim();
       if (username && String(id) !== `app_${username}`) return forbidden("Seller record belongs to another user.");
+      const documentErr = sellerDocumentInputError(raw.documents);
+      if (documentErr) return NextResponse.json({ error: documentErr }, { status: 400 });
+      const prismaTmp = (await resolveDb()) as any;
+      const existingSeller = prismaTmp
+        ? await prismaTmp.seller.findUnique({ where: { id: String(id) }, select: { kycStatus: true } }).catch(() => null)
+        : null;
+      if (!prismaTmp || !existingSeller) return forbidden("Seller record is unavailable.");
+      if (String(existingSeller.kycStatus ?? "") === "approved" && SELLER_PROTECTED_FIELDS.some((key) => raw[key] !== undefined)) {
+        return forbidden("KYC and payout details are locked after approval. Request a re-verification instead.");
+      }
       // Update lane: verification state + counters survive profile edits.
       appScopedData = sanitizeSellerForApp(raw, appUser, true);
       // Format validation PATCH-side too: POST-only enforcement left the
@@ -1686,12 +2076,24 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     }
   }
 
+  if (resource === "sellers" && role !== "app" && data.documents !== undefined) {
+    const documentErr = sellerDocumentInputError(data.documents);
+    if (documentErr) return NextResponse.json({ error: documentErr }, { status: 400 });
+  }
+
   const payload =
     resource === "admins"
       ? cleanAdminInput(data, role, false, { id: session.sub, loginId: session.loginId })
       : appScopedData ?? data;
   if (payload instanceof NextResponse) return payload;
-  let cleanPayload: Record<string, unknown> = normalizeRelationArrays(payload as Record<string, unknown>);
+  const cleanPayload: Record<string, unknown> = normalizeRelationArrays(payload as Record<string, unknown>);
+  if (resource === "sellers") {
+    const documentWrite = cleanPayload.documents;
+    if (documentWrite && typeof documentWrite === "object" && !Array.isArray(documentWrite)) {
+      const nested = documentWrite as Record<string, unknown>;
+      if (Array.isArray(nested.create)) nested.create = sanitizeSellerDocuments(nested.create);
+    }
+  }
   // PK armor (hostile-audit 7b): the row key comes from body.id, never from
   // data — Prisma rejects @id writes, so a client-echoed id 503'd every save.
   delete (cleanPayload as Record<string, unknown>).id;
@@ -3296,6 +3698,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const { resource } = await params;
   if (!PRISMA_MODELS[resource]) return NextResponse.json({ error: "Unknown resource" }, { status: 404 });
   if (!writeAllowed(resource, role)) return forbidden();
+  if (resource === "withdrawals") {
+    return forbidden("Payout requests are created only by the atomic wallet payout transaction; admin row creation is disabled.");
+  }
 
   // Paid rails are engine-sold inventory (purchases mint the rows): direct
   // creation by staff re-creates the orphan/money-for-nothing hole the sweep
@@ -3314,6 +3719,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const body = await request.json();
   if (typeof body !== "object" || body === null) {
     return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
+  }
+  if (resource === "seller-documents" && role !== "app") {
+    (body as Record<string, unknown>).verified = false;
+    (body as Record<string, unknown>).uploadedAt = new Date();
+  }
+  if (resource === "sellers" && role !== "app") {
+    if (["approved", "verified"].includes(String((body as Record<string, unknown>).kycStatus ?? "").trim().toLowerCase()) ||
+        ["approved", "verified"].includes(String((body as Record<string, unknown>).gstStatus ?? "").trim().toLowerCase())) {
+      return forbidden("Seller creation cannot approve KYC or GST. Create pending, then use the evidence-bound approval action.");
+    }
+    const documentErr = sellerDocumentInputError((body as Record<string, unknown>).documents);
+    if (documentErr) return NextResponse.json({ error: documentErr }, { status: 400 });
   }
   // Session mint discipline (impersonation guard): a desk-minted Bearer
   // impersonates the user on every /api/app/* lane, so client-chosen tokens
@@ -3350,8 +3767,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   // bypassed) while finance tiles sum the display amount. Decisions run
   // through PATCH; creation is always the initial state.
   if (role !== "app") {
-    if (resource === "withdrawals") {
-      (body as Record<string, unknown>).status = "requested";
+    if (resource === "sellers") {
+      (body as Record<string, unknown>).kycStatus = "pending";
+      (body as Record<string, unknown>).gstStatus = "pending";
     } else if (resource === "refunds") {
       (body as Record<string, unknown>).status = "requested";
     } else if (resource === "promotions") {
@@ -3373,6 +3791,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       appScopedBody = { id: raw.id, ...sanitizeStorefrontBannerForApp(raw, appUser) };
     }
     else if (resource === "sellers") {
+      const documentErr = sellerDocumentInputError(raw.documents);
+      if (documentErr) return NextResponse.json({ error: documentErr }, { status: 400 });
       appScopedBody = sanitizeSellerForApp(raw, appUser);
       const kycErr = kycFormatError(appScopedBody);
       if (kycErr) return NextResponse.json({ error: kycErr }, { status: 400 });
@@ -3410,13 +3830,37 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // payout requests come only from the transactional wallet endpoint.
     // Order ownership guard: sellerUsername must not be spoofable (now excluded from whitelist)
   }
+  if (role !== "app" && resource === "messages") {
+    const raw = body as Record<string, unknown>;
+    const staffMessage = sanitizeMessageForStaff(raw, session.name);
+    if (!staffMessage.threadId) return NextResponse.json({ error: "threadId is required" }, { status: 400 });
+    if (!staffMessage.body || String(staffMessage.body).length > 4000) {
+      return NextResponse.json({ error: "Reply is required and must be at most 4000 characters" }, { status: 400 });
+    }
+    try {
+      const gdb = (await resolveDb()) as any;
+      if (!gdb) return NextResponse.json({ error: "Could not verify the support thread" }, { status: 503 });
+      const ticket = await gdb.supportTicket.findUnique({ where: { id: String(staffMessage.threadId) }, select: { id: true } });
+      if (!ticket) return NextResponse.json({ error: "Support thread not found" }, { status: 404 });
+    } catch {
+      return NextResponse.json({ error: "Could not verify the support thread" }, { status: 503 });
+    }
+    appScopedBody = staffMessage;
+  }
 
   const payload =
     resource === "admins"
       ? cleanAdminInput(body, role, true, { id: session.sub, loginId: session.loginId })
       : appScopedBody ?? body;
   if (payload instanceof NextResponse) return payload;
-  let cleanPayloadPost: Record<string, unknown> = normalizeRelationArrays(payload as Record<string, unknown>);
+  const cleanPayloadPost: Record<string, unknown> = normalizeRelationArrays(payload as Record<string, unknown>);
+  if (resource === "sellers") {
+    const documentWrite = cleanPayloadPost.documents;
+    if (documentWrite && typeof documentWrite === "object" && !Array.isArray(documentWrite)) {
+      const nested = documentWrite as Record<string, unknown>;
+      if (Array.isArray(nested.create)) nested.create = sanitizeSellerDocuments(nested.create);
+    }
+  }
   if (resource === "users") {
     const blockedPost = new Set(["walletBalance", "loyaltyPoints", "passwordHash"]);
     for (const k of Object.keys(cleanPayloadPost)) if (blockedPost.has(k)) delete (cleanPayloadPost as any)[k];
@@ -3450,6 +3894,24 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           const resetStatus = ["rejected", "suspended", "pending"].includes(String(existing.kycStatus));
           const { score: _dropScore, productsCount: _dropCount, totalSales: _dropSales, rating: _dropRating, reviewCount: _dropReviews, joinedAt: _dropJoined, ...resubmit } = cleanPayloadPost as Record<string, unknown>;
           void _dropScore; void _dropCount; void _dropSales; void _dropRating; void _dropReviews; void _dropJoined;
+          const rawSellerPost = (role === "app" ? body : {}) as Record<string, unknown>;
+          const protectedChanged = SELLER_PROTECTED_FIELDS
+            .filter((key) => key !== "documents")
+            .some((key) => {
+              const serverStamped = key === "phone" || key === "email";
+              if (!serverStamped && rawSellerPost[key] === undefined) return false;
+              return resubmit[key] !== undefined && String(resubmit[key] ?? "") !== String((existing as Record<string, unknown>)[key] ?? "");
+            });
+          for (const key of SELLER_PROTECTED_FIELDS) {
+            if (key === "documents") continue;
+            const serverStamped = key === "phone" || key === "email";
+            if (!serverStamped && rawSellerPost[key] === undefined) delete resubmit[key];
+          }
+          const nestedDocuments = cleanPayloadPost.documents as { create?: unknown[] } | undefined;
+          const documentsSubmitted = Array.isArray(nestedDocuments?.create) && nestedDocuments.create.length > 0;
+          if (String(existing.kycStatus) === "approved" && (protectedChanged || documentsSubmitted)) {
+            return NextResponse.json({ error: "Approved KYC evidence is locked. Request re-verification instead of resubmitting identity, payout, or document data." }, { status: 409 });
+          }
           const patch = { ...resubmit, kycStatus: resetStatus ? "pending" : existing.kycStatus, gstStatus: resetStatus ? "pending" : existing.gstStatus, submittedAt: new Date().toISOString() };
           const row = await prisma.seller.update({ where: { id: String(cleanPayloadPost.id) }, data: patch });
           await writeAuditSafe({ action: "data.create", entity: resource, entityId: String(row.id ?? ""), details: "Seller KYC resubmitted (upsert)", adminName: session.name, ip: getClientIp(request) });
@@ -3722,6 +4184,9 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     if (resource === "disputes" && role === "moderator") {
       return NextResponse.json({ error: "Moderators can triage disputes — deleting them needs a manager." }, { status: 403 });
     }
+    if (resource === "messages" && role === "moderator") {
+      return NextResponse.json({ error: "Support messages are immutable for moderators. Dismiss the report instead." }, { status: 403 });
+    }
   }
 
   const { id } = await request.json();
@@ -3843,22 +4308,50 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
       // provably-unique display name; other statuses (active, deleted) untouched.
       if (resource === "blocked") {
         try {
-          const rec = await prisma.blockedUser.findUnique({ where: { id: String(id) } }).catch(() => null);
-          const key = String((rec as { userName?: unknown } | null)?.userName ?? "").trim();
-          if (key) {
-            const byUsername = await prisma.user.findUnique({ where: { username: key } }).catch(() => null);
-            let target: { id: string; status: string } | null = (byUsername as { id: string; status: string } | null) ?? null;
-            if (!target) {
-              const sameName = await prisma.user.count({ where: { name: key } }).catch(() => 2);
-              if (sameName === 1) {
-                target = (await prisma.user.findFirst({ where: { name: key } }).catch(() => null)) as typeof target;
+          const unblocked = await prisma.$transaction(async (tx: any) => {
+            const rec = await tx.blockedUser.findUnique({ where: { id: String(id) } });
+            if (!rec) return null;
+            const key = String((rec as { userName?: unknown }).userName ?? "").trim();
+            let target: { id: string; status: string } | null = null;
+            if (key) {
+              target = await tx.user.findUnique({ where: { username: key }, select: { id: true, status: true } });
+              if (!target) {
+                const sameName = await tx.user.count({ where: { name: key } });
+                if (sameName === 1) {
+                  target = await tx.user.findFirst({ where: { name: key }, select: { id: true, status: true } });
+                }
               }
             }
-            if (target && ["banned", "suspended"].includes(String(target.status ?? ""))) {
-              await prisma.user.update({ where: { id: target.id }, data: { status: "active" } }).catch(() => {});
+            const moderationBlock = await tx.block.findUnique({
+              where: { id: `mod_${String(id)}` },
+              select: { id: true, blockerUsername: true },
+            });
+            if (moderationBlock) await tx.block.delete({ where: { id: moderationBlock.id } });
+            await tx.blockedUser.delete({ where: { id: String(id) } });
+            const remaining = key
+              ? await tx.blockedUser.count({ where: { userName: key } })
+              : 0;
+            if (target && remaining === 0 && ["banned", "suspended"].includes(String(target.status ?? ""))) {
+              await tx.user.update({ where: { id: target.id }, data: { status: "active" } });
             }
-          }
-        } catch {}
+            return { target: key, counterpart: String(moderationBlock?.blockerUsername ?? "") };
+          });
+          if (!unblocked) return NextResponse.json({ error: "Blocked user row not found" }, { status: 404 });
+          const cacheUsers = [unblocked.target, unblocked.counterpart].filter(Boolean);
+          await Promise.all(cacheUsers.map((username) => invalidateCache(cacheKey("chat", "threads-v3", username))))
+            .catch((error) => console.error("[chat-unblock-cache]", error));
+          await writeAuditSafe({
+            action: "moderation.unblock",
+            entity: resource,
+            entityId: String(id),
+            details: "Removed moderation block and restored eligible account status",
+            adminName: session.name,
+            ip: getClientIp(request),
+          });
+          return NextResponse.json({ success: true });
+        } catch {
+          return NextResponse.json({ error: "Unblock failed — moderation state was left unchanged." }, { status: 503 });
+        }
       }
       // Hard-delete orphan guards: money/social rows key by raw username
       // strings with zero FK constraints, so physical deletes must be

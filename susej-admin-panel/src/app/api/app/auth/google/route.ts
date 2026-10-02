@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { PrismaClient } from "@/generated/prisma/client";
 import { getPrisma } from "@/lib/db";
 import { createAppSession, toAppUser } from "@/lib/app-auth";
 import { getClientIp } from "@/lib/auth";
@@ -57,7 +58,7 @@ function canonicalEmail(email: string): string {
   return `${canonLocal}@${canonDomain}`;
 }
 // -1 on check failure: mint paths fail CLOSED (503, no mint).
-async function canonicalFarmCount(prisma: any, canonical: string): Promise<number> {
+async function canonicalFarmCount(prisma: PrismaClient, canonical: string): Promise<number> {
   const domain = canonical.split("@")[1] ?? "";
   const weekAgo = new Date(Date.now() - 7 * 24 * 3600 * 1000);
   try {
@@ -148,16 +149,28 @@ export async function POST(req: NextRequest) {
         }
       }
       try {
-        user = await prisma.user.create({
-          data: {
-            name,
-            email,
-            username,
-            role: "buyer",
-            status: "active",
-            walletBalance: 500,
-            joinedAt: new Date(),
-          },
+        user = await prisma.$transaction(async (tx) => {
+          const created = await tx.user.create({
+            data: {
+              name,
+              email,
+              username,
+              role: "buyer",
+              status: "active",
+              walletBalance: 500,
+              joinedAt: new Date(),
+            },
+          });
+          await tx.walletTransaction.create({
+            data: {
+              username: created.username!,
+              title: "Welcome bonus",
+              amount: 500,
+              detail: "Signup credit",
+              ts: new Date(),
+            },
+          });
+          return created;
         });
         recordGoogleMint(getClientIp(req));
       } catch (e: unknown) {
@@ -171,18 +184,6 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ error: "Could not create account" }, { status: 500 });
         }
       }
-      // Ledger welcome bonus (same as OTP/email path)
-      try {
-        await prisma.walletTransaction.create({
-          data: {
-            username: user.username ?? username,
-            title: "Welcome bonus",
-            amount: 500,
-            detail: "Signup credit",
-            ts: new Date(),
-          },
-        });
-      } catch {}
     }
 
     const token = await createAppSession(user.id, user.username!);
@@ -258,9 +259,10 @@ export async function POST(req: NextRequest) {
   // address's next owner. Rows carry googleSub once the column migration
   // lands; until then every access is guarded to degrade to email-only.
   // Banned accounts never mint, on either branch.
+  const database = prisma;
   async function findBySub(s: string) {
     try {
-      return await (prisma as any).user.findFirst({ where: { googleSub: s } });
+      return await database.user.findFirst({ where: { googleSub: s } });
     } catch {
       return undefined;
     }
@@ -292,7 +294,7 @@ export async function POST(req: NextRequest) {
     // existing binding can conflict with an empty one).
     if (sub) {
       try {
-        await (prisma as any).user.updateMany({
+        await prisma.user.updateMany({
           where: { id: user.id, googleSub: null },
           data: { googleSub: sub },
         });
@@ -326,23 +328,35 @@ export async function POST(req: NextRequest) {
       }
     }
     try {
-      user = await prisma.user.create({
-        data: {
-          name,
-          email,
-          username,
-          avatar,
-          role: "buyer",
-          status: "active",
-          walletBalance: 500,
-          joinedAt: new Date(),
-        },
+      user = await prisma.$transaction(async (tx) => {
+        const created = await tx.user.create({
+          data: {
+            name,
+            email,
+            username,
+            avatar,
+            role: "buyer",
+            status: "active",
+            walletBalance: 500,
+            joinedAt: new Date(),
+          },
+        });
+        await tx.walletTransaction.create({
+          data: {
+            username: created.username!,
+            title: "Welcome bonus",
+            amount: 500,
+            detail: "Signup credit",
+            ts: new Date(),
+          },
+        });
+        return created;
       });
       recordGoogleMint(getClientIp(req));
       // Bind subject at birth (guarded: no-op until the column migration lands).
       if (sub) {
         try {
-          await (prisma as any).user.updateMany({
+          await prisma.user.updateMany({
             where: { id: user.id, googleSub: null },
             data: { googleSub: sub },
           });
@@ -358,17 +372,6 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Could not create account" }, { status: 500 });
       }
     }
-    try {
-      await prisma.walletTransaction.create({
-        data: {
-          username: user.username ?? username,
-          title: "Welcome bonus",
-          amount: 500,
-          detail: "Signup credit",
-          ts: new Date(),
-        },
-      });
-    } catch {}
   }
 
   const token = await createAppSession(user.id, user.username!);

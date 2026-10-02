@@ -81,6 +81,8 @@ export interface ShopProfileRealStats {
   rating?: number;
   reviewsCount?: number;
   verified?: boolean;
+  /** The bio the account actually has. Never invented - an absent bio is ''. */
+  bio?: string;
 }
 
 export interface ShopProfile {
@@ -205,7 +207,11 @@ export function generateShopProfile(
       username,
       name: name || username,
       tagline: `${label} storefront`,
-      bio: `${label} storefront on susej - browse the catalog below or message the seller.`,
+      // No invented copy. A generated "browse the catalog below" line was
+      // rendered to every VISITOR as the seller's bio while the seller saw an
+      // empty one on their own profile - fabricated content that also made two
+      // views of the same account disagree.
+      bio: typeof realStats?.bio === 'string' ? realStats.bio : '',
       verified: realStats?.verified === true,
       rating: typeof realStats?.rating === 'number' ? realStats.rating : 0,
       reviews: `${realStats?.reviewsCount ?? 0} Reviews`,
@@ -292,7 +298,8 @@ export function generateShopProfile(
     username,
     name: name || username,
     tagline: `${label} storefront`,
-    bio: `${name || username} sells in ${label} on susej. Tap below to browse the full catalog, or message the seller for details.`,
+    // Only what the seller actually wrote (see the empty-storefront note).
+    bio: typeof realStats?.bio === 'string' ? realStats.bio : '',
     verified: realStats?.verified === true,
     rating: typeof realStats?.rating === 'number' ? realStats.rating : 0,
     reviews: `${realStats?.reviewsCount ?? 0} Reviews`,

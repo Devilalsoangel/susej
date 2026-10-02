@@ -5,6 +5,7 @@ import { getAppUser } from "@/lib/app-auth";
 import { getClientIp } from "@/lib/auth";
 import { checkWriteRate } from "@/lib/rate-limit";
 import { applyPriceOverrides, getPackage } from "@/lib/promotions/catalog";
+import { toMillis } from "@/lib/dates";
 import { notifyUser } from "@/lib/notifications";
 
 /** GET /api/app/promotions — ACTIVE paid campaigns only (public read-only).
@@ -57,8 +58,10 @@ export async function GET(req: NextRequest) {
       postTitle: p.postTitle,
       postImage: p.postImage,
       status: p.status,
-      startsAt: p.startsAt ? p.startsAt.getTime() : null,
-      endsAt: p.endsAt ? p.endsAt.getTime() : null,
+      // Cached rows come back JSON-decoded (Date -> ISO string), so the window
+      // must be normalized here; `.getTime()` on a cached value 500s the route.
+      startsAt: toMillis(p.startsAt),
+      endsAt: toMillis(p.endsAt),
     })),
   });
 }
@@ -86,7 +89,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Too many requests — slow down" }, { status: 429 });
   }
 
-  let body: { packageId?: string; postId?: string; checkoutRef?: string; discountedPrice?: unknown };
+  let body: { packageId?: string; postId?: string; checkoutRef?: string; discountedPrice?: unknown; quotedPrice?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -209,6 +212,13 @@ export async function POST(req: NextRequest) {
         },
       },
       { status: 200 }
+    );
+  }
+  const quotedPrice = Number(body.quotedPrice);
+  if (!Number.isInteger(quotedPrice) || quotedPrice !== amount) {
+    return NextResponse.json(
+      { error: "Promotion price changed. Review the new price before paying.", currentPrice: amount },
+      { status: 409 }
     );
   }
 

@@ -151,9 +151,12 @@ const [promo, setPromo] = useState<AppliedPromo | null>(null);
 
   const saveForLater = (item: CartItem) => {
     removeFromCart(item.listingId, { variantLabel: item.variantLabel, bundleId: item.bundleId });
+    const post = posts.find((p) => p.id === item.listingId);
+    const imageUrl = item.imageUrl || post?.image || post?.images?.[0];
+    const snapshot = { ...item, ...(imageUrl ? { imageUrl } : {}), savedAt: Date.now() };
     setSaved((prev) => {
       const key = cartLineKey(item);
-      const next = [{ ...item, savedAt: Date.now() }, ...prev.filter((s) => cartLineKey(s) !== key)];
+      const next = [snapshot, ...prev.filter((s) => cartLineKey(s) !== key)];
       persistSaved(next);
       return next;
     });

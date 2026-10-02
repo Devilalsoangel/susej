@@ -19,6 +19,7 @@
 import { randomBytes, scryptSync } from "node:crypto";
 import type { Prisma } from "../src/generated/prisma/client";
 import { getPrisma } from "../src/lib/db";
+import { protectTotpSecret, deriveTotpSecret } from "../src/lib/auth";
 import {
   seedAdmins,
   seedCategories,
@@ -53,16 +54,13 @@ async function main() {
 
   // ---- Admin accounts ----
 
+  const adminPassword = process.env.SUSEJ_SEED_ADMIN_PASSWORD;
+  const totpSecret = String(process.env.SUSEJ_SEED_ADMIN_2FA_SECRET ?? "").replace(/[\s-]/g, "").toUpperCase();
+  if (!adminPassword || !totpSecret || !process.env.TWO_FACTOR_ENCRYPTION_KEY) {
+    throw new Error("SUSEJ_SEED_ADMIN_PASSWORD, SUSEJ_SEED_ADMIN_2FA_SECRET, and TWO_FACTOR_ENCRYPTION_KEY are required before seeding admin accounts.");
+  }
+
   for (const a of seedAdmins) {
-    const adminPassword = a.password ?? process.env.SUSEJ_SEED_ADMIN_PASSWORD;
-    if (!adminPassword) {
-      throw new Error("SUSEJ_SEED_ADMIN_PASSWORD is required before seeding admin accounts.");
-    }
-    const twoFactorEnabled = a.loginId === (process.env.SUSEJ_SEED_2FA_ADMIN_ID ?? seedAdmins[0]?.loginId);
-    const twoFactorCode = twoFactorEnabled ? process.env.SUSEJ_SEED_ADMIN_2FA : null;
-    if (twoFactorEnabled && !twoFactorCode) {
-      throw new Error("SUSEJ_SEED_ADMIN_2FA is required for the seeded 2FA admin.");
-    }
     await prisma.admin.upsert({
       where: { loginId: a.loginId },
       update: {},
@@ -74,8 +72,8 @@ async function main() {
         passwordHash: hashPassword(adminPassword),
         role: a.role,
         status: a.status,
-        twoFactorEnabled,
-        twoFactorCode: twoFactorCode ? hashPassword(twoFactorCode) : null,
+        twoFactorEnabled: true,
+        twoFactorCode: protectTotpSecret(deriveTotpSecret(totpSecret, a.loginId)),
         createdAt: toDate("2024-01-01"),
       },
     });

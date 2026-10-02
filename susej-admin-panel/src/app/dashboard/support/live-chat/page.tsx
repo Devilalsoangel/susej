@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Avatar } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/shared/empty-state";
+import { ErrorState } from "@/components/shared/error-state";
+import { toast } from "@/components/ui/toast";
 import { useDbResource } from "@/hooks/use-db-resource";
 import { apiPost } from "@/lib/api-mutate";
 import { formatDate } from "@/lib/utils";
@@ -46,8 +48,10 @@ export default function LiveChatPage() {
   const [selected, setSelected] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [search, setSearch] = useState("");
+  const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
   const adminUser = useAuthStore((s) => s.user);
-  const { data: messageRows, refresh } = useDbResource<MessageRow>("messages");
+  const { data: messageRows, error, refresh } = useDbResource<MessageRow>("messages");
 
   useEffect(() => {
     const t = setInterval(() => refresh(), 15000);
@@ -99,7 +103,9 @@ export default function LiveChatPage() {
   );
 
   async function send(text: string) {
-    if (!activeChat || !text.trim()) return;
+    if (!activeChat || !text.trim() || sendingRef.current) return;
+    sendingRef.current = true;
+    setSending(true);
     try {
       await apiPost("messages", {
         threadId: activeChat,
@@ -109,9 +115,13 @@ export default function LiveChatPage() {
         createdAt: new Date().toISOString(),
       });
       setMessage("");
-      refresh();
+      await refresh();
+      toast.success("Reply sent.");
     } catch (e) {
-      console.error(e);
+      toast.error(e instanceof Error ? e.message : "Reply failed — the draft was preserved.");
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
     }
   }
 
@@ -123,6 +133,9 @@ export default function LiveChatPage() {
         <h1 className="text-2xl font-bold text-[#18181B] ">Live Chat</h1>
         <p className="mt-1 text-sm text-gray-500">Real-time customer support chat</p>
       </div>
+      {error ? (
+        <ErrorState title="Live chat unavailable" message={error} onRetry={() => void refresh()} />
+      ) : (
       <div className="flex gap-4">
         <Card className="w-80 shrink-0">
           <CardHeader>
@@ -200,10 +213,11 @@ export default function LiveChatPage() {
                   <Input
                     placeholder="Type a message..."
                     value={message}
+                    disabled={sending}
                     onChange={(e) => setMessage(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter" && message.trim()) { send(message); } }}
+                    onKeyDown={(e) => { if (e.key === "Enter" && message.trim() && !sending) { void send(message); } }}
                   />
-                  <Button variant="primary" size="sm" onClick={() => send(message)}>
+                  <Button variant="primary" size="sm" disabled={!message.trim() || sending} onClick={() => void send(message)}>
                     <Send className="h-4 w-4" />
                   </Button>
                 </div>
@@ -212,6 +226,7 @@ export default function LiveChatPage() {
           </CardContent>
         </Card>
       </div>
+      )}
     </div>
   );
 }

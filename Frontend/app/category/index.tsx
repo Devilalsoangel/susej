@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { View, Text, TextInput, ScrollView, TouchableOpacity, Image, Dimensions, Keyboard } from 'react-native';
 import { router } from 'expo-router';
-import { ChevronLeftIcon, SearchIcon } from '../../utils/icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { ChevronLeftIcon, SearchIcon, BellIcon, ChevronRightIcon } from '../../utils/icons';
 import { colors, CATEGORIES } from '../../utils/theme';
 import { usePosts } from '../../contexts/PostContext';
+import { useAuth } from '../../contexts/AuthContext';
 import { resolveListingImage, hasRealImage } from '../../utils/productImages';
 import { serverApi } from '../../utils/serverApi';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -11,6 +13,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 const { width } = Dimensions.get('window');
 const TILE_W = (width - 40 - 24) / 3; // Figma 1:2198: 3-col bento, 350 content, ~11.5 gap
 const CARD_W = 169;
+const RECENT_KEY_BASE = '@susej_recent_searches';
 
 export default function CategoryHubScreen() {
   const [search, setSearch] = useState('');

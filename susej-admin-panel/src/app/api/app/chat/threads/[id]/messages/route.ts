@@ -48,7 +48,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     where: { id: { in: messages.map((m) => m.id) }, receiver: username, status: { not: "seen" } },
     data: { status: "seen" },
   });
-  if (seenResult.count > 0) await invalidateCache(cacheKey("chat", "threads-v2", username));
+  if (seenResult.count > 0) await invalidateCache(cacheKey("chat", "threads-v3", username));
   return NextResponse.json({
     threadId: id,
     hasMore: page.hasMore,
@@ -149,8 +149,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   });
   await invalidateCache(
     cacheKey("chat", "messages-v2", id, "latest"),
-    cacheKey("chat", "threads-v2", username),
-    cacheKey("chat", "threads-v2", receiver),
+    cacheKey("chat", "threads-v3", username),
+    cacheKey("chat", "threads-v3", receiver),
   );
   return NextResponse.json(
     {
@@ -245,8 +245,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   }
   await invalidateCache(
     cacheKey("chat", "messages-v2", id, "latest"),
-    cacheKey("chat", "threads-v2", thread.participantA),
-    cacheKey("chat", "threads-v2", thread.participantB),
+    cacheKey("chat", "threads-v3", thread.participantA),
+    cacheKey("chat", "threads-v3", thread.participantB),
   );
   return NextResponse.json({ ok: true, status: next });
 }

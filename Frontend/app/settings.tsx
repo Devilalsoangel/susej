@@ -94,6 +94,20 @@ const sections: SettingsSection[] = [
     title: 'MARKETPLACE',
     items: [
       { label: 'My Orders', icon: 'orders', route: '/orders' },
+      // WAS DEAD CODE. `PERMS` (below) declared a "Location" row - correct title,
+      // correct subtitle, wired to a real permission request - and it was never
+      // rendered, because the renderer only walks `section.items`. A buyer who
+      // skipped onboarding therefore had NO way to set or change their location
+      // from inside the app, at all. This row is the real entry point, and
+      // /my-location actually persists the choice.
+      {
+        label: 'Location',
+        // The live value is injected in the component (see visibleSections) -
+        // `sections` is module scope, so it cannot read the user here.
+        subtitle: 'Set your city for nearby sellers',
+        icon: 'shipping',
+        route: '/my-location',
+      },
       { label: 'Shipping Address', icon: 'shipping', route: '/address-book' },
       { label: 'Payment Methods', icon: 'payment', route: '/payment-methods' },
     ],
@@ -109,16 +123,25 @@ export default function SettingsScreen() {
   const [locale, setLocaleState] = useState<AppLocale>(getLocale());
   const { themeMode, setThemeMode } = useAppearance();
   const { settings, updateSetting } = useSettings();
-  const { logoutAndReset } = useAuth();
+  const { logoutAndReset, user } = useAuth();
   const insets = useSafeAreaInsets();
   const normalizedSearch = search.trim().toLowerCase();
+  // The Location row used to be invisible, so a user who skipped onboarding had
+  // no way to see or set their city from inside the app. Now it is rendered AND
+  // it states the stored value, so it is obvious the app knows where they are.
+  const currentLocation = typeof user?.location === 'string' ? user.location.trim() : '';
+  const locationSubtitle = currentLocation
+    ? `Browsing near ${currentLocation}`
+    : 'Set your city for nearby sellers';
   const visibleSections = sections
     .map((section) => ({
       ...section,
-      items: section.items.filter((item) => {
-        if (!normalizedSearch) return true;
-        return `${item.label} ${item.subtitle ?? ''}`.toLowerCase().includes(normalizedSearch);
-      }),
+      items: section.items
+        .map((item) => (item.label === 'Location' ? { ...item, subtitle: locationSubtitle } : item))
+        .filter((item) => {
+          if (!normalizedSearch) return true;
+          return `${item.label} ${item.subtitle ?? ''}`.toLowerCase().includes(normalizedSearch);
+        }),
     }))
     .filter((section) => section.items.length > 0 || (section.showToggle && normalizedSearch.includes(section.title.toLowerCase())));
 

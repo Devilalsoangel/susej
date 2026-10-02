@@ -22,7 +22,7 @@ function getStatusColor(status: keyof typeof STATUS_LABELS): string {
 
 export default function OrdersScreen() {
   const insets = useSafeAreaInsets();
-  const { orders, loaded: ordersLoaded, cancelOrder } = useOrders();
+  const { orders, loaded: ordersLoaded, serverError: ordersServerError, refreshOrders, cancelOrder } = useOrders();
   const { user } = useAuth();
   const myStore = (user?.username ?? '').toLowerCase();
   const STATUS_TABS = ['All', 'In Progress', 'Delivered', 'Cancelled'] as const;
@@ -75,6 +75,19 @@ export default function OrdersScreen() {
       {!ordersLoaded && (
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator size="large" color={colors.primaryContainer} />
+        </View>
+      )}
+
+      {ordersLoaded && ordersServerError && (
+        <View className="mx-5 mb-3 px-4 py-3 rounded-figma-16" style={{ backgroundColor: colors.surfaceContainer }}>
+          <Text className="font-inter-500 text-textPrimary" style={{ fontSize: 13, lineHeight: 18 }}>
+            We couldn&apos;t refresh your orders. Anything saved on this device may be out of date.
+          </Text>
+          <TouchableOpacity className="mt-2 self-start" onPress={refreshOrders} accessibilityRole="button" accessibilityLabel="Retry loading orders">
+            <Text className="font-inter-600 text-primary" style={{ fontSize: 13, lineHeight: 18 }}>
+              Try again
+            </Text>
+          </TouchableOpacity>
         </View>
       )}
 
@@ -207,29 +220,51 @@ export default function OrdersScreen() {
         )}
         ListEmptyComponent={
           <View className="items-center justify-center py-20">
-            <Text className="font-inter-600 text-textPrimary mb-2" style={{ fontSize: 18, lineHeight: 28 }}>
-              {orders.length > 0 && statusTab !== 'All' ? `No ${statusTab.toLowerCase()} orders` : 'No orders yet'}
-            </Text>
-            {orders.length > 0 && statusTab !== 'All' ? (
-              <TouchableOpacity
-                className="px-6 py-3 rounded-full"
-                style={{ backgroundColor: colors.surfaceContainer }}
-                onPress={() => setStatusTab('All')}
-              >
-                <Text className="font-inter-600 text-primary" style={{ fontSize: 14, lineHeight: 16 }}>
-                  Show all orders
+            {ordersServerError ? (
+              <>
+                <Text className="font-inter-600 text-textPrimary mb-2 text-center" style={{ fontSize: 18, lineHeight: 28 }}>
+                  Orders couldn&apos;t load
                 </Text>
-              </TouchableOpacity>
+                <Text className="font-inter-400 text-textSecondary text-center mb-4" style={{ fontSize: 14, lineHeight: 20 }}>
+                  This does not mean you have no orders. Check your connection and try again.
+                </Text>
+                <TouchableOpacity
+                  className="px-6 py-3 rounded-full"
+                  style={{ backgroundColor: colors.primaryContainer }}
+                  onPress={refreshOrders}
+                >
+                  <Text className="font-inter-600 text-white" style={{ fontSize: 14, lineHeight: 16 }}>
+                    Try again
+                  </Text>
+                </TouchableOpacity>
+              </>
             ) : (
-              <TouchableOpacity
-                className="px-6 py-3 rounded-full"
-                style={{ backgroundColor: colors.primaryContainer }}
-                onPress={() => router.push('/(tabs)/feed')}
-              >
-                <Text className="font-inter-600 text-white" style={{ fontSize: 14, lineHeight: 16 }}>
-                  Browse Feed
+              <>
+                <Text className="font-inter-600 text-textPrimary mb-2" style={{ fontSize: 18, lineHeight: 28 }}>
+                  {orders.length > 0 && statusTab !== 'All' ? `No ${statusTab.toLowerCase()} orders` : 'No orders yet'}
                 </Text>
-              </TouchableOpacity>
+                {orders.length > 0 && statusTab !== 'All' ? (
+                  <TouchableOpacity
+                    className="px-6 py-3 rounded-full"
+                    style={{ backgroundColor: colors.surfaceContainer }}
+                    onPress={() => setStatusTab('All')}
+                  >
+                    <Text className="font-inter-600 text-primary" style={{ fontSize: 14, lineHeight: 16 }}>
+                      Show all orders
+                    </Text>
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity
+                    className="px-6 py-3 rounded-full"
+                    style={{ backgroundColor: colors.primaryContainer }}
+                    onPress={() => router.push('/(tabs)/feed')}
+                  >
+                    <Text className="font-inter-600 text-white" style={{ fontSize: 14, lineHeight: 16 }}>
+                      Browse Feed
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              </>
             )}
           </View>
         }

@@ -1,11 +1,11 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, Image, ActivityIndicator, Alert, TextInput } from 'react-native';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BackIcon, MapPinIcon, ChevronRightIcon, ShopIcon, BagIcon } from '../utils/icons';
 import { colors, formatPrice } from '../utils/theme';
 import { useCart, DELIVERY_FEES, cartLineKey, type CartItem } from '../contexts/CartContext';
-import { useOrders } from '../contexts/OrderContext';
+import { useOrders, type Order } from '../contexts/OrderContext';
 import { resolveListingImage } from '../utils/productImages';
 import { getAppliedPromo, setAppliedPromo, clearAppliedPromo, previewDiscount, type AppliedPromo } from '../utils/redeemedCoupons';
 import { getSelectedAddress, SavedAddress } from './address-book';
@@ -14,10 +14,28 @@ import { getWallet, syncWalletFromServer } from '../utils/walletStore';
 import { serverApi } from '../utils/serverApi';
 import { useAuth } from '../contexts/AuthContext';
 
+type PlacementAck = 'confirmed' | 'rejected' | 'unconfirmed';
+
+const waitForPlacementAck = async (
+  readOrders: () => Order[],
+  localOrderId: string,
+  timeoutMs = 15000
+): Promise<PlacementAck> => {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const row = readOrders().find((o) => o.id === localOrderId);
+    if (row?.serverId) return 'confirmed';
+    if (row?.syncFailed) return 'rejected';
+    if (row?.syncPending) return 'unconfirmed';
+    if (Date.now() >= deadline) return 'unconfirmed';
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+};
+
 
 export default function CheckoutScreen() {
   const insets = useSafeAreaInsets();
-  const { cart: storeCart, subtotal: storeSubtotal, clearCart, updatePrices, loaded: cartLoaded } = useCart();
+  const { cart: storeCart, subtotal: storeSubtotal, clearCart, updatePrices, removeFromCart, loaded: cartLoaded } = useCart();
   // Accepted-offer mode (chat deal → checkout): route params carry the struck
   // deal. The synthetic single-item cart ISOLATES the deal — the stored cart
   // is never touched, mixed, or cleared by an offer purchase (BUYER-C1).
@@ -72,7 +90,13 @@ export default function CheckoutScreen() {
   const feeConfirmKey = offerMode ? `${strParam(offerParams.offerListing)}:${strParam(offerParams.offerThread)}:${strParam(offerParams.offerMsg)}` : null;
   const cart = offerItem ? [offerItem] : storeCart;
   const subtotal = offerItem ? offerPrice : storeSubtotal;
-  const { placeOrders } = useOrders();
+  const { placeOrders, orders, retryOrderSync } = useOrders();
+  // Live mirror of the order rows: the placement ack lands in context AFTER
+  // placeOrders returns, so the cart clear below has to read the newest rows.
+  const ordersRef = useRef<Order[]>(orders);
+  useEffect(() => {
+    ordersRef.current = orders;
+  }, [orders]);
   const { user } = useAuth();
   const username = user?.username ?? null;
   const [loaded, setLoaded] = useState(false);
@@ -87,6 +111,63 @@ export default function CheckoutScreen() {
   // Live wallet figure for the payment row — the saved payment snapshot goes
   // stale the moment money moves anywhere else.
   const [walletBalance, setWalletBalance] = useState<number | null>(null);
+  // --- Second-charge firewall ------------------------------------------------
+  // An ambiguous placement ack (offline, or our server unreachable mid-flight)
+  // leaves the order row syncPending with an UNKNOWN money state: the charge
+  // may or may not have committed. The cart deliberately keeps every line (that
+  // is what lets a rejected order be rebuilt by hand) and placeOrders mints a
+  // FRESH orderNumber per call — so a second "Place Order" on those lines is a
+  // NEW charge, not a retry. Only retryOrderSync re-POSTs the same
+  // orderNumber, which the server dedupes. So: refuse the re-submit while a
+  // placement covering any of these lines is unconfirmed, and hand the buyer
+  // the idempotent check instead. Derived from the persisted order rows, so it
+  // survives an app restart mid-flight (the pending row is on disk).
+  const unresolved = useMemo(() => {
+    if (offerMode) return null;
+    const stuck = orders.filter((o) => o.syncPending === true && !o.serverId);
+    if (!stuck.length || cart.length === 0) return null;
+    for (const item of cart) {
+      const key = cartLineKey(item);
+      const hit = stuck.find((o) => o.items.some((i) => cartLineKey(i) === key));
+      if (hit) return { orderId: hit.id, item, name: item.name };
+    }
+    return null;
+  }, [orders, cart, offerMode]);
+  const [checkingPending, setCheckingPending] = useState(false);
+
+  // Idempotent status check for the unresolved placement: same orderNumber, so
+  // the server can only ever confirm the ORIGINAL order — never debit twice.
+  const checkPendingOrder = async () => {
+    const pending = unresolved;
+    if (!pending || checkingPending) return;
+    setCheckingPending(true);
+    try {
+      const settled = await retryOrderSync(pending.orderId).catch(() => false);
+      if (settled) {
+        // It really did go through: drop exactly the line it covered (other
+        // cart lines are unrelated purchases and must survive).
+        removeFromCart(pending.item.listingId, {
+          variantLabel: pending.item.variantLabel,
+          bundleId: pending.item.bundleId,
+        });
+        Alert.alert(
+          'Order confirmed',
+          'Your earlier order did go through — no second charge. It is in your orders now.',
+          [{ text: 'View order', onPress: () => router.replace(`/order/${pending.orderId}`) }]
+        );
+      } else {
+        // Still ambiguous, or the server refused it (that flips the row to
+        // syncFailed and drops the block by itself). Say which we can prove:
+        // never claim a failure we did not observe.
+        Alert.alert(
+          'Still unconfirmed',
+          'We could not confirm that order yet, so it is safe to leave it — nothing was charged twice. Open the order from your orders list to retry it.'
+        );
+      }
+    } finally {
+      setCheckingPending(false);
+    }
+  };
 
   useFocusEffect(
     useCallback(() => {
@@ -278,6 +359,27 @@ export default function CheckoutScreen() {
 
   const handlePlaceOrder = async () => {
     if (placingRef.current || cart.length === 0) return;
+    // Lock BEFORE the first await: a second tap inside the wallet refresh /
+    // listing-revalidation window used to run two full placements (two debits
+    // when the balance covered both).
+    placingRef.current = true;
+    setPlacing(true);
+    try {
+    // Second-charge firewall, BEFORE any await: an earlier placement covering
+    // these lines is still unconfirmed (money state unknown). Paying again
+    // would mint a second order and a second debit — refuse and offer the
+    // idempotent check instead of letting the tap through.
+    if (unresolved) {
+      Alert.alert(
+        'Order still awaiting confirmation',
+        `You already placed “${unresolved.name}” and the server has not confirmed it yet. Paying again here could charge you twice — check that order first.`,
+        [
+          { text: 'Not now', style: 'cancel' },
+          { text: 'Check status', onPress: () => { void checkPendingOrder(); } },
+        ]
+      );
+      return;
+    }
     // Fee-type gate (belt-and-braces behind the disabled button): a typeless
     // deal placed while the live type resolves would charge against a preview
     // the buyer never saw.
@@ -313,8 +415,6 @@ export default function CheckoutScreen() {
         return;
       }
     }
-    setPlacing(true);
-    placingRef.current = true;
     // Industry-standard: revalidate cart prices against server truth BEFORE
     // charging. The cart freezes prices at add-time; a seller edit since then
     // must surface for re-confirmation, never charge silently.
@@ -418,8 +518,6 @@ export default function CheckoutScreen() {
       );
       const gone = fresh.filter((f) => f.gone);
       if (gone.length > 0) {
-        setPlacing(false);
-        placingRef.current = false;
         Alert.alert(
           'No longer available',
           'An item in your cart was sold or removed by the seller. Remove it to continue.'
@@ -430,8 +528,6 @@ export default function CheckoutScreen() {
       if (missing.length > 0) {
         const first = missing[0];
         const name = cart.find((c) => cartLineKey(c) === first.key)?.name ?? 'An item';
-        setPlacing(false);
-        placingRef.current = false;
         Alert.alert(
           'Choose options',
           offerMode
@@ -444,8 +540,6 @@ export default function CheckoutScreen() {
       if (variantGone.length > 0) {
         const first = variantGone[0] as { key: string; variantShort: string };
         const name = cart.find((c) => cartLineKey(c) === first.key)?.name ?? 'An item';
-        setPlacing(false);
-        placingRef.current = false;
         Alert.alert(
           'Variant out of stock',
           `“${first.variantShort}” in “${name}” just went out of stock. Change the variant or remove it to continue.`
@@ -457,8 +551,6 @@ export default function CheckoutScreen() {
         const first = short[0];
         const left = first.stock as number;
         const name = cart.find((c) => cartLineKey(c) === first.key)?.name ?? 'An item';
-        setPlacing(false);
-        placingRef.current = false;
         Alert.alert(
           'Only a few left',
           left <= 0
@@ -491,8 +583,6 @@ export default function CheckoutScreen() {
       } catch {}
       const changed = updatePrices(truth);
       if (changed.length > 0) {
-        setPlacing(false);
-        placingRef.current = false;
         Alert.alert(
           'Prices updated',
           'The seller changed prices on some items in your cart. Review the new total before placing your order.'
@@ -506,8 +596,6 @@ export default function CheckoutScreen() {
       if (offerMode && !offerTypeGiven && offerLiveType && feeConfirmedRef.current !== `${feeConfirmKey}:${offerLiveType}`) {
         const liveFee = feeForPreview(offerLiveType);
         if (liveFee !== rawDelivery) {
-          setPlacing(false);
-          placingRef.current = false;
           setOfferLiveFeeType(offerLiveType);
           Alert.alert(
             'Delivery fee confirmed',
@@ -559,23 +647,30 @@ export default function CheckoutScreen() {
         // so do not synthesize a credit. Re-sync to ensure UI truth.
         void syncWalletFromServer().catch(()=>{});
         Alert.alert('Order failed', 'Could not place order. Please try again.');
-        setPlacing(false);
-        placingRef.current = false;
         return;
       }
-    // The receipt carries the discount estimate (server settles the real
-    // figure); a redeemed loyalty coupon stays spendable until the server
-    // accepts a loyalty code. The promo marker is deliberately KEPT here:
-    // placeOrders returns optimistic rows before the server acks, and a
-    // later syncFailed would strand the buyer with neither order nor promo.
-    // The mount gatekeeper revalidates (and clears) invalid codes, and the
-    // server single-use-enforces spends — a kept promo can never double-spend.
-    // Offer mode skips the cart clear — the stored cart belongs to another
-    // purchase.
+    // The cart is cleared ONLY after the server acknowledges the placement.
+    // Clearing on the optimistic row wiped the cart even when the server
+    // rejected the order (expired coupon, sold item, short balance) and the
+    // buyer had to rebuild it by hand. A rejected/unconfirmed placement keeps
+    // every line; the receipt carries the reason and the retry.
+    // An UNCONFIRMED placement (ambiguous ack — money state unknown) keeps its
+    // lines too, and `unresolved` above now blocks a second charge on them:
+    // the only way forward is the receipt's idempotent retry, never a new
+    // order. Confirmed acks clear the cart as before.
+    // Offer mode never touches the stored cart — the struck deal is a
+    // synthetic single-item cart belonging to another purchase.
     if (!offerMode) {
-      clearCart();
+      const acks = await Promise.all(
+        created.map((o) => waitForPlacementAck(() => ordersRef.current, o.id))
+      );
+      if (acks.every((a) => a === 'confirmed')) clearCart();
     }
     router.replace(`/order/${created[0].id}`);
+    } finally {
+      setPlacing(false);
+      placingRef.current = false;
+    }
   };
 
   if (!loaded || (!offerMode && !cartLoaded)) {
@@ -635,6 +730,34 @@ export default function CheckoutScreen() {
       </View>
 
       <ScrollView className="flex-1" contentContainerStyle={{ paddingBottom: insets.bottom + 190, rowGap: 20 }}>
+        {/* Second-charge firewall: an unconfirmed placement for these very
+            lines is on the books. Never let the pay bar look ordinary here. */}
+        {unresolved && (
+          <View
+            className="mx-5 px-4 py-3"
+            style={{ borderRadius: 20, backgroundColor: colors.warningBg, borderWidth: 1, borderColor: colors.warning + '40' }}
+          >
+            <Text className="font-inter-600" style={{ fontSize: 14, lineHeight: 20, color: colors.textPrimary }}>
+              Order awaiting confirmation
+            </Text>
+            <Text className="font-inter-400 mt-1" style={{ fontSize: 12, lineHeight: 18, color: colors.textSecondary }}>
+              {`You already placed “${unresolved.name}” and the server hasn't confirmed it. Paying again could charge you twice — check that order first.`}
+            </Text>
+            <TouchableOpacity
+              onPress={() => { void checkPendingOrder(); }}
+              disabled={checkingPending}
+              className="mt-3 self-start px-4 py-2 rounded-full"
+              style={{ backgroundColor: checkingPending ? colors.disabled : colors.primaryContainer }}
+              accessibilityRole="button"
+              accessibilityLabel="Check the pending order status"
+            >
+              <Text className="font-inter-600" style={{ fontSize: 13, color: checkingPending ? colors.disabledText : colors.onPrimary }}>
+                {checkingPending ? 'Checking…' : 'Check status'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         {/* Delivery address */}
         <TouchableOpacity
           className="mx-5 rounded-[24px] p-4"
@@ -745,7 +868,7 @@ export default function CheckoutScreen() {
                   </Text>
                 </View>
                 <Text className="text-[14px] font-inter-600 text-textPrimary" style={{ lineHeight: 20 }}>
-                  {formatPrice(item.price * item.quantity)}
+                  {formatPrice(offerMode ? item.price : item.price * item.quantity)}
                 </Text>
               </View>
             ))}
@@ -840,8 +963,8 @@ export default function CheckoutScreen() {
           </View>
           <TouchableOpacity
             className="flex-row items-center justify-center"
-            style={{ height: 55, flex: 1.4, borderRadius: 16, backgroundColor: (placing || resolvingFeeType) ? colors.disabled : colors.primaryContainer, shadowColor: colors.primaryContainer, shadowOffset: { width: 0, height: 4 }, shadowOpacity: (placing || resolvingFeeType) ? 0 : 0.2, shadowRadius: 6, elevation: (placing || resolvingFeeType) ? 0 : 4 }}
-            disabled={placing || resolvingFeeType}
+            style={{ height: 55, flex: 1.4, borderRadius: 16, backgroundColor: (placing || resolvingFeeType || unresolved) ? colors.disabled : colors.primaryContainer, shadowColor: colors.primaryContainer, shadowOffset: { width: 0, height: 4 }, shadowOpacity: (placing || resolvingFeeType || unresolved) ? 0 : 0.2, shadowRadius: 6, elevation: (placing || resolvingFeeType || unresolved) ? 0 : 4 }}
+            disabled={placing || resolvingFeeType || !!unresolved}
             onPress={handlePlaceOrder}
           >
             {placing ? (
@@ -849,6 +972,10 @@ export default function CheckoutScreen() {
             ) : resolvingFeeType ? (
               <Text className="text-white text-[16px] font-inter-600" style={{ lineHeight: 24 }} numberOfLines={1}>
                 Confirming fee…
+              </Text>
+            ) : unresolved ? (
+              <Text className="text-[16px] font-inter-600" style={{ lineHeight: 24, color: colors.disabledText }} numberOfLines={1}>
+                Awaiting confirmation
               </Text>
             ) : (
               <Text className="text-white text-[16px] font-inter-600" style={{ lineHeight: 24 }} numberOfLines={1}>

@@ -64,21 +64,29 @@ export async function loadBlockedUsernames(username: string | null): Promise<Set
 }
 
 /** Push a block to the server (fire-and-forget; local list is already updated). */
-export function pushBlockRemote(username: string): void {
+export async function pushBlockRemote(username: string): Promise<boolean> {
   const name = String(username ?? '').trim();
-  if (!name) return;
-  void import('./serverApi').then(({ serverApi }) =>
-    serverApi.blockUser(name).catch(() => {})
-  ).catch(() => {});
+  if (!name) return false;
+  try {
+    const { serverApi } = await import('./serverApi');
+    const res = await serverApi.blockUser(name);
+    return res.ok === true;
+  } catch {
+    return false;
+  }
 }
 
 /** Push an unblock to the server (fire-and-forget). */
-export function pushUnblockRemote(username: string): void {
+export async function pushUnblockRemote(username: string): Promise<boolean> {
   const name = String(username ?? '').trim();
-  if (!name) return;
-  void import('./serverApi').then(({ serverApi }) =>
-    serverApi.unblockUser(name).catch(() => {})
-  ).catch(() => {});
+  if (!name) return false;
+  try {
+    const { serverApi } = await import('./serverApi');
+    const res = await serverApi.unblockUser(name);
+    return res.ok === true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -114,10 +122,12 @@ export async function pullServerBlocks<T extends { username: string }>(key: stri
 
 /** Lowercased blocked-username set, reloaded on every focus (block/unblock
  *  on another screen applies the moment you return — no stale grids). */
-export function useBlockedSellers(): { blockedSet: Set<string> } {
+export function useBlockedSellers(): { blockedSet: Set<string>; reload: () => void } {
   const { user } = useAuth();
   const username = user?.username ?? null;
   const [blockedSet, setBlockedSet] = useState<Set<string>>(new Set());
+  const [reloadKey, setReloadKey] = useState(0);
+  const reload = useCallback(() => setReloadKey((value) => value + 1), []);
   useFocusEffect(
     useCallback(() => {
       let alive = true;
@@ -127,7 +137,7 @@ export function useBlockedSellers(): { blockedSet: Set<string> } {
       return () => {
         alive = false;
       };
-    }, [username])
+    }, [username, reloadKey])
   );
-  return { blockedSet };
+  return { blockedSet, reload };
 }

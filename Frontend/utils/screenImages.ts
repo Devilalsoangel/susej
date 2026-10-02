@@ -73,14 +73,39 @@ export const authImages = [
   require('../assets/images/screens/auth/img-1-1915.png'), // 173x119
 ];
 
+// Hosted copies (Cloudinary, 2026-09-27): the bento art is ~600KB of PNG that
+// has no business living in the JS bundle. The bundled copies above stay as the
+// offline fallback.
+export const authImageUrls = [
+  'https://res.cloudinary.com/dmrjvlzxe/image/upload/v1790510275/susej/qqemgcf3tz9shseksco8.png',
+  'https://res.cloudinary.com/dmrjvlzxe/image/upload/v1790505968/susej/jdpiiw8bt6q1su89eu9s.png',
+  'https://res.cloudinary.com/dmrjvlzxe/image/upload/v1790505970/susej/r2xeinx7y9dmyrirhowx.png',
+];
+
 // Welcome Carousel — portrait card images (1352x1692 / 1256x1596)
 // NOTE: old img-186-41/77 were 512x279 LANDSCAPE — distorted in portrait card (P0 GPT finding Aug 27)
 // Reuse the two good portrait images for all3 slides
-export const welcomeImages = [
-  require('../assets/images/screens/welcome/img-1-1946.png'), // 1352x1692 portrait
-  require('../assets/images/screens/welcome/img-1-1963.png'), // 1256x1596 portrait
-  require('../assets/images/screens/welcome/img-1-1946.png'), // reuse portrait for community slide
+// Onboarding carousel heroes — 1122x1402, generated for this brand (2026-09-27).
+// These REPLACE the Stitch exports below: GPT vision graded the old artwork
+// "looks like a placeholder / a loading skeleton, not finished product design",
+// which is the worst possible first impression in a demo.
+// Onboarding carousel heroes — hosted (Cloudinary, uploaded through the app's
+// own /api/app/upload pipeline on 2026-09-27) so ~3.9MB of PNGs stays OUT of
+// the JS bundle. The bundled copies below are the offline fallback.
+export const welcomeHeroUrls = [
+  'https://res.cloudinary.com/dmrjvlzxe/image/upload/v1790509403/susej/xtpzugxpyvxuu7p6okjl.png',
+  'https://res.cloudinary.com/dmrjvlzxe/image/upload/v1790504359/susej/jtffvm1xuplwrjnrkcc0.png',
+  'https://res.cloudinary.com/dmrjvlzxe/image/upload/v1790506101/susej/dg66nn6w0o6t5zuu2wmq.png',
 ];
+
+export const welcomeImages = [
+  require('../assets/images/generated/welcome-hero-1.png'), // sell products online
+  require('../assets/images/generated/welcome-hero-2.png'), // buy & sell near you
+  require('../assets/images/generated/welcome-hero-3.png'), // join the pulse
+];
+
+// Superseded Stitch exports, kept only for reference/rollback:
+// img-1-1946.png (1352x1692), img-1-1963.png (1256x1596)
 
 // Category Discovery (1:2198) — 3 tiles 256x320
 export const categoryImages = [
@@ -135,24 +160,13 @@ export const productDetailImages = {
   ], // 170x169 x4
 };
 
-// Onboarding avatar presets — EXACTLY 10 DISTINCT bundled require() modules
-// suitable as profile faces/identities. Reuses existing entries only (auth
-// bento, profile avatar, highlights, notification, rateReview avatar, seller
-// avatar, bookService avatar) — no new image files, no repeats. Rendered
-// from `src` (the numeric module); upload goes through expo-asset
-// (bundledAssetToDataUrl), never a bare asset ID into fetch().
-export const avatarPresets: number[] = [
-  authImages[0],
-  authImages[1],
-  authImages[2],
-  profileImages.avatar,
-  profileImages.highlights[0],
-  profileImages.highlights[1],
-  notificationImages[0],
-  rateReviewImages.avatar,
-  sellerImages.avatar,
-  bookServiceImages.avatar,
-];
+// Onboarding avatar presets: REMOVED. These were not avatar images at all - they
+// reused unrelated screen art (the auth bento, a notification tile, a
+// rate-review avatar) and were uploaded to the server on every tap, so choosing a
+// profile picture required a live network call. The set is now 10 dedicated,
+// consistent 2D avatars hosted on our own Cloudinary account; see
+// utils/avatarPresets.ts. The underlying screen assets above are still used by
+// their own screens and were left untouched.
 
 // Create New Post (1:3346)
 export const createPostImages = {

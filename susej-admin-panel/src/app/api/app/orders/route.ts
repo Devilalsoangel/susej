@@ -18,17 +18,42 @@ class OrderError extends Error {
 }
 
 /**
+ * Persisted settled delivery fee for an ack. The Json stamp on the first
+ * settled line is written by the SAME transaction that debited the buyer, and
+ * the durable column is its mirror — both outrank anything re-derivable.
+ * Provenance-first: the stamp proves the figure and a POSITIVE column proves
+ * it too, but a bare column 0 cannot (a pre-column legacy row's default 0 is
+ * indistinguishable from a real free-service booking), so 0 is trusted only
+ * with the stamp behind it.
+ */
+function persistedSettledFee(
+  row: { deliveryFee?: unknown; itemsList?: unknown },
+  list: Array<Record<string, unknown>>
+): number | null {
+  const head = list.length > 0 ? list[0] : null;
+  const stampFee = Number(head?.deliveryFee);
+  if (Number.isFinite(stampFee) && stampFee >= 0) return Math.round(stampFee);
+  const colFee = Number(row.deliveryFee);
+  if (Number.isFinite(colFee) && colFee > 0) return Math.round(colFee);
+  return null;
+}
+
+/**
  * Settled fee+discount for idempotent acks (dedupe + race-winner): the row
  * stores amount + settled per-line legs (price = pre-coupon receipt truth,
- * netPrice = post-coupon), so pre-coupon items + the placement fee rule
- * recover the exact split. The fee is cross-checked against the booked
- * shipping leg (derived fee must cover it). Returns null when underivable
- * (deleted listings, legacy rows) — the ack omits figures rather than
- * guessing them, and the client keeps its preview until the next pull.
+ * netPrice = post-coupon), so pre-coupon items + the PERSISTED settled fee
+ * recover the exact split. The fee is NEVER re-derived from the listing's
+ * current type — a seller re-typing a listing (product→service) after the
+ * order placed used to rewrite that order's ack fee, so the receipt
+ * contradicted the debit. Legacy rows with no persisted figure fall back to
+ * the placement rule from the listing types, still cross-checked against the
+ * booked shipping leg. Returns null when underivable (deleted listings,
+ * legacy rows) — the ack omits figures rather than guessing them, and the
+ * client keeps its preview until the next pull.
  */
 async function settledFiguresForAck(
   prisma: any,
-  row: { id: string; itemsList?: unknown; amount?: unknown }
+  row: { id: string; itemsList?: unknown; amount?: unknown; deliveryFee?: unknown }
 ): Promise<{ deliveryFee: number; discount: number } | null> {
   try {
     const list = Array.isArray(row.itemsList) ? (row.itemsList as Array<Record<string, unknown>>) : [];
@@ -39,28 +64,40 @@ async function settledFiguresForAck(
       const unit = Number(l.price ?? NaN);
       const q = Math.max(1, Math.round(Number(l.qty ?? l.quantity ?? 1)));
       if (!Number.isFinite(unit) || unit < 0 || !Number.isFinite(q)) return null;
-      preCoupon += unit * q;
+      const lot = Number(l.offerTotal ?? NaN);
+      if (Number.isFinite(lot) && lot >= 0) preCoupon += lot;
+      else if (l.offerRef) preCoupon += unit;
+      else preCoupon += unit * q;
       if (typeof l.listingId === "string" && l.listingId) lids.push(l.listingId);
     }
-    const uniq = [...new Set(lids)];
-    const posts = uniq.length
-      ? await prisma.post.findMany({ where: { id: { in: uniq } }, select: { id: true, type: true } }).catch(() => [])
-      : [];
-    if (posts.length !== uniq.length) return null;
-    const types = (posts as Array<{ type?: unknown }>).map((p) => String(p.type ?? ""));
-    const fee = types.length > 0 && types.every((t) => t === "service")
-      ? 0
-      : types.some((t) => t === "food_item" || t === "food")
-        ? 30
-        : 12;
+    const amount = Math.round(Number(row.amount ?? NaN));
+    if (!Number.isFinite(amount)) return null;
     const shipLegs = await prisma.ledgerEntry.findMany({
       where: { orderId: row.id, type: "shipping", direction: "in", status: { in: ["success", "pending"] } },
       select: { amount: true },
     }).catch(() => []);
     const shipBooked = (shipLegs as Array<{ amount?: unknown }>).reduce((s, r) => s + Math.max(0, Number(r.amount ?? 0)), 0);
+    let fee = persistedSettledFee(row, list);
+    if (fee === null) {
+      // Legacy / pre-column rows only: reproduce the placement fee rule from
+      // the listing types (a listing deleted since then still 400s the ack
+      // rather than guessing a fee).
+      const uniq = [...new Set(lids)];
+      const posts = uniq.length
+        ? await prisma.post.findMany({ where: { id: { in: uniq } }, select: { id: true, type: true } }).catch(() => [])
+        : [];
+      if (posts.length !== uniq.length) return null;
+      const types = (posts as Array<{ type?: unknown }>).map((p) => String(p.type ?? ""));
+      fee = types.length > 0 && types.every((t) => t === "service")
+        ? 0
+        : types.some((t) => t === "food_item" || t === "food")
+          ? 30
+          : 12;
+    }
+    // The booked shipping leg can never exceed the settled fee by construction
+    // (shipLeg = fee − the coupon's shipping share), so a smaller figure means
+    // the row is unreadable: omit the ack figures instead of lying.
     if (fee < shipBooked) return null;
-    const amount = Math.round(Number(row.amount ?? NaN));
-    if (!Number.isFinite(amount)) return null;
     return { deliveryFee: fee, discount: Math.max(0, Math.round(preCoupon + fee - amount)) };
   } catch {
     return null;
@@ -105,6 +142,129 @@ function serializeShippingAddress(body: {
     return label ? `${label} • ${lines.join("\n")}` : lines.join("\n");
   }
   return cleanAddressPart(body.address);
+}
+
+type ResolvedVariantPick = {
+  group: string;
+  label: string;
+  value: { label?: unknown; priceDelta?: unknown; stock?: unknown };
+};
+
+type ResolvedVariantGroups = Array<{ name: string; values: Array<Record<string, unknown>> }>;
+
+function normalizeVariantGroups(raw: unknown): ResolvedVariantGroups {
+  if (!Array.isArray(raw)) return [];
+  const out: ResolvedVariantGroups = [];
+  for (const g of raw as Array<{ name?: unknown; values?: unknown }>) {
+    const name = String(g?.name ?? "").trim();
+    if (!name || !Array.isArray(g?.values)) continue;
+    out.push({ name, values: g.values as Array<Record<string, unknown>> });
+  }
+  return out;
+}
+
+function variantInventoryState(groups: ResolvedVariantGroups): { tracked: boolean; remaining: number; unlimited: boolean } {
+  let remaining = 0;
+  let unlimited = false;
+  let tracked = false;
+  for (const g of groups) {
+    for (const v of g.values) {
+      if (typeof v?.stock === "number") {
+        tracked = true;
+        remaining += Math.max(0, Math.floor(Number(v.stock)));
+      } else {
+        unlimited = true;
+      }
+    }
+  }
+  return { tracked, remaining, unlimited };
+}
+
+/**
+ * Resolve a purchased line's option picks against the LIVE variant set. A
+ * named group must exist, its label must exist inside it, a group-less legacy
+ * label must resolve to exactly one value, a pick may not repeat, and every
+ * stock-tracked group must be picked exactly once. Stored stock/priceDelta
+ * must be finite. Anything ambiguous fails closed: a pick that resolves to
+ * nothing checks no stock and adds no delta (silent undercharge + oversell).
+ */
+function resolveVariantPicks(
+  rawLabel: unknown,
+  groupsRaw: unknown
+): { ok: true; picks: ResolvedVariantPick[] } | { ok: false; error: string } {
+  const label = String(rawLabel ?? "").trim();
+  if (!label) return { ok: true, picks: [] };
+  const groups = normalizeVariantGroups(groupsRaw);
+  if (!groups.length) return { ok: false, error: "Selected options are no longer available" };
+  const parsed: { group: string; label: string }[] = [];
+  const seen = new Set<string>();
+  for (const part of label.split(",")) {
+    const raw = part.trim();
+    if (!raw) continue;
+    const idx = raw.indexOf(":");
+    const group = idx === -1 ? "" : raw.slice(0, idx).trim();
+    const valueLabel = (idx === -1 ? raw : raw.slice(idx + 1)).trim();
+    if (!valueLabel || (idx !== -1 && !group)) {
+      return { ok: false, error: "Selected option is incomplete — pick your options again" };
+    }
+    const key = `${group.toLowerCase()}::${valueLabel.toLowerCase()}`;
+    if (seen.has(key)) return { ok: false, error: `Selected option "${valueLabel}" was picked twice` };
+    seen.add(key);
+    parsed.push({ group, label: valueLabel });
+  }
+  if (!parsed.length) return { ok: false, error: "Selected option is incomplete — pick your options again" };
+  const picks: ResolvedVariantPick[] = [];
+  for (const p of parsed) {
+    const candidates = p.group
+      ? groups.filter((g) => g.name.toLowerCase() === p.group.toLowerCase())
+      : groups;
+    if (!candidates.length) {
+      return {
+        ok: false,
+        error: p.group
+          ? `Option "${p.group}" is no longer available`
+          : `Selected option "${p.label}" is no longer available`,
+      };
+    }
+    const matches: ResolvedVariantPick[] = [];
+    for (const g of candidates) {
+      const value = g.values.find(
+        (v) => String(v?.label ?? "").trim().toLowerCase() === p.label.toLowerCase()
+      );
+      if (value) matches.push({ group: g.name, label: String(value?.label ?? p.label).trim(), value });
+    }
+    if (matches.length !== 1) {
+      return {
+        ok: false,
+        error:
+          matches.length > 1
+            ? `Selected option "${p.label}" is ambiguous — pick it again`
+            : `Selected option "${p.label}" is no longer available`,
+      };
+    }
+    picks.push(matches[0]);
+  }
+  const pickedGroups = new Set(picks.map((p) => p.group.toLowerCase()));
+  for (const g of groups) {
+    const tracked = g.values.some((v) => typeof v?.stock === "number");
+    if (tracked && !pickedGroups.has(g.name.toLowerCase())) {
+      return { ok: false, error: `Choose an option for "${g.name}"` };
+    }
+  }
+  for (const p of picks) {
+    const stock = p.value.stock;
+    if (stock !== undefined && stock !== null) {
+      const s = Number(stock);
+      if (!Number.isFinite(s) || !Number.isInteger(s) || s < 0) {
+        return { ok: false, error: `Option "${p.label}" has invalid stock — refresh and try again` };
+      }
+    }
+    const delta = p.value.priceDelta;
+    if (delta !== undefined && delta !== null && !Number.isFinite(Number(delta))) {
+      return { ok: false, error: `Option "${p.label}" has invalid pricing — refresh and try again` };
+    }
+  }
+  return { ok: true, picks };
 }
 
 export async function GET(req: NextRequest) {
@@ -518,59 +678,46 @@ export async function POST(req: NextRequest) {
             throw new OrderError(400, "Cannot buy your own listing");
           }
           // Variant availability re-check: the buyer's page may predate a
-          // seller stock edit. A selected value at stock 0 rejects the order
-          // instead of selling what isn't available.
+          // seller stock edit. Strict resolution first — a pick that names an
+          // unknown group/value, repeats, or leaves a tracked group unselected
+          // is refused instead of silently skipping its stock check.
           const rawVariant = String((line.raw as any)?.variantLabel ?? "").trim();
-          if (rawVariant && Array.isArray((post as any).variants)) {
-            const picks = rawVariant.split(",").map((s) => {
-              const idx = s.indexOf(":");
-              return idx === -1 ? { group: "", label: s.trim() } : { group: s.slice(0, idx).trim(), label: s.slice(idx + 1).trim() };
-            });
-            for (const pick of picks) {
-              const group = (post as any).variants.find((v: any) =>
-                !pick.group || String(v?.name ?? "").trim().toLowerCase() === pick.group.toLowerCase()
-              );
-              const val = group && Array.isArray(group.values)
-                ? group.values.find((x: any) => String(x?.label ?? "").trim().toLowerCase() === pick.label.toLowerCase())
-                : null;
-              if (val && typeof val.stock === "number" && val.stock <= 0) {
-                await (tx as any).post.update({ where: { id: line.listingId }, data: { isSold: false } }).catch(() => {});
-                throw new OrderError(400, `Selected option "${pick.label}" is out of stock`);
-              }
+          let resolvedPicks: ResolvedVariantPick[] = [];
+          if (rawVariant) {
+            const resolved = resolveVariantPicks(rawVariant, (post as any).variants);
+            if (!resolved.ok) throw new OrderError(400, resolved.error);
+            resolvedPicks = resolved.picks;
+            for (const pick of resolvedPicks) {
+              const val = pick.value as { stock?: unknown };
               // Quantity-vs-stock: one order line can take N units of a picked
               // value (multi-qty), so stock 1 + qty 5 must reject — and the
               // taken units decrement immediately (same tx, exact).
-              if (val && typeof val.stock === "number") {
-                if (val.stock < line.qty) {
-                  await (tx as any).post.update({ where: { id: line.listingId }, data: { isSold: false } }).catch(() => {});
-                  throw new OrderError(400, `Only ${val.stock} left for "${pick.label}"`);
+              if (typeof val.stock === "number") {
+                const left = Math.floor(Number(val.stock));
+                if (left < line.qty) {
+                  throw new OrderError(400, left <= 0 ? `Selected option "${pick.label}" is out of stock` : `Only ${left} left for "${pick.label}"`);
                 }
-                val.stock -= line.qty;
-                variantMutations.set(line.listingId, post);
-              } else if (val) {
+                val.stock = left - line.qty;
+              } else {
                 // Untracked option (no numeric stock): single unique item —
                 // one unit per value, then it reads out of stock. Without
                 // this, label-only variants oversell without bound.
                 if (line.qty > 1) {
-                  await (tx as any).post.update({ where: { id: line.listingId }, data: { isSold: false } }).catch(() => {});
                   throw new OrderError(400, `Only 1 left for "${pick.label}"`);
                 }
                 val.stock = 0;
-                variantMutations.set(line.listingId, post);
               }
             }
+            variantMutations.set(line.listingId, post);
           }
           // Tracked variants REQUIRE a picked option: an unlabeled line on a
           // stock-tracked variant listing would decrement nothing, check
           // nothing, and (for offer orders especially) leave the reservation
           // stuck — silently overselling or killing the listing. Fail closed
           // with a human message instead of guessing the variant.
-          if (!rawVariant && Array.isArray((post as any).variants)) {
-            const tracked = (post as any).variants.some((g: any) =>
-              Array.isArray(g?.values) && g.values.some((v: any) => typeof v?.stock === "number")
-            );
-            if (tracked) {
-              await (tx as any).post.update({ where: { id: line.listingId }, data: { isSold: false } }).catch(() => {});
+          if (!rawVariant) {
+            const inventory = variantInventoryState(normalizeVariantGroups((post as any).variants));
+            if (inventory.tracked) {
               throw new OrderError(
                 400,
                 hasOffer
@@ -660,25 +807,14 @@ export async function POST(req: NextRequest) {
           // Variant delta pricing: the cart carries base+delta (PDP
           // effectivePrice) but the mirror only holds the base — charging the
           // mirror undercharged every premium variant (silent seller loss).
-          // Resolve picked values with the same case-insensitive match as the
-          // stock check above and add their priceDelta. Unknown picks add 0
-          // (same unlimited semantics as stock); offers/bundles override below.
-          if (rawVariant && Array.isArray((post as any).variants)) {
-            const picks = rawVariant.split(",").map((s) => {
-              const idx = s.indexOf(":");
-              return idx === -1 ? { group: "", label: s.trim() } : { group: s.slice(0, idx).trim(), label: s.slice(idx + 1).trim() };
-            });
+          // Sums the ALREADY-VALIDATED picks above, so the charged delta can
+          // never belong to an option that failed group/value validation.
+          if (resolvedPicks.length) {
             let delta = 0;
-            for (const pick of picks) {
-              if (!pick.label) continue;
-              const group = (post as any).variants.find((v: any) =>
-                !pick.group || String(v?.name ?? "").trim().toLowerCase() === pick.group.toLowerCase()
-              );
-              const val = group && Array.isArray(group.values)
-                ? group.values.find((x: any) => String(x?.label ?? "").trim().toLowerCase() === pick.label.toLowerCase())
-                : null;
-              const d = Number(val?.priceDelta ?? 0);
-              if (Number.isFinite(d)) delta += d;
+            for (const pick of resolvedPicks) {
+              const d = Number(pick.value.priceDelta ?? 0);
+              if (!Number.isFinite(d)) throw new OrderError(400, `Option "${pick.label}" has invalid pricing — refresh and try again`);
+              delta += d;
             }
             line.unitPrice = Math.round((Number(line.unitPrice) + delta) * 100) / 100;
           }
@@ -966,21 +1102,28 @@ export async function POST(req: NextRequest) {
       const settledLines: Array<Record<string, unknown>> = [];
       for (const i of normalized) {
         // Offer lots settle their struck total (not per-unit × qty).
-        const lineTotal = typeof (i as unknown as { offerTotal?: unknown }).offerTotal === "number"
-          ? Number((i as unknown as { offerTotal: number }).offerTotal)
-          : i.unitPrice * i.qty;
+        const offerLot = (i as unknown as { offerTotal?: unknown }).offerTotal;
+        const lineTotal = typeof offerLot === "number" ? Number(offerLot) : i.unitPrice * i.qty;
         const share = merchDiscount > 0 ? (lineTotal / goodsForShare) * merchDiscount : 0;
         const netTotal = Math.max(0, lineTotal - share);
         const rate = await resolveCommissionRate(tx, i.category || undefined);
         const fee = Math.round(netTotal * rate);
+        // Persisted `price` is a PER-UNIT figure for every reader that sums
+        // price × qty (receipts, settlement basis, ack re-derivation). An
+        // accepted offer stores the struck LOT total, so persisting it as the
+        // unit price multiplied the whole deal by quantity everywhere.
+        const unitForReceipt = typeof offerLot === "number"
+          ? Math.round((Number(offerLot) / Math.max(1, i.qty)) * 100) / 100
+          : i.unitPrice;
         settledLines.push({
           // Display strings clipped at persist (a 10KB sellerName used to
           // land verbatim in itemsList + the admin queue).
           name: String(i.raw.name ?? "Item").slice(0, 200),
           qty: i.qty,
           quantity: i.qty,
-          price: i.unitPrice,
+          price: unitForReceipt,
           netPrice: netTotal / Math.max(1, i.qty),
+          ...(typeof offerLot === "number" ? { offerTotal: Number(offerLot) } : {}),
           commissionRate: rate,
           commission: fee,
           category: i.category || undefined,

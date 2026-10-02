@@ -6,6 +6,11 @@ import Link from "next/link";
 import { useAuthStore } from "@/store/auth-store";
 import { useRouter } from "next/navigation";
 
+function safeInternalPath(value: string | null): string {
+  if (!value || !value.startsWith("/") || value.startsWith("//")) return "/dashboard";
+  return value;
+}
+
 export function LoginForm() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -35,7 +40,7 @@ export function LoginForm() {
         return;
       }
       const params = new URLSearchParams(window.location.search);
-      const from = params.get("from") || "/dashboard";
+      const from = safeInternalPath(params.get("from"));
       if (data.twoFactor) {
         router.push(`/login/2fa?from=${encodeURIComponent(from)}`);
         return;

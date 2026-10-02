@@ -8,7 +8,7 @@ import { colors } from '../utils/theme';
 import { useAuth } from '../contexts/AuthContext';
 import { isApprovedSeller, sellerPendingReview } from '../utils/marketplace';
 import { serverApi } from '../utils/serverApi';
-import { uploadAllToServer } from '../utils/mediaUpload';
+import { uploadVideoToServer } from '../utils/mediaUpload';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const THUMB = (SCREEN_WIDTH - 40 - 12) / 4; // 4 cols with 12px gap
@@ -132,16 +132,9 @@ export default function CreateReelScreen() {
     setPublishing(true);
     setError(null);
     try {
-      // Cover must be hosted BEFORE publishing â€” a local file:// cover is
-      // unviewable on any other device and the server rejects it.
-      const hosted = await uploadAllToServer([selected as string]);
-      if (hosted.urls.length === 0) {
-        setError('Could not upload your cover. Check your connection and try again.');
-        setPublishing(false);
-        return;
-      }
+      const mediaUrl = await uploadVideoToServer(selected as string);
       const res = await serverApi.createReel({
-        mediaUrl: hosted.urls[0],
+        mediaUrl,
         caption: caption.trim() || 'New reel',
       });
       if (!res.ok) {
@@ -155,7 +148,7 @@ export default function CreateReelScreen() {
       }
       const reel: MyReel = {
         id: `myreel_${Date.now()}`,
-        image: hosted.urls[0],
+        image: mediaUrl,
         caption: caption.trim() || 'New reel',
         time: Date.now(),
         serverId: (res.data as { reel?: { id?: string } })?.reel?.id,

@@ -3,7 +3,7 @@ import { View, Text, Image, FlatList, ScrollView, TouchableOpacity, StyleSheet, 
 import Svg, { Path, Rect, Circle } from 'react-native-svg';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useFocusEffect } from 'expo-router';
-import { hasRealImage, resolveAvatar, resolveListingImage } from '../../utils/productImages';
+import { hasRealImage, resolveListingImage } from '../../utils/productImages';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { PlusIcon, CheckIcon, VerifiedIcon, BellIcon, BagIcon, HeartIcon } from '../../utils/icons';
 import { colors, formatPrice } from '../../utils/theme';
@@ -348,7 +348,10 @@ function FeedContent() {
         name: p.sellerName,
         location: p.sellerLocation,
         verified: p.verified,
-        avatar: resolveAvatar(p.sellerUsername),
+        // The account's real picture is resolved by handle (shared avatar
+        // directory) at render time; the old resolveAvatar() value was one
+        // shared empty placeholder for every suggested seller.
+        avatar: null,
       });
     }
     return Array.from(seen.values()).slice(0, 8);
@@ -375,7 +378,7 @@ function FeedContent() {
         verified: s?.verified ?? false,
         // Server-curated logo first (admin desk branding); organic avatar
         // is the fallback, never the override.
-        avatar: t.sellerLogo ? { uri: t.sellerLogo } : (s?.avatar ?? resolveAvatar(u)),
+        avatar: t.sellerLogo ? { uri: t.sellerLogo } : null,
       });
     }
     for (const s of suggestions) {
@@ -1087,7 +1090,6 @@ function FeedContent() {
               comments={item.comments}
               hashtags={item.hashtags}
               productImage={resolveListingImage(item, item.id)}
-              sellerAvatar={resolveAvatar(item.sellerUsername)}
             />
           </View>
         )}

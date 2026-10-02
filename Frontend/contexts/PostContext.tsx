@@ -104,7 +104,7 @@ interface PostContextType {
   addPost: (post: Omit<Post, 'id' | 'createdAt' | 'likes' | 'comments'>) => Promise<'acked' | 'offline' | 'rejected' | 'ambiguous'>;
   removePost: (id: string) => void;
   deletePost: (id: string) => void;
-  addComment: (postId: string, comment: { author: string; text: string }) => void;
+  addComment: (postId: string, comment: { author: string; text: string }) => Promise<boolean>;
   toggleLike: (postId: string) => boolean;
   isLiked: (postId: string) => boolean;
   updatePost: (id: string, patch: Partial<Post>, opts?: { localOnly?: boolean }) => Promise<boolean>;
@@ -157,12 +157,20 @@ export function PostProvider({ children }: { children: React.ReactNode }) {
   const [serverError, setServerError] = useState(false);
   const [liked, setLiked] = useState<Record<string, boolean>>({});
   const likedRef = useRef<Record<string, boolean>>({});
+  const likePendingRef = useRef(new Set<string>());
   // Snapshot ref for optimistic-rollback: server rejections (offline/403)
   // restore the pre-mutation list instead of silently diverging.
   const postsRef = useRef<Post[]>([]);
   useEffect(() => {
     postsRef.current = posts;
   }, [posts]);
+  const postMutationRef = useRef(new Map<string, number>());
+  const beginPostMutation = useCallback((id: string) => {
+    const next = (postMutationRef.current.get(id) ?? 0) + 1;
+    postMutationRef.current.set(id, next);
+    return next;
+  }, []);
+  const isCurrentPostMutation = useCallback((id: string, version: number) => postMutationRef.current.get(id) === version, []);
   const [tombstones, setTombstones] = useState<string[]>([]);
   const [hiddenPostIds, setHiddenPostIds] = useState<string[]>([]);
   const [mutedSellers, setMutedSellers] = useState<string[]>([]);
@@ -254,6 +262,8 @@ export function PostProvider({ children }: { children: React.ReactNode }) {
     likedRef.current = {};
     setTombstones([]);
     setModLoaded(false);
+    likePendingRef.current.clear();
+    postMutationRef.current.clear();
   }, [tokenSeq]);
 
   // Load moderation state per-user (hidden posts, muted sellers, reports, liked posts, tombstones)
@@ -429,29 +439,38 @@ export function PostProvider({ children }: { children: React.ReactNode }) {
   // failed refresh from "no new posts" (IG shows "Couldn't refresh").
   const refresh = useCallback(async (): Promise<boolean> => {
     if (!user?.username) return true;
-    const res = await serverApi.getPosts();
-    if (!res.ok) return false;
-    const rawPosts = ((res.data?.posts ?? []) as any[]);
-    const serverPosts = rawPosts
-      .map((p) => normalizeServerPost(p))
-      .filter((p) => p !== null) as Post[];
-    const nextLiked: Record<string, boolean> = {};
-    for (const sp of serverPosts) {
-      if (sp.likedByMe) nextLiked[sp.id] = true;
+    try {
+      const res = await serverApi.getPosts();
+      if (!res.ok) {
+        setServerError(true);
+        return false;
+      }
+      setServerError(false);
+      const rawPosts = ((res.data?.posts ?? []) as any[]);
+      const serverPosts = rawPosts
+        .map((p) => normalizeServerPost(p))
+        .filter((p) => p !== null) as Post[];
+      const nextLiked: Record<string, boolean> = {};
+      for (const sp of serverPosts) {
+        if (sp.likedByMe) nextLiked[sp.id] = true;
+      }
+      for (const [k, v] of Object.entries(likedRef.current)) {
+        if (k.startsWith('post_') && v) nextLiked[k] = true;
+      }
+      likedRef.current = nextLiked;
+      setLiked(nextLiked);
+      if (Object.keys(nextLiked).length > 0) persistMod(getLikedKey(), nextLiked);
+      else persistMod(getLikedKey(), {});
+      setPosts((prev) => {
+        const localOnly = prev.filter((p) => p.id.startsWith('post_') && p.sellerUsername === user.username);
+        const visible = serverPosts.filter((sp) => !tombstones.includes(sp.id));
+        return [...visible, ...localOnly];
+      });
+      return true;
+    } catch {
+      setServerError(true);
+      return false;
     }
-    for (const [k, v] of Object.entries(likedRef.current)) {
-      if (k.startsWith('post_') && v) nextLiked[k] = true;
-    }
-    likedRef.current = nextLiked;
-    setLiked(nextLiked);
-    if (Object.keys(nextLiked).length > 0) persistMod(getLikedKey(), nextLiked);
-    else persistMod(getLikedKey(), {});
-    setPosts((prev) => {
-      const localOnly = prev.filter((p) => p.id.startsWith('post_') && p.sellerUsername === user.username);
-      const visible = serverPosts.filter((sp) => !tombstones.includes(sp.id));
-      return [...visible, ...localOnly];
-    });
-    return true;
   }, [normalizeServerPost, user?.username, tombstones, getLikedKey, persistMod]);
 
   // Server search (cross-device truth): q-scoped fetch merged ADDITIVELY.
@@ -609,42 +628,52 @@ export function PostProvider({ children }: { children: React.ReactNode }) {
 
   const removePost = useCallback(
     (id: string) => {
-      const snapshot = postsRef.current;
+      const previous = postsRef.current.find((p) => p.id === id);
+      const previousIndex = postsRef.current.findIndex((p) => p.id === id);
+      const version = beginPostMutation(id);
       setPosts((prev) => prev.filter((p) => p.id !== id));
       setTombstones((prev) => (prev.includes(id) ? prev : [...prev, id]));
       if (isServerPostId(id)) {
-        serverApi.deletePost(id).then((res) => {
-          if (!res.ok && res.error !== 'offline') {
-            setPosts(snapshot);
-            setTombstones((prev) => prev.filter((t) => t !== id));
-          }
-        }).catch(() => {
-          setPosts(snapshot);
+        const rollback = () => {
+          if (!isCurrentPostMutation(id, version)) return;
+          setPosts((cur) => {
+            if (!previous || cur.some((p) => p.id === id)) return cur;
+            const at = Math.max(0, Math.min(previousIndex, cur.length));
+            return [...cur.slice(0, at), previous, ...cur.slice(at)];
+          });
           setTombstones((prev) => prev.filter((t) => t !== id));
-        });
+        };
+        serverApi.deletePost(id).then((res) => {
+          if (!res.ok && res.error !== 'offline') rollback();
+        }).catch(rollback);
       }
     },
-    []
+    [beginPostMutation, isCurrentPostMutation]
   );
 
   const deletePost = useCallback(
     (id: string) => {
-      const snapshot = postsRef.current;
+      const previous = postsRef.current.find((p) => p.id === id);
+      const previousIndex = postsRef.current.findIndex((p) => p.id === id);
+      const version = beginPostMutation(id);
       setPosts((prev) => prev.filter((p) => p.id !== id));
       setTombstones((prev) => (prev.includes(id) ? prev : [...prev, id]));
       if (isServerPostId(id)) {
-        serverApi.deletePost(id).then((res) => {
-          if (!res.ok && res.error !== 'offline') {
-            setPosts(snapshot);
-            setTombstones((prev) => prev.filter((t) => t !== id));
-          }
-        }).catch(() => {
-          setPosts(snapshot);
+        const rollback = () => {
+          if (!isCurrentPostMutation(id, version)) return;
+          setPosts((cur) => {
+            if (!previous || cur.some((p) => p.id === id)) return cur;
+            const at = Math.max(0, Math.min(previousIndex, cur.length));
+            return [...cur.slice(0, at), previous, ...cur.slice(at)];
+          });
           setTombstones((prev) => prev.filter((t) => t !== id));
-        });
+        };
+        serverApi.deletePost(id).then((res) => {
+          if (!res.ok && res.error !== 'offline') rollback();
+        }).catch(rollback);
       }
     },
-    []
+    [beginPostMutation, isCurrentPostMutation]
   );
 
   // Edit screens that await the server themselves pass { localOnly: true }:
@@ -654,7 +683,8 @@ export function PostProvider({ children }: { children: React.ReactNode }) {
   // callers with per-row honesty needs (bulk hide/show) await this.
   const updatePost = useCallback(
     (id: string, patch: Partial<Post>, opts?: { localOnly?: boolean }): Promise<boolean> => {
-      const snapshot = postsRef.current;
+      const previous = postsRef.current.find((p) => p.id === id);
+      const version = beginPostMutation(id);
       setPosts((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
       if (opts?.localOnly) return Promise.resolve(true);
       if (isServerPostId(id)) {
@@ -672,12 +702,8 @@ export function PostProvider({ children }: { children: React.ReactNode }) {
         if (patch.mrp !== undefined) sp.mrp = patch.mrp;
         if (patch.category !== undefined) sp.category = patch.category;
         if (patch.isSold !== undefined) sp.isSold = patch.isSold;
-        // Shop deactivation: the server accepts author-set hidden/published
-        // (featured stays engine-owned and is ignored there).
         if (patch.status !== undefined) sp.status = patch.status;
         if (patch.featured !== undefined) sp.featured = patch.featured;
-        // Edit parity: seller-side edits to media/inventory/fulfillment must
-        // reach the server or the storefront silently diverges per device.
         if (patch.images !== undefined) sp.images = patch.images;
         if (patch.image !== undefined && patch.images === undefined) sp.images = [patch.image];
         if (patch.variants !== undefined) sp.variants = patch.variants;
@@ -686,37 +712,35 @@ export function PostProvider({ children }: { children: React.ReactNode }) {
         if (patch.condition !== undefined) sp.condition = patch.condition;
         if (patch.deliveryMode !== undefined) sp.deliveryMode = patch.deliveryMode;
         if (Object.keys(sp).length) {
+          const rollback = () => {
+            if (!isCurrentPostMutation(id, version)) return;
+            setPosts((cur) => {
+              if (previous) return cur.some((p) => p.id === id) ? cur.map((p) => (p.id === id ? previous : p)) : cur;
+              return cur.filter((p) => p.id !== id);
+            });
+          };
           return serverApi.updatePost(id, sp).then((res) => {
-            if (!res.ok && res.error !== 'offline') {
-              setPosts(snapshot);
-              return false;
-            }
-            return true;
+            if (!res.ok && res.error !== 'offline') rollback();
+            return res.ok;
           }).catch(() => {
-            setPosts(snapshot);
+            rollback();
             return false;
           });
         }
       }
       return Promise.resolve(true);
     },
-    []
+    [beginPostMutation, isCurrentPostMutation]
   );
 
   const toggleSold = useCallback(
     (id: string): Promise<boolean> => {
-      const snapshot = postsRef.current;
-      const current = snapshot.find((p) => p.id === id);
+      const previous = postsRef.current.find((p) => p.id === id);
+      const version = beginPostMutation(id);
+      const current = previous;
       const nextSold = !(current?.isSold ?? false);
-      // Couple the two inventory truths: marking sold zeroes stockLeft,
-      // restocking a zero/empty stock restores 1 — otherwise the hub card
-      // reads Active while PDP still refuses sale (or vice versa).
       const curStock = typeof current?.stockLeft === 'number' ? Math.floor(current.stockLeft) : null;
       const nextStock = nextSold ? 0 : (curStock === null || curStock <= 0 ? 1 : curStock);
-      // Tracked-variant restock: the server nulls base stockLeft when variants
-      // are tracked and leaves per-value stock untouched — restocking without
-      // reviving the values left a "live" listing every buyer order 400d on.
-      // Same convention as base (restore 1 unit per depleted option).
       let nextVariants: PostVariant[] | undefined;
       if (!nextSold && Array.isArray(current?.variants) && current.variants.length > 0) {
         const tracked = current.variants.some((g) => Array.isArray(g?.values) && g.values.some((x) => typeof x?.stock === 'number'));
@@ -735,20 +759,25 @@ export function PostProvider({ children }: { children: React.ReactNode }) {
           return { ...p, isSold: nextSold, stockLeft: nextStock, ...(nextVariants ? { variants: nextVariants } : {}) };
         })
       );
-      // Returns the ack: a server refusal/offline rolls back AND reports
-      // false so the tap explains itself instead of flip-flopping silently.
       if (isServerPostId(id)) {
+        const rollback = () => {
+          if (!isCurrentPostMutation(id, version)) return;
+          setPosts((cur) => {
+            if (!previous) return cur.filter((p) => p.id !== id);
+            return cur.some((p) => p.id === id) ? cur.map((p) => (p.id === id ? previous : p)) : cur;
+          });
+        };
         return serverApi.updatePost(id, { isSold: nextSold, stockLeft: nextStock, ...(nextVariants ? { variants: nextVariants } : {}) }).then((res) => {
-          if (!res.ok && res.error !== 'offline') setPosts(snapshot);
+          if (!res.ok && res.error !== 'offline') rollback();
           return res.ok;
         }).catch(() => {
-          setPosts(snapshot);
+          rollback();
           return false;
         });
       }
       return Promise.resolve(true);
     },
-    []
+    [beginPostMutation, isCurrentPostMutation]
   );
 
   const decrementStock = useCallback(
@@ -829,31 +858,52 @@ export function PostProvider({ children }: { children: React.ReactNode }) {
   );
 
   const addComment = useCallback(
-    (postId: string, comment: { author: string; text: string }) => {
-      setPosts((prev) => {
-        const updated = prev.map((p) => {
+    (postId: string, comment: { author: string; text: string }): Promise<boolean> => {
+      const entry = { author: comment.author, text: comment.text, time: Date.now() };
+      const version = beginPostMutation(postId);
+      setPosts((prev) =>
+        prev.map((p) => {
           if (p.id !== postId) return p;
-          const entry = { author: comment.author, text: comment.text, time: Date.now() };
           return {
             ...p,
             comments: p.comments + 1,
             commentList: p.commentList ? [...p.commentList, entry] : [entry],
           };
-        });
-        return updated;
+        })
+      );
+      if (!isServerPostId(postId)) return Promise.resolve(true);
+      const rollback = () => {
+        if (!isCurrentPostMutation(postId, version)) return;
+        setPosts((cur) =>
+          cur.map((p) =>
+            p.id === postId
+              ? {
+                  ...p,
+                  comments: Math.max(0, p.comments - 1),
+                  commentList: p.commentList?.filter((c) => !(c.time === entry.time && c.text === entry.text && c.author === entry.author)),
+                }
+              : p
+          )
+        );
+      };
+      return serverApi.addComment(postId, comment.text).then((res) => {
+        if (!res.ok) rollback();
+        return res.ok;
+      }).catch(() => {
+        rollback();
+        return false;
       });
-      if (isServerPostId(postId)) {
-        serverApi.addComment(postId, comment.text).catch(() => {});
-      }
     },
-    []
+    [beginPostMutation, isCurrentPostMutation]
   );
 
   const toggleLike = useCallback(
     (postId: string): boolean => {
-      // Derive from the latest liked map (ref keeps rapid taps race-free)
+      if (likePendingRef.current.has(postId)) return !!likedRef.current[postId];
       const nextLiked = !likedRef.current[postId];
       const prevLiked = !!likedRef.current[postId];
+      const previousPost = postsRef.current.find((p) => p.id === postId);
+      const version = beginPostMutation(postId);
       likedRef.current = { ...likedRef.current, [postId]: nextLiked };
       setLiked((prev) => ({ ...prev, [postId]: nextLiked }));
       setPosts((prev) =>
@@ -863,22 +913,47 @@ export function PostProvider({ children }: { children: React.ReactNode }) {
       );
       if (modLoaded) persistMod(getLikedKey(), likedRef.current);
       if (isServerPostId(postId)) {
-        serverApi.toggleLike(postId).catch(() => {
-          // Server rejected (offline/401/409): rollback optimistic like to keep truth.
+        likePendingRef.current.add(postId);
+        serverApi.toggleLike(postId).then((res) => {
+          if (!isCurrentPostMutation(postId, version)) return;
+          if (!res.ok) {
+            likedRef.current = { ...likedRef.current, [postId]: prevLiked };
+            setLiked((prev) => ({ ...prev, [postId]: prevLiked }));
+            setPosts((cur) =>
+              cur.map((p) =>
+                p.id === postId
+                  ? { ...p, likes: previousPost ? previousPost.likes : Math.max(0, p.likes + (nextLiked ? -1 : 1)) }
+                  : p
+              )
+            );
+            persistMod(getLikedKey(), likedRef.current);
+            return;
+          }
+          if (res.data && typeof res.data.likes === 'number' && typeof res.data.liked === 'boolean') {
+            likedRef.current = { ...likedRef.current, [postId]: res.data.liked };
+            setLiked((prev) => ({ ...prev, [postId]: res.data!.liked }));
+            setPosts((cur) => cur.map((p) => (p.id === postId ? { ...p, likes: Math.max(0, res.data!.likes) } : p)));
+            persistMod(getLikedKey(), likedRef.current);
+          }
+        }).catch(() => {
+          if (!isCurrentPostMutation(postId, version)) return;
           likedRef.current = { ...likedRef.current, [postId]: prevLiked };
           setLiked((prev) => ({ ...prev, [postId]: prevLiked }));
-          setPosts((prev) =>
-            prev.map((p) =>
-              p.id === postId ? { ...p, likes: Math.max(0, p.likes + (nextLiked ? -1 : 1)) } : p
+          setPosts((cur) =>
+            cur.map((p) =>
+              p.id === postId
+                ? { ...p, likes: previousPost ? previousPost.likes : Math.max(0, p.likes + (nextLiked ? -1 : 1)) }
+                : p
             )
           );
-          // Revert persisted liked map (posts effect will persist posts separately)
           persistMod(getLikedKey(), likedRef.current);
+        }).finally(() => {
+          likePendingRef.current.delete(postId);
         });
       }
       return nextLiked;
     },
-    [modLoaded, persistMod, getLikedKey]
+    [beginPostMutation, isCurrentPostMutation, modLoaded, persistMod, getLikedKey]
   );
 
   const isLiked = useCallback((postId: string) => !!liked[postId], [liked]);

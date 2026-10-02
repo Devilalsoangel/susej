@@ -1,31 +1,40 @@
-import { useState, useRef } from 'react';
-import { View, Text, TouchableOpacity, Dimensions, StyleSheet, Platform } from 'react-native'
+import { useEffect, useRef, useState } from 'react';
+import { View, Text, TouchableOpacity, Dimensions, StyleSheet, Platform, BackHandler, ActivityIndicator } from 'react-native'
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Image } from 'react-native';
-import { router } from 'expo-router';
 import PagerView from 'react-native-pager-view';
 import { BlurView } from 'expo-blur';
 import Svg, { Path, Circle } from 'react-native-svg';
 import { colors } from '../../utils/theme';
-import { welcomeImages } from '../../utils/screenImages';
+import { welcomeImages, welcomeHeroUrls } from '../../utils/screenImages';
+import { useAuth } from '../../contexts/AuthContext';
+import { replaceRoute } from '../../utils/navigation';
 
 const { width } = Dimensions.get('window');
 
 const slides = [
   {
-    title: 'Post Products like Instagram',
-    subtitle: 'Turn your beautiful belongings into\nshoppable stories with ease.',
+    // gpt vision flagged a mismatch: the artwork shows products + social
+    // interaction + a rupee tag, so a "post like Instagram" headline made the
+    // user reconcile two propositions. A regenerated "posting" illustration was
+    // tried and scored WORSE (68 vs 89) because the model kept drawing a
+    // product showcase. So the copy now describes what the art actually shows.
+    title: 'Sell what you own',
+    subtitle: 'List anything in seconds and reach buyers near you.',
   },
   {
-    // Stitch ref 186:72 — Buy & Sell variant
+    // Stitch ref 186:72 — Buy & Sell variant.
+    // gpt vision: the original supporting line ran 3 dense lines and spent its
+    // first words on a concept ("Verified neighbourhood profiles") the artwork
+    // never shows. Shorter, and it matches the illustration.
     title: 'Buy & Sell near you',
-    subtitle: 'Trusted Sellers · Verified neighborhood\nprofiles — discover unique finds and\nsellers right in your neighborhood.',
+    subtitle: 'Trusted sellers nearby — find unique finds and buy from your neighbourhood.',
   },
   {
     // Stitch ref 186:30 — Communities variant
     title: 'Join the Pulse',
-    subtitle: 'Join communities around you —\nconnect, share and trade with people\nwho share your passions.',
+    subtitle: 'Connect, share and trade with people around you.',
   },
 ];
 
@@ -50,37 +59,32 @@ const ArrowIcon = () => (
 
 function SlideContent({ title, subtitle, imageIndex }: { title: string; subtitle: string; imageIndex: number }) {
   const img = welcomeImages[imageIndex % welcomeImages.length];
+  const heroUrl = welcomeHeroUrls[imageIndex % welcomeHeroUrls.length] ?? '';
 
   return (
     <View style={styles.slide}>
-      {/* Card with subtle shadow */}
-      <View style={styles.cardShadow}>
+      {/* Card with subtle shadow - the artwork is decoration, so it is hidden
+          from assistive tech: a screen reader should read the slide's words,
+          not "image, image, image". */}
+      <View style={styles.cardShadow} accessible={false} importantForAccessibility="no-hide-descendants">
         <View style={styles.card}>
-          {/* Product Image */}
+          {/* Product Image - the branded hero artwork (hosted, with the bundled
+              copy as the offline fallback). A real seller's listing does NOT
+              belong on the onboarding screen: onboarding is brand marketing,
+              and borrowing one seller's product reads as an ad. */}
           <View style={styles.cardImage}>
             <Image
-              source={img}
+              source={heroUrl ? { uri: heroUrl } : img}
               style={StyleSheet.absoluteFill}
               resizeMode="cover"
             />
           </View>
 
-          {/* Bottom overlay with blur */}
-          <View style={styles.cardOverlay}>
-            <BlurView intensity={24} tint="light" style={styles.overlayBlur}>
-              {/* Avatar */}
-              <View style={styles.overlayAvatar} />
-              {/* Text lines */}
-              <View style={styles.overlayText}>
-                <View style={styles.overlayTitleLine} />
-                <View style={styles.overlaySubLine} />
-              </View>
-              {/* Heart icon */}
-              <View style={styles.overlayHeart}>
-                <HeartIcon />
-              </View>
-            </BlurView>
-          </View>
+          {/* No overlay panel: the generated hero already carries the ₹ tag,
+              the heart and the chat bubble, and a second card on top of it
+              competed for attention (GPT vision: "multiple layers of UI-like
+              surfaces"). It also said "Buy & sell near you" on a slide whose
+              headline is "Post Products like Instagram" - two messages at once. */}
         </View>
       </View>
 
@@ -95,6 +99,52 @@ export default function WelcomeCarouselScreen() {
   const [activeIndex, setActiveIndex] = useState(0);
   const pagerRef = useRef<PagerView>(null);
   const insets = useSafeAreaInsets();
+  const { isLoggedIn, setGuestLanding } = useAuth();
+  const navigating = useRef(false);
+  const [navError, setNavError] = useState('');
+  // An in-flight CTA must LOOK busy: without this a cold replace can sit for a
+  // beat with a fully enabled button, which reads as a dead tap (and invites
+  // the double-tap that `navigating` then has to swallow).
+  const [busy, setBusy] = useState(false);
+
+  // Standing on the carousel means the guest is browsing, not being pushed
+  // back to sign-in, so the "session just ended" landing latch is retired
+  // here. Without it a later navigator swap would send a deliberate visitor
+  // back to the sign-in form.
+  useEffect(() => {
+    setGuestLanding('welcome');
+  }, [setGuestLanding]);
+
+  // Welcome is the root of the guest tree: it is reached by REPLACING the
+  // splash entry, so a back press would pop that splash, which immediately
+  // redirects forward again - a back/forward ping-pong instead of leaving the
+  // screen. The press is consumed instead.
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => true);
+    return () => sub.remove();
+  }, []);
+
+  const go = async (target: string) => {
+    if (navigating.current || isLoggedIn) return;
+    navigating.current = true;
+    setBusy(true);
+    setNavError('');
+    // Verified dispatch: a silent no-op re-arms the button instead of
+    // latching it dead for the rest of the screen's life.
+    const navigated = await replaceRoute(target);
+    if (navigated) return;
+    navigating.current = false;
+    setBusy(false);
+    setNavError('Could not open that screen. Please try again.');
+  };
+
+  const goAuth = () => {
+    void go('/(onboarding)/auth');
+  };
+
+  const goLogin = () => {
+    void go('/login');
+  };
 
   return (
     <View style={styles.root}>
@@ -102,7 +152,7 @@ export default function WelcomeCarouselScreen() {
 
       {/* Brand Header */}
       <View style={styles.header}>
-        <Text style={styles.brand}>susej</Text>
+        <Text style={styles.brand} accessibilityRole="header">susej</Text>
       </View>
 
       {/* Carousel */}
@@ -121,8 +171,15 @@ export default function WelcomeCarouselScreen() {
       <View
         style={[styles.bottomControls, { height: 180 + insets.bottom, paddingBottom: 28 + insets.bottom }]}
       >
-        {/* Page Dots */}
-        <View style={styles.dots}>
+        {/* Page Dots - announced as progress, otherwise a screen-reader user
+            hears "Get Started" with no idea the story has 3 pages and no way
+            to move between them (IG/FB onboarding all announce the position). */}
+        <View
+          style={styles.dots}
+          accessible
+          accessibilityRole="text"
+          accessibilityLabel={`Page ${activeIndex + 1} of ${slides.length}`}
+        >
           {slides.map((_, i) => (
             <View
               key={i}
@@ -134,22 +191,42 @@ export default function WelcomeCarouselScreen() {
           ))}
         </View>
 
+        {navError ? (
+          <Text style={styles.navError} accessibilityRole="alert" accessibilityLiveRegion="polite" accessibilityLabel={navError}>
+            {navError}
+          </Text>
+        ) : null}
+
         {/* Get Started Button */}
         <TouchableOpacity
-          style={styles.button}
+          style={[styles.button, busy && styles.buttonBusy]}
           activeOpacity={0.8}
-          onPress={() => router.push('/(onboarding)/auth')}
+          onPress={goAuth}
+          disabled={busy}
+          accessibilityRole="button"
+          accessibilityLabel="Get Started"
+          accessibilityState={{ busy, disabled: busy }}
         >
-          <Text style={styles.buttonText}>Get Started</Text>
-          <View style={styles.buttonArrow}>
-            <ArrowIcon />
-          </View>
+          {busy ? (
+            <ActivityIndicator color={colors.surface} size="small" />
+          ) : (
+            <>
+              <Text style={styles.buttonText}>Get Started</Text>
+              <View style={styles.buttonArrow}>
+                <ArrowIcon />
+              </View>
+            </>
+          )}
         </TouchableOpacity>
 
         {/* Sign In Link - goes to the dedicated Login page, NOT the signup onboarding */}
         <TouchableOpacity
           style={styles.linkWrapper}
-          onPress={() => router.push('/login')}
+          onPress={goLogin}
+          disabled={busy}
+          accessibilityRole="button"
+          accessibilityLabel="Already have an account? Sign In"
+          accessibilityState={{ disabled: busy }}
         >
           <Text style={styles.linkText}>
             Already have an account?{' '}
@@ -259,13 +336,28 @@ const styles = StyleSheet.create({
     borderRadius: 3,
     backgroundColor: colors.outlineVariant,
   },
-  overlaySubLine: {
-    width: 58,
-    height: 5,
-    borderRadius: 3,
-    backgroundColor: colors.outlineVariant,
-    opacity: 0.6,
-  },
+    overlaySubLine: {
+      width: 58,
+      height: 5,
+      borderRadius: 3,
+      backgroundColor: colors.outlineVariant,
+      opacity: 0.6,
+    },
+    // The real listing's own words over a real photo (never invented copy).
+    overlayBrand: {
+      fontSize: 15,
+      lineHeight: 20,
+      fontFamily: 'Inter',
+      fontWeight: '700',
+      color: colors.textPrimary,
+    },
+    overlayTagline: {
+      fontSize: 12,
+      lineHeight: 16,
+      fontFamily: 'Inter',
+      fontWeight: '500',
+      color: colors.textSecondary,
+    },
   overlayHeart: {
     width: 36,
     height: 36,
@@ -281,7 +373,7 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter',
     fontWeight: '700',
     textAlign: 'center',
-    marginTop: 20,
+    marginTop: 12,
     paddingHorizontal: 48,
   },
   subtitle: {
@@ -291,7 +383,7 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter',
     fontWeight: '400',
     textAlign: 'center',
-    marginTop: 12,
+    marginTop: 6,
     paddingHorizontal: 40,
   },
 
@@ -344,6 +436,10 @@ const styles = StyleSheet.create({
       android: { elevation: 6 },
     }),
   },
+  // In-flight CTA: dimmed so a slow replace never looks like a dead tap.
+  buttonBusy: {
+    opacity: 0.7,
+  },
   buttonText: {
     fontSize: 17,
     lineHeight: 22,
@@ -358,6 +454,22 @@ const styles = StyleSheet.create({
   // Sign In Link
   linkWrapper: {
     marginTop: 32,
+    // The "Already have an account? Sign In" row measured 18dp tall on a 440dpi
+    // device - far under the 44-48dp minimum every platform guide requires, so
+    // it was a genuinely hard tap. The box is grown (not the glyphs) so the
+    // visual rhythm is unchanged.
+    minHeight: 44,
+    paddingVertical: 12,
+    justifyContent: 'center',
+  },
+  navError: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: 'Inter',
+    fontWeight: '500',
+    color: colors.error,
+    textAlign: 'center',
+    marginTop: 14,
   },
   linkText: {
     fontSize: 14,

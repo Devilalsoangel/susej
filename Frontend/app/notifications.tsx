@@ -6,13 +6,13 @@ import { ChevronLeftIcon, HeartIcon } from '../utils/icons';
 import { colors } from '../utils/theme';
 import { useNotifications, AppNotification, NotifType } from '../contexts/NotificationContext';
 import { useSettings } from '../contexts/SettingsContext';
-import { resolveAvatar } from '../utils/productImages';
+import { UserAvatar } from '../components/UserAvatar';
 
 type Tab = 'All' | 'Orders' | 'Social';
 const tabs: Tab[] = ['All', 'Orders', 'Social'];
 
 const ORDER_TYPES: NotifType[] = ['order', 'wallet'];
-const SOCIAL_TYPES: NotifType[] = ['follower', 'like', 'comment', 'bookmark', 'promotion'];
+const SOCIAL_TYPES: NotifType[] = ['follower', 'like', 'comment', 'bookmark', 'promotion', 'price'];
 // System warnings (imageless listings, etc.) surface under BOTH tabs: they
 // are the one notification class that must never hide behind a filter.
 
@@ -49,6 +49,7 @@ export default function NotificationsScreen() {
       case 'order': return 'Order Update';
       case 'wallet': return 'Wallet Update';
       case 'promotion': return n.userName;
+      case 'price': return 'Price Drop';
       default: return n.userName;
     }
   };
@@ -62,6 +63,7 @@ export default function NotificationsScreen() {
       case 'order': return `${n.userName} ${n.action}${subject}.`;
       case 'wallet': return `${n.userName} ${n.action}.`;
       case 'promotion': return n.action;
+      case 'price': return `${n.userName} changed a watched listing price${subject}.`;
       default: return n.action;
     }
   };
@@ -94,6 +96,9 @@ export default function NotificationsScreen() {
         break;
       case 'bookmark':
         router.push('/saved');
+        break;
+      case 'price':
+        router.push(targetId ? `/product/${encodeURIComponent(String(targetId))}` : '/(tabs)/feed');
         break;
       case 'promotion': {
         // Campaign-live tells open My Campaigns; price-drop tells carry the
@@ -131,7 +136,7 @@ export default function NotificationsScreen() {
             className="w-[64px] h-[64px] rounded-full items-center justify-center relative"
             style={{ backgroundColor: colors.surfaceContainerLow }}
           >
-            <Image source={resolveAvatar(n.userHandle || n.userName || n.id)} className="w-full h-full rounded-full" resizeMode="cover" />
+            <UserAvatar name={n.userName || n.userHandle || 'susej'} username={n.userHandle} size={64} style={{ position: 'absolute', top: 0, left: 0 }} />
             <View
               className="absolute -bottom-0.5 -right-0.5 w-5 h-5 rounded-full items-center justify-center border-2"
               style={{ backgroundColor: '#E8DEF8', borderColor: colors.surface }}
@@ -146,7 +151,7 @@ export default function NotificationsScreen() {
             className="w-[64px] h-[64px] rounded-full items-center justify-center relative"
             style={{ backgroundColor: colors.surfaceContainerLow }}
           >
-            <Image source={resolveAvatar(n.userHandle || n.userName || n.id)} className="w-full h-full rounded-full" resizeMode="cover" />
+            <UserAvatar name={n.userName || n.userHandle || 'susej'} username={n.userHandle} size={64} style={{ position: 'absolute', top: 0, left: 0 }} />
             <View className="absolute -bottom-0.5 -right-0.5 w-5 h-5 rounded-full items-center justify-center border-2" style={{ backgroundColor: colors.surfaceContainer, borderColor: colors.surface }}>
               <Text style={{ fontSize: 10, lineHeight: 12, color: colors.primary }}>◆</Text>
             </View>
@@ -160,7 +165,7 @@ export default function NotificationsScreen() {
         );
       default:
         return (
-          <Image source={resolveAvatar(n.userHandle || n.userName || n.id)} className="w-[64px] h-[64px] rounded-full" resizeMode="cover" />
+            <UserAvatar name={n.userName || n.userHandle || 'susej'} username={n.userHandle} size={64} />
         );
     }
   };

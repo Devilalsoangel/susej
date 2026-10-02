@@ -78,10 +78,13 @@ export function validateMediaRefs(
         };
       }
       const host = parsed.hostname.toLowerCase();
-      const firstParty =
-        ownHosts.has(host) ||
-        host.endsWith(".vercel.app") ||
-        (cloudName !== "" && (host === cloudName || host.endsWith(`.${cloudName}`) || host.endsWith(".cloudinary.com")));
+      const cloudinaryPath = parsed.pathname.toLowerCase();
+      const configuredCloudinary = cloudName !== "" && (
+        host === cloudName ||
+        (host === "res.cloudinary.com" && cloudinaryPath.startsWith(`/${cloudName.toLowerCase()}/`)) ||
+        (host.endsWith(".cloudinary.com") && cloudinaryPath.startsWith(`/${cloudName.toLowerCase()}/`))
+      );
+      const firstParty = ownHosts.has(host) || configuredCloudinary;
       if (!firstParty) {
         return {
           ok: false,

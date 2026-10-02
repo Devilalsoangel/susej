@@ -115,6 +115,9 @@ export async function POST(req: NextRequest) {
   if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   const prisma = await getPrisma();
   if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
+  if (!auth.user.isSeller || auth.user.verification !== "approved") {
+    return NextResponse.json({ error: "Only approved sellers can publish stories" }, { status: 403 });
+  }
 
   // Per-user rate cap: 20 stories/day. Without this a script could flood the
   // tray + storage with unlimited rows (no other gate exists here).

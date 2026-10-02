@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { View, Text, TextInput, FlatList, TouchableOpacity, Image, Keyboard, Modal, ScrollView, Switch, ActivityIndicator } from 'react-native';
 import Svg, { Path, Circle } from 'react-native-svg';
@@ -12,10 +12,12 @@ import { useCart } from '../../contexts/CartContext';
 import { usePromotions } from '../../contexts/PromotionContext';
 import { hasRealImage, resolveListingImage } from '../../utils/productImages';
 import { matchesCategory } from '../category/[slug]';
-import { serverApi } from '../../utils/serverApi';
+import { serverApi, type SearchHit, type SearchUserHit } from '../../utils/serverApi';
 import { useBlockedSellers } from '../../utils/blockedSellers';
 
 function PlayIcon({ size = 18, color = '#5d5fef' }: { size?: number; color?: string }) {
+
+
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
       <Path d="M8 5v14l11-7z" fill={color} />
@@ -197,6 +199,10 @@ export default function ExploreScreen() {
   const { posts, hiddenPostIds = [], mutedSellers = [], serverSettled, serverError, refresh: refreshPosts } = usePosts() as { posts: import('../../contexts/PostContext').Post[]; hiddenPostIds?: string[]; mutedSellers?: string[]; serverSettled: boolean; serverError: boolean; refresh: () => Promise<boolean> };
   const { user } = useAuth();
   const metaKey = user?.username?.trim().toLowerCase() || 'guest';
+  const isSelfHit = (username: string) => {
+    const handle = username.trim().replace(/^@+/, '').toLowerCase();
+    return Boolean(metaKey) && metaKey !== 'guest' && handle === metaKey;
+  };
   const [serverPromos, setServerPromos] = useState<any[]>([]);
   const [adminCategories, setAdminCategories] = useState<Array<{ name: string; slug: string }>>([]);
   useFocusEffect(useCallback(() => {
@@ -237,6 +243,99 @@ export default function ExploreScreen() {
   };
 
   const clearAllFilters = () => setFilters(DEFAULT_FILTERS);
+
+  /**
+   * PEOPLE, live, while typing.
+   *
+   * The grid below only filters the listings already loaded into memory, so a
+   * person's name rendered "0 items found" even when the server held an exact
+   * match - on a field that promises "Search people, products, places...". A
+   * real user types a name, sees zero, and concludes the search is broken
+   * (this is the "search shows nothing" report from Sep 24). The server
+   * already answers with typed hits, so people are surfaced here, first, the
+   * way Instagram/Amazon rank a person above a product, plus an explicit
+   * "see all results" target instead of relying on the user pressing Enter.
+   */
+  const [peopleHits, setPeopleHits] = useState<SearchUserHit[]>([]);
+  const [resultMix, setResultMix] = useState<{ user: number; product: number; category: number; location: number } | null>(null);
+  const peopleSeq = useRef(0);
+  const query = search.trim();
+  useEffect(() => {
+    // One character already has to suggest: Instagram/Amazon/Google all narrow
+    // on the first letter, and the server ships a dedicated `suggest` mode for
+    // it (the /search page used it). Gating at 2 characters left the field dead
+    // for the very first keystroke, which reads as "search is broken".
+    if (!query) {
+      setPeopleHits([]);
+      setResultMix(null);
+      return;
+    }
+    const id = ++peopleSeq.current;
+    const timer = setTimeout(async () => {
+      try {
+        const result = await serverApi.searchMarketplace({
+          q: query,
+          mode: query.length === 1 ? 'suggest' : 'results',
+          types: ['user', 'product', 'category', 'location'],
+          limit: query.length === 1 ? 8 : 4,
+        });
+        if (id !== peopleSeq.current) return;
+        const data = result.ok && result.data ? result.data : null;
+        const hits = (data ? data.hits : []) as SearchHit[];
+        // The server also matches a person on fields a person is not named by -
+        // asking for "p" returned "Stanly / Goffy" because the SELLER's CATEGORY
+        // is "Mobile Phones". A PEOPLE list must only ever offer people whose
+        // own name, handle or shop name contains what was typed, ranked the way
+        // every search box ranks: exact, then starts-with, then contains.
+        // Nothing matching means the honest empty state, never a stranger.
+        const needle = query.toLowerCase();
+        const peopleOnly = hits
+          .filter((hit): hit is SearchUserHit => hit.kind === 'user')
+          .filter((hit) => {
+            const fields = [hit.username, hit.name, hit.displayName, hit.businessName]
+              .filter((value): value is string => typeof value === 'string' && value.length > 0)
+              .map((value) => value.toLowerCase());
+            return fields.some((value) => value.includes(needle));
+          })
+          .sort((a, b) => {
+            const rank = (hit: SearchUserHit) => {
+              const fields = [hit.username, hit.name, hit.displayName, hit.businessName]
+                .filter((value): value is string => typeof value === 'string' && value.length > 0)
+                .map((value) => value.toLowerCase());
+              if (fields.some((value) => value === needle)) return 0;
+              if (fields.some((value) => value.startsWith(needle))) return 1;
+              return 2;
+            };
+            return rank(a) - rank(b);
+          })
+          .slice(0, 4);
+        setPeopleHits(peopleOnly);
+        setResultMix(
+          data
+            ? {
+                // The server's user total is only honest while nothing was
+                // dropped above: if we filtered non-matching people out, its
+                // number describes a list the user never sees.
+                user: (() => {
+                  const serverUsers = Number(data.counts?.user ?? 0);
+                  const rawUsers = hits.filter((hit) => hit.kind === 'user').length;
+                  return rawUsers > peopleOnly.length ? peopleOnly.length : Math.max(serverUsers, peopleOnly.length);
+                })(),
+                product: Number(data.counts?.product ?? 0),
+                category: Number(data.counts?.category ?? 0),
+                location: Number(data.counts?.location ?? 0),
+              }
+            : null,
+        );
+      } catch {
+        if (id === peopleSeq.current) {
+          setPeopleHits([]);
+          setResultMix(null);
+        }
+      }
+    }, 280);
+    return () => clearTimeout(timer);
+  }, [query]);
 
   // Blocked sellers hide on this device (same list as feed + chat inbox).
   const { blockedSet } = useBlockedSellers();
@@ -286,6 +385,135 @@ export default function ExploreScreen() {
     () => new Set(activePromos.filter((p) => p.kind === 'featuredPost' && p.postId).map((p) => p.postId as string)),
     [activePromos]
   );
+
+
+  /**
+   * People search overlay, rendered as the LAST child of the screen.
+   *
+   * Inside the FlatList header the rows painted under the list cells and never
+   * received a touch - "See all results" worked, every person row was a dead tap.
+   * As a sibling it is on top for both painting and hit-testing.
+   *
+   * `top` must clear the search bar: the bar is h-11 (44dp) and starts at the
+   * same 60dp offset, so 60 used to drop the FIRST person row straight on top
+   * of the field. Any tap in the field's right third (the clear button, a cursor
+   * placement) then hit that row and navigated away instead. 60 + 44 = 104 puts
+   * the panel flush under the bar on every density.
+   */
+  const searchOverlay = query ? (
+    <View
+      style={{
+        position: 'absolute',
+        top: 104,
+        left: 0,
+        right: 0,
+        zIndex: 30,
+        borderRadius: 16,
+        overflow: 'hidden',
+        backgroundColor: colors.surfaceContainerLowest,
+        borderWidth: 1,
+        borderColor: colors.outlineVariant,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.12,
+        shadowRadius: 16,
+        elevation: 8,
+      }}
+    >
+      {peopleHits.length > 0 ? (
+        <View>
+          <Text className="font-inter-600 px-4 pt-3 pb-1" style={{ fontSize: 12, color: colors.textSecondary }}>PEOPLE</Text>
+          {peopleHits.map((hit) => (
+            <TouchableOpacity
+              key={hit.username}
+              className="flex-row items-center gap-3 px-4 py-2"
+              accessibilityRole="button"
+              accessibilityLabel={
+                isSelfHit(hit.username)
+                  ? `Your profile, ${hit.displayName || hit.name || hit.username}`
+                  : `View ${hit.displayName || hit.name || hit.username}`
+              }
+              onPress={() => {
+                Keyboard.dismiss();
+                // A hit that IS you opens YOUR profile tab (Instagram/Amazon
+                // standard), not your public storefront.
+                if (isSelfHit(hit.username)) router.push('/(tabs)/profile');
+                else router.push(`/seller/${encodeURIComponent(hit.username)}`);
+              }}
+            >
+              {hit.avatar ? (
+                <Image source={{ uri: String(hit.avatar) }} style={{ width: 36, height: 36, borderRadius: 18 }} />
+              ) : (
+                <View className="items-center justify-center" style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: colors.primaryContainer }}>
+                  <Text className="font-inter-600" style={{ fontSize: 14, color: colors.onPrimaryContainer }}>
+                    {(hit.displayName || hit.name || hit.username).slice(0, 1).toUpperCase()}
+                  </Text>
+                </View>
+              )}
+              <View className="flex-1">
+                <Text className="font-inter-600" style={{ fontSize: 14, color: colors.textPrimary }} numberOfLines={1}>
+                  {hit.displayName || hit.name || hit.username}
+                </Text>
+                <Text className="font-inter-400" style={{ fontSize: 12, color: colors.textSecondary }} numberOfLines={1}>
+                  @{hit.username}
+                  {isSelfHit(hit.username) ? ' · you' : ''}
+                  {hit.location ? ` · ${hit.location}` : ''}
+                </Text>
+              </View>
+              <Text className="font-inter-600" style={{ fontSize: 13, color: colors.primary }}>{isSelfHit(hit.username) ? 'Profile' : 'View'}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      ) : (
+        // An empty dropdown with no words in it is a dead end: the user cannot
+        // tell "still loading" from "nothing exists". Say which case it is.
+        <View className="px-4 py-4">
+          <Text className="font-inter-600" style={{ fontSize: 14, color: colors.textPrimary }} numberOfLines={1}>
+            {resultMix === null
+              ? 'Searching…'
+              : resultMix.user + resultMix.product + resultMix.location + resultMix.category === 0
+                ? `No matches for "${query}"`
+                : 'No people found'}
+          </Text>
+          <Text className="font-inter-400 mt-1" style={{ fontSize: 12, lineHeight: 17, color: colors.textSecondary }}>
+            {resultMix === null
+              ? 'Looking for people, products and places.'
+              : resultMix.user + resultMix.product + resultMix.location + resultMix.category === 0
+                ? 'Check the spelling, or browse the categories below.'
+                : 'See all results below for products and places.'}
+          </Text>
+        </View>
+      )}
+      {/* The honest footer: the real mix plus the full result set. */}
+      <TouchableOpacity
+        className="flex-row items-center gap-2 px-4 h-12"
+        style={{ borderTopWidth: 1, borderTopColor: colors.outlineVariant }}
+        accessibilityRole="button"
+        accessibilityLabel={`See all results for ${query}`}
+        onPress={() => {
+          Keyboard.dismiss();
+          router.push(`/search?q=${encodeURIComponent(query)}`);
+        }}
+      >
+        <SearchIcon size={16} color={colors.primary} />
+        <Text className="font-inter-500 flex-1" style={{ fontSize: 13, color: colors.primary }} numberOfLines={1}>
+          See all results for “${query}”
+        </Text>
+        {resultMix ? (
+          <Text className="font-inter-400" style={{ fontSize: 12, color: colors.textSecondary }}>
+            {[
+              resultMix.user > 0 ? `${resultMix.user} ${resultMix.user === 1 ? 'person' : 'people'}` : null,
+              resultMix.product > 0 ? `${resultMix.product} ${resultMix.product === 1 ? 'product' : 'products'}` : null,
+              resultMix.location > 0 ? `${resultMix.location} ${resultMix.location === 1 ? 'place' : 'places'}` : null,
+              resultMix.category > 0 ? `${resultMix.category} ${resultMix.category === 1 ? 'category' : 'categories'}` : null,
+            ]
+              .filter(Boolean)
+              .join(' · ')}
+          </Text>
+        ) : null}
+      </TouchableOpacity>
+    </View>
+  ) : null;
 
   return (
     <View className="flex-1 bg-surface">
@@ -373,10 +601,33 @@ export default function ExploreScreen() {
                 }}
                 returnKeyType="search"
               />
+              {/* Clear (X) - industry standard (Instagram/Amazon/Facebook): with a
+                  query active the results overlay replaces the browse grid, so
+                  without this the only way back to browsing is to delete every
+                  character by hand. */}
+              {search.length > 0 ? (
+                <TouchableOpacity
+                  onPress={() => {
+                    setSearch('');
+                    Keyboard.dismiss();
+                  }}
+                  hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                  accessibilityRole="button"
+                  accessibilityLabel="Clear search"
+                  style={{ paddingLeft: 8 }}
+                >
+                  <CloseIcon size={18} color={colors.secondary} />
+                </TouchableOpacity>
+              ) : null}
             </View>
-            <Text className="font-inter-400 text-textSecondary mb-4" style={{ fontSize: 13, lineHeight: 18, letterSpacing: 0.13 }}>
-              {filteredPosts.length} {filteredPosts.length === 1 ? 'item found' : 'items found'}
-            </Text>
+            {/* People search overlay is rendered OUTSIDE this list (see searchOverlay) */}
+
+            {/* The bare "N items found" line is gone on purpose: it counted
+                only the listings already loaded in memory, so searching a
+                person's name printed "0 items found" while the server held
+                four exact matches. The overlay above now states the real mix
+                (people / products / places) and links to the full result set;
+                with no query the grid speaks for itself. */}
 
             {/* View Nearby Sellers — Figma: full-width purple filled button, white map icon + white text */}
             <TouchableOpacity
@@ -526,6 +777,10 @@ export default function ExploreScreen() {
         )}
       >
       </FlatList>
+
+        {/* Last child so it paints and receives touches above the list (the rows
+            inside a FlatList header were unreachable). */}
+        {searchOverlay}
 
       {/* Filters Bottom Sheet */}
       <Modal visible={filterVisible} transparent animationType="slide" onRequestClose={() => setFilterVisible(false)}>

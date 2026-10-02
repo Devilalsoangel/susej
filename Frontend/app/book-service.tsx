@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, Image, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -98,6 +98,43 @@ export default function BookServiceScreen() {
   // 400d every booking whose stored type isn't service.
   const [listingType, setListingType] = useState<string | null>(null);
   const [placing, setPlacing] = useState(false);
+  // Lock held by an open consent dialog: mirrors placingRef into render so the
+  // Book Now button shows the wait instead of staying tappable (a tap on it
+  // could only be refused, which reads as a dead button).
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  // Submission lock, acquired BEFORE the first await (wallet refresh) and held
+  // through the confirmation dialog: two taps used to run two wallet syncs and
+  // stack two booking confirmations, each placing its own order.
+  const placingRef = useRef(false);
+  const confirmExpiryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Which confirmation owns the lock. Bumped whenever a dialog is closed or
+  // expires, so an ORPHANED dialog (Android dismissing the alert without firing
+  // a handler leaves it tappable) can never place against a lock that a newer
+  // confirmation already holds.
+  const confirmSeqRef = useRef(0);
+
+  const releaseBookingLock = () => {
+    placingRef.current = false;
+    setConfirmOpen(false);
+    if (confirmExpiryRef.current) {
+      clearTimeout(confirmExpiryRef.current);
+      confirmExpiryRef.current = null;
+    }
+  };
+
+  // Close/abandon the consent gate: the dialog is gone, so the next tap must
+  // open a FRESH confirmation instead of reusing this one.
+  const closeConfirmDialog = () => {
+    confirmSeqRef.current += 1;
+    releaseBookingLock();
+  };
+
+  useEffect(
+    () => () => {
+      if (confirmExpiryRef.current) clearTimeout(confirmExpiryRef.current);
+    },
+    []
+  );
   // Real seller rating (PDP parity: users-route aggregate of delivered-order
   // reviews). Silent on failure; zero-review sellers keep the honest empty
   // line — never a fabricated score, never a hardcoded "none".
@@ -157,7 +194,7 @@ export default function BookServiceScreen() {
   // Type must be resolved before money moves: the fee (and order kind) derive
   // from it, and booking blind sends the wrong rail.
   const typeReady = !listingIdParam || !!listingType;
-  const canBook = !!selectedDate && !!selectedTime && !placing && !listingLoading && !listingGone && !!listingIdParam && !!bookingSeller && !!selectedPackage && typeReady;
+  const canBook = !!selectedDate && !!selectedTime && !placing && !confirmOpen && !listingLoading && !listingGone && !!listingIdParam && !!bookingSeller && !!selectedPackage && typeReady;
 
   useEffect(() => {
     setSellerRating(null);
@@ -189,8 +226,13 @@ export default function BookServiceScreen() {
 
   const handleBook = async () => {
     const pkg = selectedPackage;
+    if (placingRef.current) return;
     if (!selectedDate || !selectedTime || placing || !listingIdParam || listingGone || !bookingSeller || !pkg || !typeReady) return;
+    // Lock first — everything below awaits (wallet refresh) before any guard
+    // could stop a second tap from booking the same slot twice.
+    placingRef.current = true;
     if (slotInPast(selectedTime)) {
+      releaseBookingLock();
       Alert.alert('Slot passed', 'That time already passed today — pick a later slot.');
       return;
     }
@@ -200,9 +242,9 @@ export default function BookServiceScreen() {
     // not the delivery fee — then the server 400d after consent.
     const price = Math.round(pkg.price);
     const dueNow = price + bookingFee;
-    await syncWalletFromServer().catch(() => {});
-    const wallet = await getWallet().catch(() => null);
+    const wallet = await syncWalletFromServer().then(() => getWallet()).catch(() => null);
     if (wallet && wallet.balance < dueNow) {
+      releaseBookingLock();
       Alert.alert(
         'Insufficient wallet balance',
         `Your wallet has ${formatPrice(wallet.balance)} but this booking costs ${formatPrice(dueNow)}. Add money in the Wallet tab first.`,
@@ -216,14 +258,46 @@ export default function BookServiceScreen() {
     // Consent gate (Urban Company parity): one tap used to instant-charge the
     // wallet with no total/method confirmation. Confirm price + wallet debit
     // + slot BEFORE anything moves.
+    // Safety valve: Android can dismiss the dialog without firing a button
+    // handler, so the lock would stay held forever. On expiry the lock is
+    // re-armed AND the buyer is told why — a silent release is indistinguishable
+    // from a dead button, and the dialog it leaves behind is retired via
+    // confirmSeqRef so its Pay button can neither book nor sit there mute.
+    const confirmSeq = confirmSeqRef.current + 1;
+    confirmSeqRef.current = confirmSeq;
+    setConfirmOpen(true);
+    confirmExpiryRef.current = setTimeout(() => {
+      confirmExpiryRef.current = null;
+      if (confirmSeq !== confirmSeqRef.current) return;
+      confirmSeqRef.current += 1;
+      releaseBookingLock();
+      Alert.alert(
+        'Confirmation timed out',
+        'That booking confirmation expired before you confirmed — nothing was charged. Tap Book Now to start again.'
+      );
+    }, 120000);
     Alert.alert(
       'Confirm booking',
       `${serviceTitle}\n${summaryLine}\n${formatPrice(Math.round(pkg.price))}${bookingFee > 0 ? ` + ${formatPrice(bookingFee)} delivery` : ''} · pays from Wallet`,
       [
-        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Cancel',
+          style: 'cancel',
+          onPress: closeConfirmDialog,
+        },
         {
           text: `Pay ${formatPrice(Math.round(pkg.price) + bookingFee)}`,
           onPress: () => {
+            if (!placingRef.current || confirmSeq !== confirmSeqRef.current) {
+              // Expired, cancelled, or superseded dialog. NEVER a silent
+              // no-op: a mute Pay button reads as a broken app and silently
+              // swallows a booking the buyer thinks they placed.
+              Alert.alert(
+                'Confirmation expired',
+                'That confirmation is no longer valid — nothing was charged. Tap Book Now to start again.'
+              );
+              return;
+            }
             setPlacing(true);
             try {
               const [order] = placeOrders(
@@ -252,6 +326,7 @@ export default function BookServiceScreen() {
               Alert.alert("Couldn't place booking", 'Something went wrong. Please try again.');
             } finally {
               setPlacing(false);
+              releaseBookingLock();
             }
           },
         },
@@ -425,7 +500,7 @@ export default function BookServiceScreen() {
           className={`w-full h-14 ${canBook ? 'bg-primaryContainer' : 'bg-surfaceContainer'} rounded-figma-16 items-center justify-center`}
           onPress={handleBook}
         >
-          {placing ? (
+          {placing || confirmOpen ? (
             <ActivityIndicator color={colors.onPrimary} />
           ) : (
             <Text className={`text-figma-16 font-inter-600 ${canBook ? 'text-white' : 'text-textTertiary'}`}>

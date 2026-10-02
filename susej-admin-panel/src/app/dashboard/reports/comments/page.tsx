@@ -1,21 +1,27 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import { createColumnHelper } from "@tanstack/react-table";
 import { DataTable } from "@/components/data-table/data-table";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { StatTile } from "@/components/shared/stat-tile";
+import { ErrorState } from "@/components/shared/error-state";
 import { useDbResource } from "@/hooks/use-db-resource";
-import { apiDelete } from "@/lib/api-mutate";
+import { apiDelete, apiPatch } from "@/lib/api-mutate";
+import { toast } from "@/components/ui/toast";
 import { formatDate } from "@/lib/utils";
 import { MessageSquareX, CheckCircle2 } from "lucide-react";
 import type { ReportedCommentRow } from "@/types/admin-rows";
 
 const column = createColumnHelper<ReportedCommentRow>();
 
-const makeColumns = (onDelete: (r: ReportedCommentRow) => void, onDismiss: (r: ReportedCommentRow) => void) => [
+const makeColumns = (
+  onDelete: (r: ReportedCommentRow) => void,
+  onDismiss: (r: ReportedCommentRow) => void,
+  pendingId: string | null
+) => [
   column.accessor("text", { header: "Comment", cell: (info) => <span className="text-[#18181B]">{info.getValue()}</span> }),
   column.accessor("authorName", { header: "Author", cell: (info) => <span className="font-medium">{info.getValue()}</span> }),
   column.accessor("postTitle", { header: "On Post", cell: (info) => <span className="text-[#71717A]">{info.getValue()}</span> }),
@@ -25,46 +31,67 @@ const makeColumns = (onDelete: (r: ReportedCommentRow) => void, onDismiss: (r: R
   column.display({
     id: "actions",
     header: "",
-    cell: (info) => (
-      <div className="flex gap-2">
-        <Button variant="danger" size="sm" onClick={() => onDelete(info.row.original)}>
-          <MessageSquareX className="h-3.5 w-3.5" /> Delete
-        </Button>
-        <Button variant="ghost" size="sm" onClick={() => onDismiss(info.row.original)}>
-          <CheckCircle2 className="h-3.5 w-3.5 text-[#16A34A]" /> Dismiss
-        </Button>
-      </div>
-    ),
+    cell: (info) => {
+      const row = info.row.original;
+      const busy = pendingId === row.id;
+      return (
+        <div className="flex gap-2">
+          <Button variant="danger" size="sm" disabled={busy} onClick={() => onDelete(row)}>
+            <MessageSquareX className="h-3.5 w-3.5" /> Delete
+          </Button>
+          <Button variant="ghost" size="sm" disabled={busy} onClick={() => onDismiss(row)}>
+            <CheckCircle2 className="h-3.5 w-3.5 text-[#16A34A]" /> Dismiss
+          </Button>
+        </div>
+      );
+    },
   }),
 ];
 
 export default function ReportedCommentsPage() {
-  const { data: rows, loading: rowsLoading, refresh } = useDbResource<ReportedCommentRow>("reported-comments");
-  const [items, setItems] = useState<ReportedCommentRow[] | null>(rows);
-
-  useEffect(() => {
-    setItems(rows ?? []);
-  }, [rows]);
+  const { data: rows, error, loading: rowsLoading, refresh } = useDbResource<ReportedCommentRow>("reported-comments");
+  const [removedIds, setRemovedIds] = useState<Set<string>>(() => new Set());
+  const [pendingId, setPendingId] = useState<string | null>(null);
+  const items = useMemo(
+    () => (rows ?? []).filter((row) => !removedIds.has(row.id)),
+    [rows, removedIds]
+  );
 
   async function deleteComment(r: ReportedCommentRow) {
-    setItems((prev) => (prev ?? []).filter((x) => x.id !== r.id));
+    setPendingId(r.id);
+    setRemovedIds((current) => new Set(current).add(r.id));
     try {
-      await apiDelete("reported-comments", r.id);
-      refresh();
+      await apiPatch("reported-comments", r.id, { action: "delete" });
+      await refresh();
+      toast.success("Comment deleted and report resolved.");
     } catch (e) {
-      setItems(rows ?? []);
-      console.error(e);
+      setRemovedIds((current) => {
+        const next = new Set(current);
+        next.delete(r.id);
+        return next;
+      });
+      toast.error(e instanceof Error ? e.message : "Comment deletion failed — nothing was changed.");
+    } finally {
+      setPendingId(null);
     }
   }
 
   async function dismissReport(r: ReportedCommentRow) {
-    setItems((prev) => (prev ?? []).filter((x) => x.id !== r.id));
+    setPendingId(r.id);
+    setRemovedIds((current) => new Set(current).add(r.id));
     try {
       await apiDelete("reported-comments", r.id);
-      refresh();
+      await refresh();
+      toast.success("Report dismissed.");
     } catch (e) {
-      setItems(rows ?? []);
-      console.error(e);
+      setRemovedIds((current) => {
+        const next = new Set(current);
+        next.delete(r.id);
+        return next;
+      });
+      toast.error(e instanceof Error ? e.message : "Report dismissal failed — nothing was changed.");
+    } finally {
+      setPendingId(null);
     }
   }
 
@@ -89,21 +116,29 @@ export default function ReportedCommentsPage() {
           <CardTitle>Reported Comments</CardTitle>
         </CardHeader>
         <CardContent>
-          <DataTable loading={rowsLoading}
-            columns={makeColumns(deleteComment, dismissReport)}
-            data={items ?? []}
-            searchable
-            searchKey="text"
-            filename="reported-comments"
-            exportColumns={[
-              { key: "text", label: "Comment" },
-              { key: "authorName", label: "Author" },
-              { key: "postTitle", label: "On Post" },
-              { key: "reason", label: "Reason" },
-              { key: "reportCount", label: "Reports" },
-              { key: "createdAt", label: "Reported" },
-            ]}
-          />
+          {error ? (
+            <ErrorState
+              title="Reported comments unavailable"
+              message={error}
+              onRetry={() => void refresh()}
+            />
+          ) : (
+            <DataTable loading={rowsLoading}
+              columns={makeColumns(deleteComment, dismissReport, pendingId)}
+              data={items ?? []}
+              searchable
+              searchKey="text"
+              filename="reported-comments"
+              exportColumns={[
+                { key: "text", label: "Comment" },
+                { key: "authorName", label: "Author" },
+                { key: "postTitle", label: "On Post" },
+                { key: "reason", label: "Reason" },
+                { key: "reportCount", label: "Reports" },
+                { key: "createdAt", label: "Reported" },
+              ]}
+            />
+          )}
         </CardContent>
       </Card>
     </div>

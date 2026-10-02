@@ -99,8 +99,22 @@ async function refresh<T>(key: string, loader: Loader<T>, options: Required<Cach
       else throw error;
     }
     if ((cacheEpochs.get(key) ?? 0) !== epoch) return value;
+    // A loader that resolves to `undefined` is a contract violation, and it used
+    // to take the whole request down: `JSON.stringify(undefined)` returns
+    // undefined (NOT a string), so `serialized.length` threw
+    // "Cannot read properties of undefined (reading 'length')" and every caller
+    // got an opaque 500 with an empty body. It is exactly what killed the chat
+    // inbox in production (GET /api/app/chat/threads, 8/8 requests, 500) while
+    // the write path and the per-thread read kept working.
+    //
+    // `undefined` also cannot round-trip: the Data Cache (KV/Redis-backed on
+    // Vercel) stores JSON, and a stored `undefined` comes back as `undefined`
+    // forever, so one bad run poisons every later request on the same key.
+    // Normalize to `null` (an honest "no value", which IS valid JSON) and never
+    // read `.length` off a possibly-absent serialization.
+    if (value === undefined) value = null as T;
     const serialized = JSON.stringify(value);
-    if (serialized.length <= options.maxBytes) {
+    if (typeof serialized === "string" && serialized.length <= options.maxBytes) {
       const now = Date.now();
       const record: CacheRecord<T> = {
         value,
@@ -130,20 +144,34 @@ export async function cachedRead<T>(key: string, loader: Loader<T>, input: Cache
   };
   const now = Date.now();
   const local = localCache.get(key) as CacheRecord<T> | undefined;
-  if (local && now < local.freshUntil) return local.value;
-  if (local && now < local.staleUntil) {
+  // A cache HIT is a promise about the value, and a poisoned one used to
+  // outlive every repair: `undefined` (or a non-object) is returned straight to
+  // the caller, the loader never runs again, and the endpoint is dead for good.
+  // That is exactly how the production chat inbox stopped returning threads
+  // while every other chat route kept working. A hit that cannot serve the
+  // caller is not a hit - drop it and reload.
+  const serves = (record: CacheRecord<T> | undefined): record is CacheRecord<T> =>
+    !!record && record.value !== undefined && record.value !== null;
+  if (serves(local) && now < local.freshUntil) return local.value;
+  if (serves(local) && now < local.staleUntil) {
     void refresh(key, loader, options).catch(() => undefined);
     return local.value;
   }
+  if (local && !serves(local)) localCache.delete(key);
 
   const readEpoch = cacheEpochs.get(key) ?? 0;
   const remote = await readRedis<T>(key);
   if (remote && readEpoch === (cacheEpochs.get(key) ?? 0)) {
-    localCache.set(key, remote as CacheRecord<unknown>);
-    if (now < remote.freshUntil) return remote.value;
-    if (now < remote.staleUntil) {
-      void refresh(key, loader, options).catch(() => undefined);
-      return remote.value;
+    if (serves(remote)) {
+      localCache.set(key, remote as CacheRecord<unknown>);
+      if (now < remote.freshUntil) return remote.value;
+      if (now < remote.staleUntil) {
+        void refresh(key, loader, options).catch(() => undefined);
+        return remote.value;
+      }
+    } else {
+      // Poisoned remote entry: evict it so the fresh write below replaces it.
+      await deleteRedis(key);
     }
   }
 
@@ -151,7 +179,7 @@ export async function cachedRead<T>(key: string, loader: Loader<T>, input: Cache
     return await refresh(key, loader, options);
   } catch (error) {
     const fallback = localCache.get(key) as CacheRecord<T> | undefined;
-    if (fallback && now < fallback.staleUntil) return fallback.value;
+    if (serves(fallback) && now < fallback.staleUntil) return fallback.value;
     throw error;
   }
 }

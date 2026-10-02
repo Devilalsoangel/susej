@@ -9,18 +9,22 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { serverApi } from './serverApi';
+import { sessionStorage } from './sessionStorage';
 
 export const WALLET_KEY = '@susej_wallet';
 export const WALLET_KEY_BASE = WALLET_KEY;
 
 async function getWalletKey(): Promise<string> {
+  // The live session envelope is the only trustworthy source of the signed-in
+  // handle. This used to read the legacy 'app_user' key - which sessionStorage
+  // DELETES on every envelope read - so the lookup always missed, the key always
+  // collapsed to the shared bare base, and every account read and wrote the same
+  // wallet slot: one user's balance and full transaction history leaking into
+  // the next account's offline wallet.
   try {
-    const raw = await AsyncStorage.getItem('app_user');
-    if (raw) {
-      const u = JSON.parse(raw) as { username?: string };
-      const name = typeof u?.username === 'string' ? u.username.trim() : '';
-      if (name) return `${WALLET_KEY_BASE}:${name}`;
-    }
+    const user = await sessionStorage.getUser();
+    const name = typeof user?.username === 'string' ? user.username.trim() : '';
+    if (name) return `${WALLET_KEY_BASE}:${name}`;
   } catch {}
   return WALLET_KEY_BASE;
 }

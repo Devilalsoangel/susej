@@ -256,14 +256,24 @@ export default function PromotionsScreen() {
       // Server purchase id for the local mirror (end-early matching).
       let purchaseId: string | null = null;
       try {
+        const quotedPrice = Math.round(Number(deal ?? pkg.price));
         const res = await serverApi.purchasePromotion({
           packageId: pkg.id,
           postId: selectedPost?.id,
           checkoutRef,
+          quotedPrice,
           ...(deal !== undefined ? { discountedPrice: deal } : {}),
         });
-      if (!res.ok) {
-        Alert.alert('Payment failed', res.error === 'offline' ? 'Could not reach the server — no money was charged. Try again when online.' : String(res.error || 'Could not start campaign. No money was charged.'));
+       if (!res.ok) {
+         const livePrice = Number((res.data as { currentPrice?: unknown } | null)?.currentPrice);
+         Alert.alert(
+           res.error === 'offline' ? 'Payment failed' : 'Payment not started',
+           res.error === 'offline'
+             ? 'Could not reach the server — no money was charged. Try again when online.'
+             : Number.isFinite(livePrice) && livePrice >= 0
+               ? `The price is now ₹${livePrice}. No money was charged; review and try again.`
+               : String(res.error || 'Could not start campaign. No money was charged.')
+         );
         getWallet().then((s) => setBalance(s.balance)).catch(() => {});
         return;
       }

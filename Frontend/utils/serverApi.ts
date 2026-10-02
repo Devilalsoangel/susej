@@ -8,6 +8,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
 import { sessionStorage } from './sessionStorage';
 import { getAdminUrl, getAppKey } from './adminSync';
+import { trace } from './trace';
 
 /**
  * Industry-standard transport classification (Instagram/WhatsApp pattern):
@@ -69,14 +70,54 @@ export function authErrorMessage(error: string | undefined, action: string): str
   return error;
 }
 
+export type AuthIntent = 'login' | 'signup';
+
+export type AuthCode =
+  | 'INVALID_BODY'
+  | 'INVALID_PHONE'
+  | 'INVALID_CODE'
+  | 'INVALID_INTENT'
+  | 'INTENT_MISMATCH'
+  | 'OTP_NOT_REQUESTED'
+  | 'OTP_EXPIRED'
+  | 'OTP_CHANGED'
+  | 'OTP_INCORRECT'
+  | 'OTP_LOCKED'
+  | 'OTP_COOLDOWN'
+  | 'RATE_LIMITED'
+  | 'DATABASE_UNAVAILABLE'
+  | 'SMS_UNAVAILABLE'
+  | 'SERVER_ERROR'
+  | 'ACCOUNT_EXISTS'
+  | 'SIGNUP_REQUIRED'
+  | 'ACCOUNT_DISABLED'
+  | 'UNKNOWN';
+
+export interface AuthSendOtpData {
+  ok: boolean;
+  intent?: AuthIntent;
+  message?: string;
+  devCode?: string;
+}
+
+export interface AuthVerifyData {
+  token: string;
+  user: Record<string, unknown>;
+  mode: AuthIntent;
+  created: boolean;
+  setupRequired: boolean;
+}
+
 export interface ApiResult<T> {
   ok: boolean;
   data: T | null;
   error?: string;
+  code?: AuthCode;
   /** Set on 404 from OTP verify: unknown number, signup consent required. */
   needsSignup?: boolean;
   /** Tries remaining after a wrong OTP guess (verify 401). Surfaced in UI. */
   attemptsLeft?: number;
+  accountExists?: boolean;
 }
 
 export interface ServerComment {
@@ -185,27 +226,96 @@ export interface SearchResponse {
 }
 
 async function getToken(): Promise<string | null> {
-  const session = await sessionStorage.getSession();
-  return session?.accessToken && session.accessToken.startsWith('susej_') ? session.accessToken : null;
+  try {
+    const session = await sessionStorage.getSession();
+    return session?.accessToken && session.accessToken.startsWith('susej_')
+      ? session.accessToken
+      : null;
+  } catch {
+    return null;
+  }
 }
 
-/** Fired when a call proves the Bearer is dead (HTTP 401 on a non-auth lane).
- *  AuthContext registers the local-wipe handler; serverApi never imports it
- *  (import cycle). Auth lanes are excluded — a 401 there is a credential
- *  rejection (wrong OTP/password), not a session death. */
-let expiredListener: ((token: string) => void | Promise<void>) | null = null;
-export function onSessionExpired(cb: (token: string) => void | Promise<void>): void {
-  expiredListener = cb;
+type SessionMissingListener = (
+  token: string | null
+) => void | Promise<void>;
+
+let sessionMissingListener: SessionMissingListener | null = null;
+let lastSessionMissing: { token: string | null; at: number } | null = null;
+
+export function onSessionMissing(cb: SessionMissingListener): void {
+  sessionMissingListener = cb;
+  const pending = lastSessionMissing;
+  if (pending && Date.now() - pending.at < 5000) {
+    void Promise.resolve(cb(pending.token)).catch(() => undefined);
+  }
 }
 
-async function expireIfCurrentToken(token: string): Promise<void> {
-  if (expiredListener) {
+export function onSessionExpired(
+  cb: (token: string) => void | Promise<void>
+): void {
+  sessionMissingListener = (token) =>
+    token ? cb(token) : undefined;
+}
+
+async function reportSessionMissing(token: string | null): Promise<void> {
+  trace('session-missing reported', {
+    token: token ? `${token.slice(0, 14)}…${token.slice(-4)}` : null,
+    listener: Boolean(sessionMissingListener),
+  });
+  lastSessionMissing = { token, at: Date.now() };
+  if (sessionMissingListener) {
     try {
-      await expiredListener(token);
+      await sessionMissingListener(token);
     } catch {}
     return;
   }
-  await sessionStorage.clearSessionIfToken(token);
+  if (token) await sessionStorage.clearSessionIfToken(token).catch(() => false);
+}
+
+const BEARER_EXPIRED_CODES = new Set([
+  'ACCESS_TOKEN_EXPIRED',
+  'AUTH_INVALID_TOKEN',
+  'AUTH_SESSION_MISSING',
+  'AUTH_TOKEN_EXPIRED',
+  'BEARER_EXPIRED',
+  'BEARER_TOKEN_EXPIRED',
+  'JWT_EXPIRED',
+  'SESSION_EXPIRED',
+  'SESSION_MISSING',
+  'TOKEN_EXPIRED',
+]);
+
+function machineCode(json: unknown): string | undefined {
+  if (!json || typeof json !== 'object') return undefined;
+  const record = json as Record<string, unknown>;
+  for (const key of ['code', 'authCode', 'errorCode', 'reason']) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim().toUpperCase();
+    }
+  }
+  return undefined;
+}
+
+function isBearerExpiredResponse(
+  status: number,
+  error: string,
+  code: string | undefined,
+  headers: Headers
+): boolean {
+  if (status !== 401) return false;
+  if (code && BEARER_EXPIRED_CODES.has(code)) return true;
+  if (error.trim().toLowerCase() === 'not authenticated') return true;
+  const challenge = headers.get('www-authenticate')?.toLowerCase() ?? '';
+  return (
+    challenge.includes('bearer') &&
+    (challenge.includes('invalid_token') || challenge.includes('error="expired"'))
+  );
+}
+
+function isAppKeyUploadPath(path: string): boolean {
+  return path === '/api/app/upload' || path === '/api/app/upload/sign';
 }
 
 const requestFlights = new Map<string, Promise<ApiResult<unknown>>>();
@@ -334,16 +444,42 @@ async function performRequest<T>(path: string, options: { method?: string; body?
       json = null;
     }
     if (!res.ok) {
-      const err = (json as { error?: string } | null)?.error ?? `HTTP ${res.status}`;
+      const rawError = (json as { error?: string } | null)?.error ?? `HTTP ${res.status}`;
+      const parsedCode = machineCode(json) as AuthCode | undefined;
+      const err = parsedCode === 'OTP_CHANGED'
+        ? 'That code expired. Tap Resend for a fresh one.'
+        : rawError;
       const needsSignup = (json as { needsSignup?: boolean } | null)?.needsSignup;
       const attemptsLeft = (json as { attemptsLeft?: number } | null)?.attemptsLeft;
-      // Dead Bearer (revoked server-side, rotated, or forged): never present
-      // cache as live. Wipe the token and tell the app to force re-auth.
-      if (res.status === 401 && token && !path.startsWith('/auth')) {
-        await expireIfCurrentToken(token);
-        return { ok: false, data: null, error: 'session-expired' };
+      const accountExists = (json as { accountExists?: boolean } | null)?.accountExists;
+      trace('response', {
+        path,
+        status: res.status,
+        code: parsedCode ?? null,
+        error: rawError.slice(0, 80),
+        token: token ? 'yes' : 'no',
+      });
+      if (
+        !path.startsWith('/auth') &&
+        isBearerExpiredResponse(res.status, rawError, parsedCode, res.headers)
+      ) {
+        await reportSessionMissing(token ?? null);
+        return {
+          ok: false,
+          data: null,
+          error: 'session-expired',
+          ...(parsedCode ? { code: parsedCode } : {}),
+        };
       }
-      return { ok: false, data: null, error: err, ...(needsSignup ? { needsSignup: true } : {}), ...(typeof attemptsLeft === 'number' ? { attemptsLeft } : {}) };
+      return {
+        ok: false,
+        data: null,
+        error: err,
+        ...(parsedCode ? { code: parsedCode } : {}),
+        ...(needsSignup ? { needsSignup: true } : {}),
+        ...(typeof attemptsLeft === 'number' ? { attemptsLeft } : {}),
+        ...(accountExists ? { accountExists: true } : {}),
+      };
     }
     return { ok: true, data: json };
   } catch {
@@ -417,17 +553,31 @@ async function performRequestWithAppKey<T>(path: string, options: { method?: str
     }
     if (!res.ok) {
       const err = (json as { error?: string } | null)?.error ?? `HTTP ${res.status}`;
-      // Dead-Bearer kill-switch — ONLY on Bearer-gated /api/app/* lanes
-      // (getAppUser rejects dead tokens there, so 401 proves session death).
-      // /api/v1/* is key-gated (bad APP_API_KEY 401s with a perfectly valid
-      // Bearer — wiping there logged users out over a server-config problem)
-      // and /api/data/* checks the key first (ambiguous). No /auth exclusion:
-      // this lane carries no auth routes.
-      if (res.status === 401 && token && path.startsWith("/api/app/")) {
-        await expireIfCurrentToken(token);
-        return { ok: false, data: null, error: 'session-expired' };
+      const parsedCode = machineCode(json) as AuthCode | undefined;
+      // An x-app-key rejection looks exactly like an expired bearer (401), and
+      // that is what happened on Sep 13: a build pointed at a host that refuses
+      // the app key logged EVERY user out mid-session with a false "session
+      // expired" notice. Only a request that actually carried a bearer can be
+      // evidence about the session.
+      if (
+        !isAppKeyUploadPath(path) &&
+        token &&
+        isBearerExpiredResponse(res.status, err, parsedCode, res.headers)
+      ) {
+        await reportSessionMissing(token ?? null);
+        return {
+          ok: false,
+          data: null,
+          error: 'session-expired',
+          ...(parsedCode ? { code: parsedCode } : {}),
+        };
       }
-      return { ok: false, data: null, error: err };
+      return {
+        ok: false,
+        data: null,
+        error: err,
+        ...(parsedCode ? { code: parsedCode } : {}),
+      };
     }
     return { ok: true, data: json };
   } catch {
@@ -466,15 +616,26 @@ async function requestWithAppKey<T>(path: string, options: { method?: string; bo
 
 export const serverApi = {
   // ── Auth ─────────────────────────────────────────────────────────────────
-  sendOtp: (phone: string) => request<{ ok: boolean; message?: string; devCode?: string; error?: string }>('/auth', { method: 'POST', body: { phone } }),
-  /** Sign-in existence probe: does this number have an account? Boolean only,
-   *  throttled server-side. Lets login redirect unknown numbers to signup. */
+  sendOtp: (phone: string, intent: AuthIntent) =>
+    request<AuthSendOtpData>('/auth', {
+      method: 'POST',
+      body: { phone, intent, create: intent === 'signup' },
+    }),
   checkPhone: (phone: string) => request<{ exists: boolean }>('/auth/check', { method: 'POST', body: { phone } }),
-  // create:true = explicit signup intent (signup screens only). Sign-in
-  // screens omit it, so a typo'd number gets 404 needsSignup instead of a
-  // silently minted ghost account + welcome money.
-  verifyOtp: (phone: string, code: string, create?: boolean) =>
-    request<{ token: string; user: Record<string, unknown>; needsSignup?: boolean; attemptsLeft?: number }>('/auth/verify', { method: 'POST', body: create ? { phone, code, create: true } : { phone, code } }),
+  verifyOtp: (phone: string, code: string, intentOrCreate: AuthIntent | boolean | undefined) => {
+    const intent: AuthIntent = typeof intentOrCreate === 'string'
+      ? intentOrCreate
+      : intentOrCreate === true ? 'signup' : 'login';
+    return request<AuthVerifyData>('/auth/verify', {
+      method: 'POST',
+      body: {
+        phone,
+        code,
+        intent,
+        create: intent === 'signup',
+      },
+    });
+  },
   emailAuth: (action: 'login' | 'register', email: string, password: string, name?: string) =>
     request<{ token: string; user: Record<string, unknown> }>('/auth/email', { method: 'POST', body: { action, email, password, name } }),
   googleAuth: (idToken: string, devBypass?: { email: string; name?: string }) =>
@@ -630,7 +791,7 @@ export const serverApi = {
     request<{ dispute: any }>('/disputes', { method: 'POST', body: dispute }),
   /** Server-owned campaign purchase: debit + ACTIVE placement in one tx.
    *  Idempotent on checkoutRef — safe to retry after a timeout. */
-  purchasePromotion: (order: { packageId: string; postId?: string; checkoutRef: string; discountedPrice?: number }) =>
+  purchasePromotion: (order: { packageId: string; postId?: string; checkoutRef: string; discountedPrice?: number; quotedPrice: number }) =>
     request<{ purchase: any }>('/promotions', { method: 'POST', body: order }),
   /** Accept / decline / counter a pending offer (either participant). */
   updateOfferStatus: (threadId: string, messageId: string, status: 'accepted' | 'declined' | 'countered') =>
@@ -640,10 +801,10 @@ export const serverApi = {
     }),
   /** Pinned-chat VAS: the SERVER owns the debit (atomic debit + pin, server
    *  price). The client must not pre-debit — doing both charged 2x per pin. */
-  pinThread: (threadId: string, days: number, ref?: string) =>
+  pinThread: (threadId: string, days: number, ref?: string, quotedPrice?: number) =>
     request<{ pinnedUntil: number; days: number }>(`/chat/threads/${encodeURIComponent(threadId)}/pin`, {
       method: 'POST',
-      body: { days, ...(ref ? { ref } : {}) },
+      body: { days, ...(ref ? { ref } : {}), ...(typeof quotedPrice === 'number' ? { quotedPrice: Math.round(quotedPrice) } : {}) },
     }),
 
   // ── Stories (REAL 24h stories, not post-derived) ──────────────────────────
@@ -825,6 +986,9 @@ export const serverApi = {
   uploadBannerImage: (dataUrl: string) =>
     requestWithAppKey<{ ok: boolean; url: string }>('/api/app/upload', { method: 'POST', body: { dataUrl }, timeoutMs: 60000 }),
 
+  getVideoUploadSignature: () =>
+    requestWithAppKey<{ ok: boolean; cloudName: string; apiKey: string; timestamp: number; folder: string; resourceType: string; allowedFormats: string[]; signature: string }>('/api/app/upload/sign', { method: 'POST', timeoutMs: 20000 }),
+
   // Sync one marketing banner to the admin (POST=create with flat payload,
   // PATCH=update with { id, data } wrapper).
   syncStorefrontBanner: (banner: {
@@ -866,4 +1030,16 @@ export const serverApi = {
     requestWithAppKey<{
       categories: Array<{ id: string; name: string; slug: string; icon?: string | null; bannerImage?: string | null; featured?: boolean; productCount?: number; children?: Array<{ name: string; slug: string }> }>;
     }>('/api/app/categories'),
+
+  /**
+   * Popular cities, aggregated from real rows (User.location written by the
+   * onboarding screen + AddressBookEntry.city). `source` is echoed so the UI
+   * can tell "the DB has none yet" apart from "the endpoint is down" - and
+   * neither case is allowed to fall back to a hardcoded city list.
+   */
+  getPopularCities: () =>
+    requestWithAppKey<{
+      cities: Array<{ name: string; users: number; addresses: number }>;
+      source: 'db' | 'unavailable';
+    }>('/api/app/cities'),
 };

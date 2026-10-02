@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
-import { findUserByPhone, canonPhone } from "@/lib/app-auth";
+import { findUserByPhone, parseAppAuthBody, parseAppPhone } from "@/lib/app-auth";
 import { getClientIp } from "@/lib/auth";
 
 // Existence probe for the sign-in screen: "does this number have an account?"
@@ -14,15 +14,16 @@ const CHECK_MAX = 30;
 const checkHits = new Map<string, { count: number; resetAt: number }>();
 
 export async function POST(req: NextRequest) {
-  let body: { phone?: string };
+  let parsedBody: unknown;
   try {
-    body = await req.json();
+    parsedBody = await req.json();
   } catch {
-    return NextResponse.json({ error: "Invalid body" }, { status: 400 });
+    return NextResponse.json({ error: "Invalid body", code: "INVALID_BODY" }, { status: 400 });
   }
-  // Existence probe for the sign-in screen: uniform 300ms timing + shared
-  // throttle so enumeration costs real time. Residual oracle accepted
-  // (the UX needs the signup/signin fork); CAPTCHA is the full fix.
+  const body = parseAppAuthBody(parsedBody);
+  if (!body || Object.keys(body).length === 0) {
+    return NextResponse.json({ error: "Invalid body", code: "INVALID_BODY" }, { status: 400 });
+  }
   const startedAt = Date.now();
   const ip = getClientIp(req);
   const now = Date.now();
@@ -32,22 +33,21 @@ export async function POST(req: NextRequest) {
   } else {
     cur.count += 1;
     if (cur.count > CHECK_MAX) {
-      return NextResponse.json({ error: "Too many attempts — try again in a minute" }, { status: 429 });
+      return NextResponse.json({ error: "Too many attempts — try again in a minute", code: "RATE_LIMITED" }, { status: 429 });
     }
   }
-  const phone = canonPhone(body.phone ?? "");
-  if (!phone) return NextResponse.json({ error: "Enter a phone number" }, { status: 400 });
+  const phone = parseAppPhone(body.phone);
+  if (!phone) {
+    return NextResponse.json({ error: "A valid Indian mobile number is required", code: "INVALID_PHONE" }, { status: 400 });
+  }
   const prisma = await getPrisma();
-  if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
-  // Every DB touch below can throw (Neon timeout, pool drop on serverless):
-  // without this guard the throw becomes a 500 HTML page, and the app shows
-  // a raw red "HTTP 500". Always answer JSON.
+  if (!prisma) return NextResponse.json({ error: "Database unavailable", code: "DATABASE_UNAVAILABLE" }, { status: 503 });
   try {
-  const user = await findUserByPhone(phone);
-  const elapsed = Date.now() - startedAt;
-  if (elapsed < 300) await new Promise((r) => setTimeout(r, 300 - elapsed));
-  return NextResponse.json({ exists: !!user });
+    const user = await findUserByPhone(phone);
+    const elapsed = Date.now() - startedAt;
+    if (elapsed < 300) await new Promise((r) => setTimeout(r, 300 - elapsed));
+    return NextResponse.json({ exists: !!user });
   } catch {
-    return NextResponse.json({ error: "Server hiccup. Please try again." }, { status: 500 });
+    return NextResponse.json({ error: "Server hiccup. Please try again.", code: "SERVER_ERROR" }, { status: 500 });
   }
 }

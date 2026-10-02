@@ -158,9 +158,11 @@ Purpose: durable, editable context for buyer-first E2E auditing, fixes, and late
 | EV-003 | Installed package metadata | `versionName=1.1.1`, `versionCode=2` | VERIFIED |
 | EV-004 | First install from host artifact | Old `1.1.0` was installed; artifact copy corrected | VERIFIED |
 | EV-005 | Foreground dump during an earlier test | `com.instagram.android`; those observations discarded | VERIFIED |
-| EV-006 | Clean release auth attempt | Incomplete because USB transport dropped and stale navigation state appeared | UNVERIFIED |
-| EV-007 | Valid release login through feed | Not yet proven | UNVERIFIED |
+| EV-006 | Clean release auth attempt | Earlier APK returned to auth tree; old bundle lacked post-login grace | VERIFIED FAILURE |
+| EV-007 | Patched APK valid OTP `9442730086` | Reached authenticated location onboarding without auth-tree bounce | VERIFIED |
 | EV-008 | Logout/relaunch/switch account | Not yet proven | UNVERIFIED |
+| EV-009 | CDP admin `/api/data/users?q=9442730086&take=20` | HTTP 200, total 1, active buyer `user0086` | VERIFIED |
+| EV-010 | Patched APK artifact | SHA-256 `3334629D3630DAFF083E551851F581F62CACE20CA0C47A483AC4E45B386B6AC9`; version 1.1.1/code 2 | VERIFIED |
 
 ## E2E queue
 

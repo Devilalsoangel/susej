@@ -10,12 +10,16 @@ if (!url) {
 }
 const c = new Client({ connectionString: url, connectionTimeoutMs: 20000, sslmode: 'disable' });
 
+let queryFailures = 0;
 async function q(label, sql) {
   try {
     const r = await c.query(sql);
     console.log(`\n=== ${label} ===`);
     console.log(JSON.stringify(r.rows, null, 1).slice(0, 4000));
-  } catch (e) { console.log(`\n=== ${label} === ERR: ${e.message.slice(0,120)}`); }
+  } catch (e) {
+    queryFailures += 1;
+    console.error(`\n=== ${label} === ERR: ${e.message.slice(0, 120)}`);
+  }
 }
 
 try {
@@ -35,9 +39,12 @@ await q('Books/Services', `SELECT COUNT(*)::int AS n FROM "Booking"`);
 
 await q('Orders', `SELECT COUNT(*)::int AS n FROM "Order"`);
 
-await q('Users', `SELECT id, "fullName", "username", "isSeller", "createdAt" FROM "User" ORDER BY "createdAt" DESC LIMIT 25`);
+await q('Users', `SELECT id, name, username, email, "isSeller", verification, "joinedAt" FROM "User" ORDER BY "joinedAt" DESC LIMIT 25`);
 
-await q('App users (api)', `SELECT id, name, username, email, "isSeller", verification, "createdAt" FROM users ORDER BY "createdAt" DESC LIMIT 25`);
-
-await c.end();
-process.exit(0);
+try {
+  await c.end();
+} catch (e) {
+  queryFailures += 1;
+  console.error('DISCONNECT ERR: ' + e.message.slice(0, 300));
+}
+process.exit(queryFailures === 0 ? 0 : 1);

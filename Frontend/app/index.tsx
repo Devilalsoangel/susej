@@ -1,12 +1,13 @@
-import { View, Text, StyleSheet } from 'react-native';
-import { router, usePathname } from 'expo-router';
+import { View, Text, StyleSheet, TouchableOpacity, Animated, Easing } from 'react-native';
+import { usePathname } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Svg, { Path } from 'react-native-svg';
 import { colors } from '../utils/theme';
 import { useAuth } from '../contexts/AuthContext';
+import { onboardingRouteForStep, replaceRoute } from '../utils/navigation';
 
 // Exact Figma path from splash-screen.svg (node 1:1872, viewBox matches canvas coords)
 const ShoppingBagIcon = () => (
@@ -19,38 +20,84 @@ const ShoppingBagIcon = () => (
 );
 
 export default function SplashScreen() {
-  const { hasOnboarded, isLoggedIn, isLoading } = useAuth();
+  const { hasOnboarded, isLoggedIn, isLoading, onboardingStep, sessionSeq, guestLanding, user } = useAuth();
   const pathname = usePathname();
-  // Single-shot guarded redirect: fires ONCE when loading settles (keeps the
-  // 2s brand moment), never re-armed by flag flips — the old timer re-fired
-  // on every auth transition and its bare replace could land mid-login or
-  // mid-logout, fighting the boundary reset into a corrupt stack.
   const redirected = useRef(false);
-  const initialAuth = useRef<{ hasOnboarded: boolean; isLoggedIn: boolean } | null>(null);
+  const [redirectAttempt, setRedirectAttempt] = useState(0);
+  const [redirectFailed, setRedirectFailed] = useState(false);
+  const initialAuth = useRef<{ hasOnboarded: boolean; isLoggedIn: boolean; onboardingStep: number; sessionSeq: number } | null>(null);
+  const progressAnim = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     if (pathname !== '/') {
       redirected.current = true;
       return;
     }
-    if (isLoading || redirected.current) return;
+    if (isLoading || redirected.current || redirectFailed) return;
     if (!initialAuth.current) {
-      initialAuth.current = { hasOnboarded, isLoggedIn };
+      initialAuth.current = { hasOnboarded, isLoggedIn, onboardingStep, sessionSeq };
     }
-    if (
-      initialAuth.current.hasOnboarded !== hasOnboarded ||
-      initialAuth.current.isLoggedIn !== isLoggedIn
-    ) {
-      redirected.current = true;
-      return;
-    }
-    const target = hasOnboarded && isLoggedIn ? '/(tabs)/feed' : '/(onboarding)/welcome';
+    // A session END is a durable fact, and the guest-landing flag is not: it is
+    // committed by the same state update that flips isLoggedIn, so reading it in
+    // the same commit can still see the pre-logout value. That race sent a user
+    // who had just signed out to the marketing carousel - "it takes me back to
+    // the welcome screen" - instead of the sign-in form. If a session existed
+    // when this screen first settled, a signed-out state means the session
+    // ended, so route to the form on that fact alone and never depend on the
+    // flag's timing.
+    const sessionEnded =
+      initialAuth.current.isLoggedIn === true && !isLoggedIn;
+    // A signed-out guest is either brand new (first-run carousel) or a user
+    // whose session just ended (logout / switch account / expiry) - the second
+    // group must reach the sign-in form, with the expiry notice, never
+    // "Get Started" as if they had never seen the app.
+    const target = !isLoggedIn
+      ? sessionEnded || guestLanding === 'login'
+        ? '/login'
+        : '/(onboarding)/welcome'
+      : hasOnboarded
+        ? '/(tabs)/feed'
+        : `/(onboarding)/${onboardingRouteForStep(onboardingStep)}`;
+    // Cold start gets the brand splash; a mid-session swap (sign-out, account
+    // change) already showed the brand, so it must not stall for 2 seconds.
+    const sessionSwap = initialAuth.current.isLoggedIn;
+    const delay = redirectAttempt !== 0 ? 900 : sessionSwap ? 300 : 2000;
+    // The line under the tagline was a static 48x2 bar: gpt vision read it as an
+    // ambiguous progress indicator that never moves. It now animates across the
+    // EXACT same window the redirect waits for - so it is a truthful indicator,
+    // not decoration pretending to be one.
+    progressAnim.setValue(0);
+    const anim = Animated.timing(progressAnim, {
+      toValue: 1,
+      duration: delay,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    });
+    anim.start();
     const timer = setTimeout(() => {
       if (redirected.current || pathname !== '/') return;
       redirected.current = true;
-      router.replace(target);
-    }, 2000);
-    return () => clearTimeout(timer);
-  }, [hasOnboarded, isLoggedIn, isLoading, pathname]);
+      void (async () => {
+        const navigated = await replaceRoute(target);
+        if (navigated) return;
+        redirected.current = false;
+        if (redirectAttempt === 0) {
+          setRedirectAttempt(1);
+        } else {
+          setRedirectFailed(true);
+        }
+      })();
+    }, delay);
+    return () => {
+      clearTimeout(timer);
+      anim.stop();
+    };
+  }, [guestLanding, hasOnboarded, isLoggedIn, isLoading, onboardingStep, pathname, redirectAttempt, redirectFailed, sessionSeq]);
+
+  const retryNavigation = () => {
+    if (isLoading || pathname !== '/') return;
+    setRedirectFailed(false);
+    setRedirectAttempt((attempt) => attempt + 1);
+  };
 
   return (
     <View style={styles.root}>
@@ -96,10 +143,20 @@ export default function SplashScreen() {
         {/* Tagline */}
         <Text style={styles.taglineText}>BUY. SELL. CONNECT.</Text>
 
-        {/* Progress Bar */}
+        {/* Progress: the fill width IS the redirect timer, so it never lies. */}
         <View style={styles.progressBarTrack}>
-          <View style={styles.progressBarFill} />
+          <Animated.View style={[styles.progressBarFill, { width: progressAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 72] }) }]} />
         </View>
+
+        {redirectFailed ? (
+          <TouchableOpacity
+            accessibilityRole="button"
+            onPress={retryNavigation}
+            style={styles.retryButton}
+          >
+            <Text style={styles.retryText}>Could not open Susej. Tap to retry.</Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
     </View>
   );
@@ -133,7 +190,12 @@ const styles = StyleSheet.create({
     opacity: 0.04,
   },
 
-  // ─── Center Section (Figma: icon at y=396, brand at y=539, shifted above center) ───
+  // ─── Center Section ───
+  // gpt vision pass 1 (-56): the group sat low under a big empty upper area.
+  // Pass 2 (-96): that traded the upper void for a LARGER void between the
+  // wordmark and the tagline, which is what the second verdict named. -16 sits
+  // the group just above true centre: breathing room above the mark, and the
+  // tagline no longer stranded at the bottom of a void.
   centerSection: {
     position: 'absolute',
     top: 0,
@@ -142,13 +204,13 @@ const styles = StyleSheet.create({
     bottom: 0,
     alignItems: 'center',
     justifyContent: 'center',
-    transform: [{ translateY: -56 }],
+    transform: [{ translateY: -16 }],
   },
   iconOuterWrapper: {
     width: 96,
     height: 96,
     borderRadius: 32,
-    marginBottom: 48,
+    marginBottom: 32,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.1,
@@ -177,8 +239,8 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   brandText: {
-    fontSize: 32,
-    lineHeight: 40,
+    fontSize: 34,
+    lineHeight: 42,
     letterSpacing: -0.5,
     color: colors.onPrimaryContainer,
     fontFamily: 'Inter',
@@ -190,7 +252,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 0,
     right: 0,
-    bottom: 32,
+    bottom: 76,
     alignItems: 'center',
   },
   taglineText: {
@@ -205,18 +267,35 @@ const styles = StyleSheet.create({
 
   // Progress bar (Figma: 48w x 2h, rx=1, y=945)
   progressBarTrack: {
-    width: 48,
-    height: 2,
+    width: 72,
+    height: 3,
     borderRadius: 1,
-    backgroundColor: 'rgba(255,255,255,0.20)',
+    backgroundColor: 'rgba(255,255,255,0.28)',
     overflow: 'hidden',
     marginBottom: 0,
   },
   progressBarFill: {
-    width: 48,
-    height: 2,
+    width: 72,
+    height: 3,
     borderRadius: 1,
     backgroundColor: colors.onPrimaryContainer,
+  },
+  retryButton: {
+    marginTop: 24,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.45)',
+  },
+  retryText: {
+    fontSize: 13,
+    lineHeight: 18,
+    letterSpacing: 0.14,
+    textAlign: 'center',
+    color: colors.onPrimaryContainer,
+    fontFamily: 'Inter',
+    fontWeight: '600',
   },
 
 });

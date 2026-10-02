@@ -13,9 +13,10 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useRecentlyViewed } from '../../contexts/RecentlyViewedContext';
 import { useBookmark } from '../../contexts/BookmarkContext';
 import { useNotifications } from '../../contexts/NotificationContext';
-import { hasRealImage, resolveAvatar, resolveListingImage } from '../../utils/productImages';
+import { hasRealImage, resolveListingImage } from '../../utils/productImages';
+import { UserAvatar } from '../../components/UserAvatar';
 import { serverApi } from '../../utils/serverApi';
-import { useBlockedSellers } from '../../utils/blockedSellers';
+import { useBlockedSellers, pushBlockRemote } from '../../utils/blockedSellers';
 import { goBack } from '../../utils/navigation';
 import { CommentsSheet } from '../../components/sheets/PostEngagementSheets';
 
@@ -33,6 +34,11 @@ interface SavedSearch {
 interface BlockedUser {
   username: string;
   name?: string;
+}
+
+function isServerUnavailable(error: unknown): boolean {
+  const value = String(error ?? '');
+  return value === 'offline' || value === 'server-unreachable' || /^HTTP 5\d\d$/.test(value);
 }
 
 const formatCommentTime = (time: number): string => {
@@ -121,15 +127,19 @@ export default function ProductDetailsScreen() {
   const [serverPost, setServerPost] = useState<import('../../contexts/PostContext').Post | null>(null);
   const [sellerRating, setSellerRating] = useState<{ avg: number; count: number } | null>(null);
   const [serverMiss, setServerMiss] = useState(false);
+  const [serverError, setServerError] = useState(false);
+  const [serverRetry, setServerRetry] = useState(0);
   const localPost = posts.find((p) => p.id === postId);
   useEffect(() => {
     setServerPost(null);
     setServerMiss(false);
+    setServerError(false);
     setQty(1);
   }, [postId]);
   useEffect(() => {
     if (localPost || !postId || serverPost || serverMiss) return;
     let alive = true;
+    setServerError(false);
     serverApi
       .getPost(postId)
       .then((res) => {
@@ -164,15 +174,20 @@ export default function ProductDetailsScreen() {
             brand: p.brand ? String(p.brand) : undefined,
             deliveryMode: typeof p.deliveryMode === 'string' ? p.deliveryMode : undefined,
           });
+        } else if (isServerUnavailable(res.error)) {
+          setServerError(true);
         } else {
           setServerMiss(true);
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!alive) return;
+        setServerError(true);
+      });
     return () => {
       alive = false;
     };
-  }, [localPost, postId, serverPost, serverMiss]);
+  }, [localPost, postId, serverPost, serverMiss, serverRetry]);
   const [enquireVisible, setEnquireVisible] = useState(false);
   const [enquireNote, setEnquireNote] = useState('');
   const [enquireDay, setEnquireDay] = useState('');
@@ -288,7 +303,7 @@ export default function ProductDetailsScreen() {
   const following = isFollowing(sellerUsername);
   // Blocked seller set (same device-local list as grids + chat): this page
   // gates purchase + contact actions, and related rails hide blocked rows.
-  const { blockedSet } = useBlockedSellers();
+  const { blockedSet, reload: reloadBlockedSellers } = useBlockedSellers();
   const sellerBlocked = !!sellerUsername && blockedSet.has(sellerUsername.toLowerCase());
   const guardSellerBlocked = (): boolean => {
     if (sellerBlocked) {
@@ -298,9 +313,10 @@ export default function ProductDetailsScreen() {
     return false;
   };
 
-  // Deterministic per-seller avatar (same derivation as the feed) — never one
-  // shared stock face for every seller.
-  const sellerAvatar = sellerUsername ? resolveAvatar(sellerUsername) : null;
+  // The seller's REAL picture is resolved by username (shared avatar
+  // directory) and rendered as <UserAvatar>, which draws initials when the
+  // account has no photo. The old resolveAvatar() value was one shared
+  // near-empty placeholder, so every seller read as a blank circle here.
   // Amazon-style trust row data: the users route aggregates EVERY delivered-order
   // review for this seller (avgRating/reviewCount). Silent on failure — a missing
   // rating must never block the PDP, and a seller with zero reviews shows nothing
@@ -324,6 +340,7 @@ export default function ProductDetailsScreen() {
   }, [sellerUsername]);
   const flow = getPostFlow(post ?? {});
   const isFood = post?.type === 'food_item';
+  const selectedServiceId = post?.type === 'service' ? String(post.id).trim() : '';
 
   const saved = isBookmarked(postId);
   const mrp = post?.mrp && post.mrp > price ? post.mrp : null;
@@ -334,7 +351,7 @@ export default function ProductDetailsScreen() {
 
   // Real post media first, deterministic seeded fallback last — never fake per-item images.
   const resolveImage = (p: { image?: string; images?: string[] } | undefined, pid: string) => ({
-    uri: p?.image ?? p?.images?.[0] ?? resolveListingImage(p, pid).uri,
+    uri: p?.image || p?.images?.[0] || resolveListingImage(p, pid).uri,
   });
 
   const recentProducts = recents
@@ -347,12 +364,14 @@ export default function ProductDetailsScreen() {
     if (saved) {
       removeBookmark(postId);
     } else {
+        const imageUrl = post.image || post.images?.[0];
       toggleBookmark({
         productId: postId,
         sellerName,
         sellerUsername,
         price: effectivePrice,
         description: title,
+        ...(imageUrl ? { imageUrl } : {}),
         savedAt: Date.now(),
       });
     }
@@ -478,6 +497,7 @@ export default function ProductDetailsScreen() {
           .filter(([, label]) => label)
           .map(([group, label]) => `${group}:${label}`)
           .join(', ');
+      const imageUrl = post.image || post.images?.[0];
         const added = addToCart({
           listingId: post.id,
           type: flow.archetype === 'food' ? 'food_item' : 'product',
@@ -485,6 +505,7 @@ export default function ProductDetailsScreen() {
           price: effectivePrice,
           seller: post.sellerName,
           sellerUsername: post.sellerUsername,
+          ...(imageUrl ? { imageUrl } : {}),
           ...(variantLabel ? { variantLabel } : {}),
         }, qty);
         if (!added) {
@@ -497,8 +518,11 @@ export default function ProductDetailsScreen() {
         router.push('/cart');
         return;
       case 'service':
-        // Carry the listing context so booking knows WHAT is being booked.
-        router.push(`/book-service?listingId=${encodeURIComponent(post?.id ?? '')}&title=${encodeURIComponent(title)}&seller=${encodeURIComponent(sellerName)}&sellerUsername=${encodeURIComponent(sellerUsername)}&description=${encodeURIComponent(String(description ?? '').split('\n')[0].slice(0, 120))}&category=${encodeURIComponent(category)}`);
+        if (!selectedServiceId) {
+          Alert.alert('Service unavailable', 'This service listing is missing its booking reference. Choose another service or try again later.');
+          return;
+        }
+        router.push(`/book-service?listingId=${encodeURIComponent(selectedServiceId)}&title=${encodeURIComponent(title)}&seller=${encodeURIComponent(sellerName)}&sellerUsername=${encodeURIComponent(sellerUsername)}&description=${encodeURIComponent(String(description ?? '').split('\n')[0].slice(0, 120))}&category=${encodeURIComponent(category)}`);
         return;
       case 'job':
         setApplyName(user?.name ?? '');
@@ -541,10 +565,17 @@ export default function ProductDetailsScreen() {
   };
 
   const handleBlockSeller = async () => {
+    const name = sellerUsername.trim();
+    if (!name) {
+      Alert.alert('Cannot block', 'This listing has no linked seller account.');
+      return;
+    }
+    const bKey = getBlockedKey();
+    let previousRaw: string | null = null;
     try {
-      const bKey = getBlockedKey();
       const legacyRaw = bKey !== BLOCKED_KEY_BASE ? await AsyncStorage.getItem(BLOCKED_KEY_BASE) : null;
-      let raw: string | null = await AsyncStorage.getItem(bKey);
+      previousRaw = await AsyncStorage.getItem(bKey);
+      let raw = previousRaw;
       if (raw === null && legacyRaw !== null) {
         raw = legacyRaw;
         try { await AsyncStorage.setItem(bKey, legacyRaw); } catch {}
@@ -555,16 +586,27 @@ export default function ProductDetailsScreen() {
           const parsed = JSON.parse(raw);
           if (Array.isArray(parsed)) list = parsed as BlockedUser[];
         } catch {
-          // corrupted data — start fresh
+          list = [];
         }
       }
-      if (!list.some((b) => b.username === sellerUsername)) {
-        list = [...list, { username: sellerUsername, name: sellerName }];
-        await AsyncStorage.setItem(getBlockedKey(), JSON.stringify(list));
+      if (!list.some((b) => b.username.toLowerCase() === name.toLowerCase())) {
+        list = [...list, { username: name, name: sellerName }];
+        await AsyncStorage.setItem(bKey, JSON.stringify(list));
       }
-      void import('../../utils/blockedSellers').then(({ pushBlockRemote }) => pushBlockRemote(sellerUsername)).catch(() => {});
-      Alert.alert('User blocked', `@${sellerUsername} is blocked — hidden here and they can no longer message you.`);
+      const remote = await pushBlockRemote(name);
+      if (!remote) {
+        if (previousRaw === null) await AsyncStorage.removeItem(bKey);
+        else await AsyncStorage.setItem(bKey, previousRaw);
+        Alert.alert('Block not saved', 'The server did not accept the block. Check your connection and try again.');
+        return;
+      }
+      reloadBlockedSellers();
+      Alert.alert('User blocked', `@${name} is blocked — hidden here and they can no longer message you.`);
     } catch {
+      try {
+        if (previousRaw === null) await AsyncStorage.removeItem(bKey);
+        else await AsyncStorage.setItem(bKey, previousRaw);
+      } catch {}
       Alert.alert('Something went wrong', 'Please try again.');
     }
   };
@@ -591,13 +633,49 @@ export default function ProductDetailsScreen() {
 
   // Honest states: spinner while loading, not-found for unknown/missing ids —
   // never a fake fallback product.
-  if (!loaded || (!post && !serverMiss)) {
+  if (!loaded || (!post && !serverMiss && !serverError)) {
     return (
       <View className="flex-1 px-5 pt-8" style={{ backgroundColor: colors.surface, paddingTop: insets.top + 8 }}>
         <View style={{ width: 150, height: 22, borderRadius: 11, backgroundColor: colors.surfaceContainer }} />
         <View style={{ width: '100%', height: 300, borderRadius: 20, marginTop: 22, backgroundColor: colors.surfaceContainer }} />
         <View style={{ width: '82%', height: 20, borderRadius: 10, marginTop: 18, backgroundColor: colors.surfaceContainer }} />
         <View style={{ width: '48%', height: 16, borderRadius: 8, marginTop: 12, backgroundColor: colors.surfaceContainer }} />
+      </View>
+    );
+  }
+
+  if (serverError && !post) {
+    return (
+      <View className="flex-1 items-center justify-center px-8" style={{ backgroundColor: colors.surface }}>
+        <TouchableOpacity
+          className="absolute flex-row items-center"
+          style={{ top: insets.top + 16, left: 20 }}
+          onPress={() => goBack('/feed')}
+        >
+          <ChevronLeftIcon size={18} color={colors.primary} />
+        </TouchableOpacity>
+        <View style={{ opacity: 0.35 }}>
+          <ShopIcon size={40} color={colors.textSecondary} />
+        </View>
+        <Text className="font-inter-700 mt-4 text-textPrimary text-center" style={{ fontSize: 18, lineHeight: 28 }}>
+          Listing unavailable
+        </Text>
+        <Text className="font-inter-400 text-center mt-1 text-textSecondary" style={{ fontSize: 14, lineHeight: 20 }}>
+          We couldn&apos;t reach the listing right now. It may still be available — try again.
+        </Text>
+        <TouchableOpacity
+          className="mt-6 px-6 h-12 items-center justify-center rounded-figma-16"
+          style={{ backgroundColor: colors.primaryContainer }}
+          onPress={() => {
+            setServerMiss(false);
+            setServerError(false);
+            setServerRetry((value) => value + 1);
+          }}
+        >
+          <Text className="font-inter-600 text-white" style={{ fontSize: 15, lineHeight: 20 }}>
+            Try again
+          </Text>
+        </TouchableOpacity>
       </View>
     );
   }
@@ -852,11 +930,7 @@ export default function ProductDetailsScreen() {
               onPress={() => router.push(`/seller/${sellerUsername}`)}
             >
               <View className="w-12 h-12 rounded-full items-center justify-center mr-3" style={{ backgroundColor: colors.surfaceContainer }}>
-                {sellerAvatar ? (
-                  <Image source={sellerAvatar} className="w-12 h-12 rounded-full" />
-                ) : (
-                  <View className="w-9 h-9 rounded-full" style={{ backgroundColor: colors.surfaceContainerHigh }} />
-                )}
+                <UserAvatar name={sellerName || sellerUsername || 'seller'} username={sellerUsername} size={48} />
               </View>
               <View className="flex-1 mr-1">
                 <View className="flex-row items-center" style={{ gap: 4 }}>
@@ -1105,6 +1179,7 @@ export default function ProductDetailsScreen() {
                             sellerUsername: item.sellerUsername,
                             price: item.price,
                             description: item.description.split('\n')[0],
+                            ...(item.image || item.images?.[0] ? { imageUrl: item.image || item.images?.[0] } : {}),
                             savedAt: Date.now(),
                           });
                       }}
@@ -1194,7 +1269,7 @@ export default function ProductDetailsScreen() {
                 onPress={() => {
                   if (guardSellerBlocked()) return;
                   router.push(
-                    `/(tabs)/chat?seller=${encodeURIComponent(sellerUsername)}&product=${encodeURIComponent(title)}&listing=${encodeURIComponent(String(id))}`
+                    `/(tabs)/chat?seller=${encodeURIComponent(sellerUsername)}&product=${encodeURIComponent(title)}&listing=${encodeURIComponent(postId)}`
                   );
                 }}
               >

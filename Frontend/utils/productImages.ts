@@ -58,6 +58,8 @@ export function resolveListingImage(
  * <AvatarView> for rendered avatars; resolveAvatar remains for data-shaped
  * positions only (followers lists, hub string) until those migrate too.
  */
+import { NO_PHOTO_PLACEHOLDER } from './avatarPresets';
+
 const AVATAR_BGS = ['#5d5fef', '#00796b', '#c2185b', '#6a1b9a', '#e65100', '#1565c0', '#2e7d32', '#5d4037'];
 export function avatarInitials(name: string): { initials: string; bg: string } {
   const clean = String(name ?? '').trim() || 'S';
@@ -69,14 +71,17 @@ export function avatarInitials(name: string): { initials: string; bg: string } {
 }
 
 /**
- * Deterministic avatar for any username/id - same identifier always renders
- * the same initials avatar. Initials (not stock faces) so no fake identity
- * is implied; blank-circle problem solved with an honest, stable render.
+ * Placeholder for an account with no photo.
+ *
+ * This used to return a THIRD-PARTY generated portrait
+ * (api.dicebear.com/.../initials?seed=<username>) for anyone without a picture.
+ * That was wrong three ways at once: it invented a face, so an empty profile
+ * rendered as a fake person; it shipped every username viewed to an outside
+ * service; and it degraded to a blank circle with no signal whenever the device
+ * was offline. It now returns an honest, local, offline-proof "no photo" mark -
+ * and because a profile picture is mandatory, the app routes anyone missing one
+ * into profile setup instead of leaving them browsing with a placeholder face.
  */
-export function resolveAvatar(usernameOrId: string, bgHex?: string): { uri: string } {
-  const seed = encodeURIComponent(usernameOrId || 'user');
-  // Optional brand-color background - storefront themes re-skin the initials
-  // avatar to the seller's purchased accent (Aug 25).
-  const bg = (bgHex || '5d5fef').replace('#', '');
-  return { uri: `https://api.dicebear.com/9.x/initials/png?seed=${seed}&backgroundColor=${bg}&fontSize=42` };
+export function resolveAvatar(_usernameOrId?: string, _bgHex?: string): { uri: string } {
+  return { uri: NO_PHOTO_PLACEHOLDER };
 }

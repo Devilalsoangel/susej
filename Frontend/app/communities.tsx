@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { View, Text, FlatList, TouchableOpacity, ScrollView, Dimensions, Image } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { resolveAvatar } from '../utils/productImages';
+import { AvatarView } from '../components/AvatarView';
 import { router } from 'expo-router';
 import { BackIcon, ArrowRightIcon } from '../utils/icons';
 import { CommunityPostCard } from '../components/cards/CommunityPostCard';
@@ -108,7 +108,7 @@ export default function CommunitiesScreen() {
                       onPress={() => router.push(`/community/${c.id}`)}
                     >
                       <View className="w-10 h-10 rounded-full bg-surfaceContainerLow items-center justify-center overflow-hidden">
-                        <Image source={resolveAvatar(c.id)} className="w-10 h-10 rounded-full" />
+                        <AvatarView name={c.name} size={40} />
                       </View>
                       <View className="flex-1 ml-3">
                         <Text className="text-figma-14 font-inter-600 text-textPrimary" numberOfLines={1}>
@@ -136,7 +136,7 @@ export default function CommunitiesScreen() {
                         style={{ borderWidth: 2, borderColor: colors.primaryContainer }}
                       >
                         <View className="w-[88px] h-[88px] rounded-full bg-surfaceContainerLow items-center justify-center overflow-hidden">
-                          <Image source={resolveAvatar(c.id)} className="w-full h-full" />
+                          <AvatarView name={c.name} size={88} />
                         </View>
                       </View>
                       <Text className="text-figma-11 font-inter-400 text-textSecondary text-center mt-2" numberOfLines={2}>
@@ -193,15 +193,16 @@ export default function CommunitiesScreen() {
                   }}
                   onPress={() => router.push(`/community/${dc.id}`)}
                 >
-                  {/* Image area — 128h */}
-                  <View className="w-full h-32 bg-surfaceContainer overflow-hidden">
-                    <Image source={resolveAvatar(dc.id)} className="w-full h-full" resizeMode="cover" />
+                  {/* Cover area — 128h. A community has no uploaded artwork, so
+                      it gets its own initials rather than a borrowed face. */}
+                  <View className="w-full h-32 bg-surfaceContainer overflow-hidden items-center justify-center">
+                    <AvatarView name={dc.name} size={56} />
                   </View>
                   {/* Card info */}
                   <View className="px-4 pt-3 pb-4">
                     <View className="flex-row items-center gap-3">
                       <View className="w-10 h-10 rounded-full bg-surfaceContainerLow items-center justify-center overflow-hidden">
-                        <Image source={resolveAvatar(dc.id)} className="w-8 h-8 rounded-full" />
+                        <AvatarView name={dc.name} size={32} />
                       </View>
                       <View className="flex-1">
                         <Text className="text-figma-14 font-inter-600 text-textPrimary">{dc.name}</Text>

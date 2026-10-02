@@ -3,6 +3,7 @@ import { View, Text, TextInput, TouchableOpacity, ActivityIndicator } from 'reac
 import { LeafletMapHost } from './LeafletMap';
 import * as Location from 'expo-location';
 import { colors } from '../utils/theme';
+import { searchPlaces, reverseGeocode, formatDistance, type PlaceSuggestion } from '../utils/placeSearch';
 
 /**
  * Live-map location picker (store address at Become-a-Seller, optional
@@ -16,31 +17,8 @@ export interface PickedLocation {
   label: string;
 }
 
-const NOMINATIM = 'https://nominatim.openstreetmap.org';
-const UA = 'susej-marketplace-demo/1.0';
 
-interface SearchResult {
-  label: string;
-  lat: number;
-  lng: number;
-}
 
-async function reverseGeocode(lat: number, lng: number): Promise<string> {
-  try {
-    const r = await fetch(
-      `${NOMINATIM}/reverse?format=json&lat=${lat}&lon=${lng}&zoom=17&addressdetails=1`,
-      { headers: { 'User-Agent': UA } }
-    );
-    const j: any = await r.json();
-    const a = j?.address ?? {};
-    const primary = j?.name || a.house_number || a.road || a.suburb || a.neighbourhood;
-    const area = a.city || a.town || a.village || a.county || a.state_district || a.state;
-    if (primary && area && String(primary) !== String(area)) return `${primary}, ${area}`;
-    return String(primary || area || `${lat.toFixed(5)}, ${lng.toFixed(5)}`);
-  } catch {
-    return `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
-  }
-}
 
 interface Props {
   value: PickedLocation | null;
@@ -55,7 +33,7 @@ export function MapLocationPicker({ value, onChange, height = 290 }: Props) {
     value ? { lat: value.lat, lng: value.lng, zoom: 15 } : { lat: 26.9124, lng: 75.7873, zoom: 11 }
   );
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<SearchResult[]>([]);
+  const [results, setResults] = useState<PlaceSuggestion[]>([]);
   const [searching, setSearching] = useState(false);
   const [resolving, setResolving] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -69,24 +47,12 @@ export function MapLocationPicker({ value, onChange, height = 290 }: Props) {
     }
     setSearching(true);
     debounceRef.current = setTimeout(async () => {
-      try {
-        const r = await fetch(
-          `${NOMINATIM}/search?format=json&q=${encodeURIComponent(query.trim())}&limit=5&countrycodes=in&addressdetails=1`,
-          { headers: { 'User-Agent': UA } }
-        );
-        const j: any[] = await r.json();
-        setResults(
-          (j || []).map((it) => ({
-            label: String(it.display_name ?? '').split(',').slice(0, 3).join(', '),
-            lat: Number(it.lat),
-            lng: Number(it.lon),
-          })).filter((it) => Number.isFinite(it.lat) && Number.isFinite(it.lng))
-        );
-      } catch {
-        setResults([]);
-      } finally {
-        setSearching(false);
-      }
+      // Origin = the chosen pin, else the centre the user is looking at. This is
+      // what makes the list nearest-first rather than "anything matching".
+      const origin = value ?? { lat: center.lat, lng: center.lng };
+      const found = await searchPlaces(query, origin);
+      if (debounceRef.current) setResults(found);
+      setSearching(false);
     }, 450);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -135,13 +101,27 @@ export function MapLocationPicker({ value, onChange, height = 290 }: Props) {
           {results.map((r, i) => (
             <TouchableOpacity
               key={`${r.lat},${r.lng},${i}`}
-              className="px-4 py-3"
-              style={{ borderBottomWidth: i < results.length - 1 ? 1 : 0, borderBottomColor: colors.outlineVariant }}
+              className="px-4 py-3 flex-row items-center"
+              style={{
+                minHeight: 44,
+                borderBottomWidth: i < results.length - 1 ? 1 : 0,
+                borderBottomColor: colors.outlineVariant,
+              }}
               onPress={() => pick(r.lat, r.lng)}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+              accessibilityLabel={`${r.label}, ${formatDistance(r.distanceKm)} away`}
             >
-              <Text className="font-inter-500 text-textPrimary" style={{ fontSize: 13 }} numberOfLines={1}>
-                {r.label}
-              </Text>
+              <View className="flex-1">
+                <Text className="font-inter-500 text-textPrimary" style={{ fontSize: 13 }} numberOfLines={1}>
+                  {r.label}
+                </Text>
+                {/* The near-me signal: how far this suggestion is from where the
+                    user is looking right now. */}
+                <Text className="font-inter-400 text-textSecondary" style={{ fontSize: 11, marginTop: 2 }}>
+                  {formatDistance(r.distanceKm)} away{r.kind ? ` · ${r.kind.replace(/_/g, ' ')}` : ''}
+                </Text>
+              </View>
             </TouchableOpacity>
           ))}
         </View>

@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ActivityIndicator } from 'react-native';
 import { BackIcon, CloseIcon } from '../utils/icons';
 import { colors } from '../utils/theme';
-import { resolveAvatar } from '../utils/productImages';
+import { UserAvatar } from '../components/UserAvatar';
 import { useAuth } from '../contexts/AuthContext';
 import { serverApi } from '../utils/serverApi';
 
@@ -103,7 +103,7 @@ export default function LiveScreen() {
                 style={{ backgroundColor: colors.surfaceContainerLowest, gap: 12 }}
                 onPress={() => !mine && router.push(`/seller/${s.hostUsername}`)}
               >
-                <Image source={resolveAvatar(s.hostUsername)} className="w-14 h-14 rounded-full" />
+                <UserAvatar name={s.hostName || s.hostUsername || 'Host'} username={s.hostUsername} size={56} />
                 <View className="flex-1">
                   <View className="flex-row items-center self-start px-1.5 rounded-full" style={{ backgroundColor: colors.error }}>
                     <Text className="font-inter-700 text-white" style={{ fontSize: 9, lineHeight: 13, letterSpacing: 0.6 }}>
@@ -151,7 +151,7 @@ export default function LiveScreen() {
               style={{ backgroundColor: colors.surfaceContainerLowest, gap: 12, opacity: 0.85 }}
               onPress={() => router.push(`/seller/${s.hostUsername}`)}
             >
-              <Image source={resolveAvatar(s.hostUsername)} className="w-14 h-14 rounded-full" />
+              <UserAvatar name={s.hostName || s.hostUsername || 'Host'} username={s.hostUsername} size={56} />
               <View className="flex-1">
                 <View className="flex-row items-center self-start px-1.5 rounded-full" style={{ backgroundColor: colors.surfaceContainer }}>
                   <Text className="font-inter-700 text-secondary" style={{ fontSize: 9, lineHeight: 13, letterSpacing: 0.6 }}>

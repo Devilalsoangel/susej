@@ -34,7 +34,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   // Only sellers can purchase pinned-chat VAS - buyers never see the feature.
   if (!auth.user.isSeller) return NextResponse.json({ error: "Only sellers can pin chats" }, { status: 403 });
 
-  let body: { days?: number; ref?: string };
+  let body: { days?: number; ref?: string; quotedPrice?: number };
   try {
     body = await req.json();
   } catch {
@@ -48,7 +48,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   if (thread.participantA !== username && thread.participantB !== username) {
     return NextResponse.json({ error: "Not a participant of this thread" }, { status: 403 });
   }
-  const invalidateThreadCaches = () => invalidateCache(cacheKey("chat", "threads-v2", thread.participantA), cacheKey("chat", "threads-v2", thread.participantB));
+  const invalidateThreadCaches = () => invalidateCache(cacheKey("chat", "threads-v3", thread.participantA), cacheKey("chat", "threads-v3", thread.participantB));
 
   const now = new Date();
   // activePins check moved inside $transaction to prevent concurrent bypass (race → 4 pins). See below.
@@ -100,6 +100,13 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
         }
         return NextResponse.json({ error: "Pin price changed since this attempt — retry with a fresh request, never the same ref" }, { status: 409 });
       }
+    }
+    const quotedPrice = Number(body.quotedPrice);
+    if (!Number.isInteger(quotedPrice) || quotedPrice !== pinPrice) {
+      return NextResponse.json(
+        { error: "Pin price changed. Review the new price before paying.", currentPrice: pinPrice },
+        { status: 409 }
+      );
     }
     let debited: Date | null = null;
     try {
@@ -224,6 +231,6 @@ export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: stri
      return NextResponse.json({ error: "No live pin of yours on this thread." }, { status: 404 });
    }
    const thread = await prisma.chatThread.findUnique({ where: { id }, select: { participantA: true, participantB: true } });
-   await invalidateCache(cacheKey("chat", "threads-v2", thread?.participantA ?? username), cacheKey("chat", "threads-v2", thread?.participantB ?? username));
+   await invalidateCache(cacheKey("chat", "threads-v3", thread?.participantA ?? username), cacheKey("chat", "threads-v3", thread?.participantB ?? username));
    return NextResponse.json({ ok: true, unpinned: true });
 }

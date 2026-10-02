@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
 import { getAppUser } from "@/lib/app-auth";
 import { validateMediaRefs } from "@/lib/media";
+import { sanitizeVariants, variantListingSold } from "../route";
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -139,7 +140,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     }
   }
   if (typeof body.category === "string") data.category = body.category.trim().slice(0, 60);
-  if (typeof body.isSold === "boolean") data.isSold = body.isSold;
+  // isSold is never a free flag here: the inventory block below derives it
+  // from any stock edit and only falls back to an explicit boolean when the
+  // request carries no inventory.
   // Authors may hide/publish their OWN listings (shop deactivation flows
   // through here). `featured` stays engine-owned (see above) — never author-set.
   if (body.status === "hidden" || body.status === "published") data.status = body.status;
@@ -155,14 +158,13 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     data.images = mediaCheck.urls;
   }
   if (Array.isArray((body as unknown as { variants?: unknown }).variants)) {
-    // Shared shape gate with POST (negative/unbounded deltas used to sail
-    // through this lane while POST refused them).
-    const { sanitizeVariants } = await import("../route");
+    // Shared shape gate with POST (negative/unbounded deltas, duplicate group
+    // names and duplicate values refused on this lane too).
     const check = sanitizeVariants((body as unknown as { variants?: unknown }).variants);
     if (!check.ok) {
-      return NextResponse.json({ error: (check as { error: string }).error }, { status: 400 });
+      return NextResponse.json({ error: check.error }, { status: 400 });
     }
-    data.variants = ((check as { variants: unknown }).variants as never);
+    data.variants = check.variants as never;
   }
   if (Array.isArray((body as unknown as { subCategories?: unknown }).subCategories)) {
     data.subCategories = ((body as unknown as { subCategories: unknown[] }).subCategories.map((s) => String(s).slice(0, 60)).filter(Boolean).slice(0, 20) as never);
@@ -172,18 +174,47 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   // Variant edits arrive together with stock edits on this route, so resolve
   // against the effective (incoming ?? stored) variant set.
   {
-    const incomingVariants = Array.isArray((body as unknown as { variants?: unknown }).variants)
-      ? ((body as unknown as { variants: Array<{ values?: Array<{ stock?: unknown }> }> }).variants)
-      : null;
-    const effVariants = incomingVariants ?? (post as unknown as { variants?: Array<{ values?: Array<{ stock?: unknown }> }> | null }).variants ?? null;
-    const tracked = Array.isArray(effVariants) && effVariants.some((g) =>
+    const variantsIncoming = Array.isArray((body as unknown as { variants?: unknown }).variants);
+    const effVariants = variantsIncoming
+      ? (data.variants as unknown)
+      : ((post as unknown as { variants?: unknown }).variants ?? null);
+    const tracked = Array.isArray(effVariants) && (effVariants as Array<{ values?: Array<{ stock?: unknown }> }>).some((g) =>
       Array.isArray(g?.values) && g.values.some((v) => typeof v?.stock === "number")
     );
+    let stockEdited = false;
     if (tracked) {
       data.stockLeft = null;
     } else if (typeof (body as unknown as { stockLeft?: unknown }).stockLeft === "number") {
       const sl = Math.floor(Number((body as unknown as { stockLeft: number }).stockLeft));
-      if (Number.isFinite(sl) && sl >= 0 && sl <= 100000) data.stockLeft = sl;
+      if (Number.isFinite(sl) && sl >= 0 && sl <= 100000) {
+        data.stockLeft = sl;
+        stockEdited = true;
+      }
+    }
+    // Zero-stock invariant on edit: restocking to 0 must mark the listing sold
+    // and adding stock must revive it, or the hub card reads Active while
+    // every order 400s (and the reverse after a restock). Derived from the
+    // effective inventory; a manual mark-sold toggle (no inventory in the
+    // request) still applies its explicit boolean.
+    if (variantsIncoming || stockEdited) {
+      const effectiveStock = typeof data.stockLeft === "number"
+        ? (data.stockLeft as number)
+        : typeof (post as unknown as { stockLeft?: unknown }).stockLeft === "number"
+          ? (post as unknown as { stockLeft: number }).stockLeft
+          : null;
+      data.isSold = tracked ? variantListingSold(effVariants) : effectiveStock !== null && effectiveStock <= 0;
+    } else if (tracked && typeof body.isSold !== "boolean") {
+      // Variant-tracked listing, no inventory and no explicit mark in the
+      // request: the seller's edit screen carries no per-value stock, so
+      // NOTHING re-derived isSold and a sold variant listing stayed sold
+      // forever — unrevivable without delete-and-repost. Re-derive from the
+      // stored per-value stock instead: stale sold flags repair themselves
+      // (revival), genuine depletion (every value at 0) stays sold. An
+      // explicit boolean below is the deliberate mark-sold toggle and is
+      // still honored.
+      data.isSold = variantListingSold(effVariants);
+    } else if (typeof body.isSold === "boolean") {
+      data.isSold = body.isSold;
     }
   }
   if (typeof (body as unknown as { negotiable?: unknown }).negotiable === "boolean") {

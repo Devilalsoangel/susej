@@ -277,11 +277,11 @@ export async function POST(req: NextRequest) {
     // Fail-closed (no catch): a lock failure aborts the tx, never proceeds
     // unlocked past the caps. The `?.` stays for providers without raw
     // queries — absent lock primitive, absent lock (documented, Neon has it).
-    await (tx as any).$queryRawUnsafe?.(`SELECT id FROM "User" WHERE id = $1 FOR UPDATE`, auth.user.id);
+    await tx.$queryRawUnsafe(`SELECT id FROM "User" WHERE id = $1 FOR UPDATE`, auth.user.id);
 
     const existing = await tx.user.findUnique({ where: { id: auth.user.id }, select: { id: true, username: true } });
 
-    if (!existing) throw new Error("User not found");
+    if (!existing?.username) throw new Error("User not found");
 
     if (amount < 0) {
 
@@ -303,8 +303,8 @@ export async function POST(req: NextRequest) {
 
     } else {
       const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      const recent = await (tx as any).walletTransaction.findMany({ where: { username: existing.username, title: { startsWith: 'Wallet top-up' }, amount: { gt: 0 }, ts: { gte: since } }, select: { amount: true } });
-      const sum = recent.reduce((s: number, r: any) => s + (Number(r.amount) || 0), 0);
+      const recent = await tx.walletTransaction.findMany({ where: { username: existing.username, title: { startsWith: 'Wallet top-up' }, amount: { gt: 0 }, ts: { gte: since } }, select: { amount: true } });
+      const sum = recent.reduce((s, r) => s + (Number(r.amount) || 0), 0);
       if (recent.length >= 10) throw new Error('Top-up limit reached: max 10 per 24h');
       if (sum + amount > 100000) throw new Error('Top-up limit reached: max 100000 per 24h');
       await tx.user.update({ where: { id: auth.user.id }, data: { walletBalance: { increment: amount } } });
@@ -538,6 +538,13 @@ export async function PUT(req: NextRequest) {
   }
   const totalDebit = amount + fee;
 
+  const verifiedSeller = await prisma.seller
+    .findUnique({ where: { id: `app_${auth.user.username!}` }, select: { kycStatus: true } })
+    .catch(() => null) as { kycStatus?: unknown } | null;
+  if (!verifiedSeller || String(verifiedSeller.kycStatus ?? "") !== "approved") {
+    return NextResponse.json({ error: "Payouts require current approved seller verification" }, { status: 400 });
+  }
+
   // Beneficiary resolution — the rail travels AND the account does (a payout
   // request with no destination is unpayable). Bank payouts go ONLY to the
   // KYC-verified account on the seller's file (verified-beneficiary
@@ -634,11 +641,11 @@ export async function PUT(req: NextRequest) {
       // deserialized payout vs refund-approve again.
       // Fail-closed (no catch): a lock failure aborts the tx, never proceeds
       // unlocked past the earnings guard. `?.` stays for raw-less providers.
-      await (tx as any).$queryRawUnsafe?.(
+      await tx.$queryRawUnsafe(
         `SELECT id FROM "Order" WHERE lower("sellerUsername") = lower($1) AND status = 'delivered' FOR UPDATE`,
         user.username!
       );
-      await (tx as any).$queryRawUnsafe?.(`SELECT id FROM "User" WHERE id = $1 FOR UPDATE`, user.id);
+      await tx.$queryRawUnsafe(`SELECT id FROM "User" WHERE id = $1 FOR UPDATE`, user.id);
       // Serialize concurrent payouts on the user row: the earnings guard
       // below is a non-locking read, so two parallel requests with different
       // refs both passed lifetimeNet-paidOut and cashed out top-ups as bank

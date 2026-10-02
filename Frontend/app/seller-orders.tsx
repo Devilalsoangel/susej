@@ -60,7 +60,7 @@ export default function SellerOrdersScreen() {
     const params = useLocalSearchParams<{ orderId?: string }>();
     const insets = useSafeAreaInsets();
   const { user } = useAuth();
-  const { orders, loaded: ordersLoaded, updateOrderStatus, respondRefund, cancelOrder } = useOrders();
+  const { orders, loaded: ordersLoaded, serverError: ordersServerError, refreshOrders, updateOrderStatus, respondRefund, cancelOrder } = useOrders();
   const { posts } = usePosts();
   const [tab, setTab] = useState<Tab>('All');
   // Proof-of-delivery notes per order (courier tracking ID / receiver name).
@@ -223,6 +223,18 @@ export default function SellerOrdersScreen() {
         </View>
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: insets.bottom + 48 }}>
+        {ordersLoaded && ordersServerError && (
+          <View className="mx-5 mb-3 px-4 py-3 rounded-figma-16" style={{ backgroundColor: colors.surfaceContainer }}>
+            <Text className="font-inter-500 text-textPrimary" style={{ fontSize: 13, lineHeight: 18 }}>
+              Orders couldn&apos;t refresh. This queue may be out of date.
+            </Text>
+            <TouchableOpacity className="mt-2 self-start" onPress={refreshOrders} accessibilityRole="button" accessibilityLabel="Retry loading seller orders">
+              <Text className="font-inter-600 text-primary" style={{ fontSize: 13, lineHeight: 18 }}>
+                Try again
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
         {/* Earnings pill — opens the wallet where seller earnings live. */}
         <TouchableOpacity
           className="self-start mx-5 mb-4 px-4 py-2 rounded-full flex-row items-center"
@@ -279,9 +291,22 @@ export default function SellerOrdersScreen() {
           )}
           {ordersLoaded && visible.length === 0 && (
             <View className="p-6 rounded-figma-24 items-center" style={{ backgroundColor: colors.surfaceContainer }}>
-              <Text className="font-inter-500 text-textSecondary" style={{ fontSize: 13, lineHeight: 18 }}>
-                {orderQuery.trim() ? `No orders match "${orderQuery.trim()}"` : `No ${tab === 'All' ? '' : tab.toLowerCase() + ' '}orders yet`}
-              </Text>
+              {ordersServerError ? (
+                <>
+                  <Text className="font-inter-500 text-textSecondary text-center" style={{ fontSize: 13, lineHeight: 18 }}>
+                    Orders couldn&apos;t load. This does not mean your queue is empty.
+                  </Text>
+                  <TouchableOpacity className="mt-3 px-4 py-2 rounded-full" style={{ backgroundColor: colors.primaryContainer }} onPress={refreshOrders}>
+                    <Text className="font-inter-600 text-white" style={{ fontSize: 13, lineHeight: 18 }}>
+                      Try again
+                    </Text>
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <Text className="font-inter-500 text-textSecondary" style={{ fontSize: 13, lineHeight: 18 }}>
+                  {orderQuery.trim() ? `No orders match "${orderQuery.trim()}"` : `No ${tab === 'All' ? '' : tab.toLowerCase() + ' '}orders yet`}
+                </Text>
+              )}
             </View>
           )}
           {visible.map((o) => {

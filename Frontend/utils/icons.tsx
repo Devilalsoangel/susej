@@ -207,6 +207,21 @@ export function LockArrowIcon({ size = 14, color = '#FAF7FF' }: IconProps) {
   );
 }
 
+// Despite its name, LockArrowIcon draws a plain RIGHT ARROW. gpt vision on the
+// OTP trust note: "the arrow icon is slightly unusual for a security statement.
+// A small lock/shield would communicate the concept faster." This is that
+// shield-with-check, for statements that are actually about security.
+export function ShieldCheckIcon({ size = 14, color = '#FAF7FF' }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path
+        d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-1.2 14.6l-3.5-3.5 1.4-1.4 2.1 2.1 4.6-4.6 1.4 1.4-6 6z"
+        fill={color}
+      />
+    </Svg>
+  );
+}
+
 export function GpsTargetIcon({ size = 22, color = '#FAF7FF' }: IconProps) {
   return (
     <Svg width={size} height={size} viewBox="0 0 22 22" fill="none">

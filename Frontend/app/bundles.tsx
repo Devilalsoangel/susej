@@ -16,10 +16,12 @@ interface BundleItem {
   price: number;
   seller: string;
   sellerUsername: string;
+  imageUrl?: string;
 }
 
 interface Bundle {
   id: string;
+  sellerUsername?: string;
   title: string;
   tagline: string;
   originalPrice: number;
@@ -44,14 +46,20 @@ export default function BundlesScreen() {
   const { addToCart } = useCart();
   const { posts } = usePosts();
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [serverBundles, setServerBundles] = useState<any[]>([]);
 
   const refreshBundles = useCallback(async () => {
     try {
       const res = await serverApi.getBundles();
-      if (res.ok && res.data?.bundles) setServerBundles(res.data.bundles);
+      if (!res.ok || !res.data || !Array.isArray(res.data.bundles)) {
+        setLoadError(true);
+        return;
+      }
+      setLoadError(false);
+      setServerBundles(res.data.bundles);
     } catch {
-      // offline: honest empty state below
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -60,6 +68,7 @@ export default function BundlesScreen() {
   useFocusEffect(
     useCallback(() => {
       setLoading(true);
+      setLoadError(false);
       void refreshBundles();
     }, [refreshBundles])
   );
@@ -79,18 +88,20 @@ export default function BundlesScreen() {
         const rawItems: any[] = Array.isArray(b.items) ? b.items : [];
         const items: BundleItem[] = rawItems.map((i) => {
           const post = postById.get(String(i.listingId ?? ''));
+          const imageUrl = String(i.imageUrl || post?.image || post?.images?.[0] || '').trim();
           return {
             listingId: String(i.listingId ?? ''),
             name: String(i.name ?? ''),
             price: Number(i.price ?? 0),
             seller: b.sellerName,
-            sellerUsername: post?.sellerUsername ?? '',
+            sellerUsername: post?.sellerUsername || String(i.sellerUsername ?? ''),
+            ...(imageUrl ? { imageUrl } : {}),
           };
         });
         const thumbs = items
           .map((i) => {
             const post = postById.get(i.listingId);
-            const img = post?.images?.[0] ?? post?.image;
+            const img = i.imageUrl || post?.images?.[0] || post?.image;
             return typeof img === 'string' && img ? img : null;
           })
           .filter((u): u is string => !!u);
@@ -98,6 +109,7 @@ export default function BundlesScreen() {
         const originalPrice = b.discount > 0 && b.discount < 100 ? Math.round(Number(b.price) / (1 - Number(b.discount) / 100)) : Number(b.price);
         return {
           id: b.id,
+          sellerUsername: String(b.sellerUsername ?? '').trim() || undefined,
           title: b.title,
           tagline: `${b.sellerName ?? 'Combo'} · ${b.discount}% off combo`,
           originalPrice,
@@ -150,8 +162,9 @@ export default function BundlesScreen() {
         price: i === 0 ? bundle.bundlePrice - share * (n - 1) : share,
         seller: item.seller,
         sellerUsername: item.sellerUsername,
-        // Bundle membership rides to the server, which re-prices from the
-        // Bundle row — the split here is the buyer's preview, never the charge.
+        ...(item.imageUrl ? { imageUrl: item.imageUrl } : {}),
+         // Bundle membership rides to the server, which re-prices from the
+         // Bundle row — the split here is the buyer's preview, never the charge.
         bundleId: bundle.id,
       });
       if (!ok) rejected = true;
@@ -190,7 +203,19 @@ export default function BundlesScreen() {
             <ActivityIndicator size="large" color={colors.primaryContainer} />
           </View>
         )}
-        {!loading && bundles.length === 0 && (
+        {!loading && loadError && bundles.length === 0 && (
+          <View className="items-center py-16 px-8">
+            <Text className="font-inter-500 text-textSecondary text-center" style={{ fontSize: 14, lineHeight: 20 }}>
+              Bundle deals couldn&apos;t load. This does not mean there are no deals.
+            </Text>
+            <TouchableOpacity className="mt-4 px-5 py-2 rounded-full" style={{ backgroundColor: colors.primaryContainer }} onPress={() => void refreshBundles()}>
+              <Text className="font-inter-600 text-white" style={{ fontSize: 13, lineHeight: 18 }}>
+                Try again
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
+        {!loading && !loadError && bundles.length === 0 && (
           <View className="items-center py-16 px-8">
             <Text className="font-inter-500 text-textSecondary text-center" style={{ fontSize: 14, lineHeight: 20 }}>
               No bundle deals right now. Check back soon — sellers bundle bestsellers here.
@@ -250,9 +275,19 @@ export default function BundlesScreen() {
                     Add bundle to cart
                   </Text>
                 </TouchableOpacity>
+              ) : bundle.sellerUsername ? (
+                <TouchableOpacity
+                  className="w-full items-center justify-center mt-4 h-12 rounded-figma-12"
+                  style={{ backgroundColor: colors.surfaceContainer }}
+                    onPress={() => router.push(`/seller/${encodeURIComponent(String(bundle.sellerUsername))}`)}
+                >
+                  <Text className="font-inter-600 text-textPrimary" style={{ fontSize: 14, lineHeight: 18 }}>
+                    View seller store
+                  </Text>
+                </TouchableOpacity>
               ) : (
-                <Text className="font-inter-400 text-textSecondary mt-4" style={{ fontSize: 13, lineHeight: 18 }}>
-                  Curated by {bundle.tagline.split('·')[0]?.trim() ?? 'the seller'} — message them for the full set.
+                <Text className="font-inter-400 text-textSecondary mt-4 text-center" style={{ fontSize: 13, lineHeight: 18 }}>
+                  This combo is being prepared. The seller store is not linked yet.
                 </Text>
               )}
             </View>

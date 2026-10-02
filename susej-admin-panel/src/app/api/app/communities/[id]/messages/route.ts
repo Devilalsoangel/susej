@@ -15,12 +15,16 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 
   const community = await prisma.community.findUnique({ where: { id } });
   if (!community) return NextResponse.json({ error: "Community not found" }, { status: 404 });
-  if (community.type === "private" || community.type === "Private") {
+  if (String(community.status ?? "active").toLowerCase() !== "active") {
+    return NextResponse.json({ error: "Community is not active" }, { status: 403 });
+  }
+  if (String(community.type ?? "").toLowerCase() === "private") {
     const rawList: unknown = (community as unknown as { memberList?: unknown }).memberList;
     const list: unknown[] = Array.isArray(rawList) ? rawList : [];
+    const target = String(auth.user.username ?? "").trim().toLowerCase();
     const isMember = list.some((m) => {
-      if (typeof m === "string") return m === auth.user.username;
-      if (m && typeof m === "object") return (m as { username?: string }).username === auth.user.username;
+      if (typeof m === "string") return m.trim().toLowerCase() === target;
+      if (m && typeof m === "object") return String((m as { username?: string }).username ?? "").trim().toLowerCase() === target;
       return false;
     });
     if (!isMember) {

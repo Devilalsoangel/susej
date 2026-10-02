@@ -61,20 +61,26 @@ function ProductCard({ item, onPress }: { item: ProductResult; onPress: () => vo
   );
 }
 
-function UserRow({ item, onPress }: { item: UserResult; onPress: () => void }) {
+function UserRow({ item, onPress, isSelf }: { item: UserResult; onPress: () => void; isSelf?: boolean }) {
   return (
-    <TouchableOpacity className="flex-row items-center gap-3 py-3 border-b border-surfaceContainer" onPress={onPress}>
+    <TouchableOpacity
+      className="flex-row items-center gap-3 py-3 border-b border-surfaceContainer"
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={isSelf ? `Your profile, ${item.displayName || item.name || item.username}` : `View ${item.displayName || item.name || item.username}`}
+    >
       <View className="w-11 h-11 rounded-figma-full bg-surfaceContainer items-center justify-center overflow-hidden">
         {item.avatar ? <Image source={{ uri: item.avatar }} className="w-full h-full" resizeMode="cover" /> : <Text className="font-inter-600 text-primary" style={{ fontSize: 16 }}>{initials(item.displayName || item.name, item.username)}</Text>}
       </View>
       <View className="flex-1">
         <View className="flex-row items-center gap-2">
           <Text className="font-inter-600 text-textPrimary" style={{ fontSize: 14, lineHeight: 20 }}>{item.displayName || item.name || `@${item.username}`}</Text>
+          {isSelf ? <Text className="font-inter-600 text-textTertiary" style={{ fontSize: 10 }}>(you)</Text> : null}
           {item.verified ? <Text className="font-inter-500 text-textTertiary" style={{ fontSize: 10 }}>Verified</Text> : null}
         </View>
         <Text className="font-inter-400 text-textSecondary mt-0.5" style={{ fontSize: 12, lineHeight: 18 }}>@{item.username}{item.location ? ` · ${item.location}` : ''}</Text>
       </View>
-      <Text className="font-inter-500 text-primary" style={{ fontSize: 12 }}>View</Text>
+      <Text className="font-inter-500 text-primary" style={{ fontSize: 12 }}>{isSelf ? 'Profile' : 'View'}</Text>
     </TouchableOpacity>
   );
 }
@@ -308,9 +314,19 @@ export default function SearchScreen() {
     AsyncStorage.setItem(searchesKey, JSON.stringify(next)).catch(() => {});
   };
 
+  const myUsername = (user?.username ?? '').trim().toLowerCase();
+  const isSelfHit = (username: string) => {
+    const handle = username.trim().replace(/^@+/, '').toLowerCase();
+    return Boolean(myUsername) && handle === myUsername;
+  };
+
   const openHit = (hit: SearchHit) => {
-    if (hit.kind === 'user') router.push(`/seller/${encodeURIComponent(hit.username)}`);
-    else if (hit.kind === 'product') router.push(`/product/${encodeURIComponent(hit.id)}`);
+    if (hit.kind === 'user') {
+      // Instagram/Amazon standard: a hit that IS you opens YOUR profile tab, not
+      // your public storefront - a shopper tapping "you" expects the account page.
+      if (isSelfHit(hit.username)) router.push('/(tabs)/profile');
+      else router.push(`/seller/${encodeURIComponent(hit.username)}`);
+    } else if (hit.kind === 'product') router.push(`/product/${encodeURIComponent(hit.id)}`);
     else if (hit.kind === 'category') router.push(`/category/${encodeURIComponent(hit.slug)}`);
     else {
       setQuery(hit.label);
@@ -334,7 +350,7 @@ export default function SearchScreen() {
     if (error && !remote) return <View className="px-6 py-16 items-center"><Text className="font-inter-500 text-textPrimary text-center" style={{ fontSize: 15, lineHeight: 22 }}>{error}</Text><TouchableOpacity className="mt-4 px-5 py-3 rounded-figma-12" style={{ backgroundColor: colors.primaryContainer }} onPress={submitSearch}><Text className="font-inter-600 text-white" style={{ fontSize: 13 }}>Try again</Text></TouchableOpacity></View>;
     if (tab === 'all') {
       if (suggestionHits.length) return <ResultSection title="Suggestions">{suggestionHits.map((hit) => <TouchableOpacity key={`${hit.kind}-${hit.kind === 'user' ? hit.username : hit.kind === 'product' || hit.kind === 'category' ? hit.id : hit.label}`} className="flex-row items-center gap-3 py-3 border-b border-surfaceContainer" onPress={() => openHit(hit)}><View className="w-9 h-9 rounded-figma-full bg-surfaceContainer items-center justify-center"><Text className="font-inter-600 text-primary" style={{ fontSize: 14 }}>{hit.kind === 'user' ? '@' : hit.kind === 'product' ? '⌕' : hit.kind === 'category' ? '≡' : '⌖'}</Text></View><Text className="flex-1 font-inter-500 text-textPrimary" style={{ fontSize: 14 }} numberOfLines={1}>{hit.kind === 'user' ? `${hit.displayName || hit.name} · @${hit.username}` : hit.kind === 'product' ? hit.title : hit.kind === 'category' ? hit.name : hit.label}</Text><ChevronRightIcon size={15} color={colors.secondary} /></TouchableOpacity>)}</ResultSection>;
-      return <View>{people.length ? <ResultSection title="People" count={people.length}>{people.map((hit) => <UserRow key={hit.username} item={hit} onPress={() => openHit(hit)} />)}</ResultSection> : null}{productResults.length ? <ResultSection title="Products" count={productResults.length}>{renderProducts(productResults)}</ResultSection> : null}{categories.length ? <ResultSection title="Categories" count={categories.length}>{categories.map((hit) => <CategoryRow key={hit.id} item={hit} onPress={() => openHit(hit)} />)}</ResultSection> : null}{locations.length ? <ResultSection title="Locations" count={locations.length}>{locations.map((hit) => <LocationRow key={hit.label} item={hit} onPress={() => openHit(hit)} />)}</ResultSection> : null}{showEmpty ? <View className="items-center py-16 px-6"><Text className="font-inter-500 text-textSecondary text-center" style={{ fontSize: 15 }}>No people, products, or places match “{term}”.</Text><Text className="font-inter-400 text-textTertiary text-center mt-2" style={{ fontSize: 12 }}>Try a username, product name, category, or city.</Text></View> : null}</View>;
+      return <View>{people.length ? <ResultSection title="People" count={people.length}>{people.map((hit) => <UserRow key={hit.username} item={hit} onPress={() => openHit(hit)} isSelf={isSelfHit(hit.username)} />)}</ResultSection> : null}{productResults.length ? <ResultSection title="Products" count={productResults.length}>{renderProducts(productResults)}</ResultSection> : null}{categories.length ? <ResultSection title="Categories" count={categories.length}>{categories.map((hit) => <CategoryRow key={hit.id} item={hit} onPress={() => openHit(hit)} />)}</ResultSection> : null}{locations.length ? <ResultSection title="Locations" count={locations.length}>{locations.map((hit) => <LocationRow key={hit.label} item={hit} onPress={() => openHit(hit)} />)}</ResultSection> : null}{showEmpty ? <View className="items-center py-16 px-6"><Text className="font-inter-500 text-textSecondary text-center" style={{ fontSize: 15 }}>No people, products, or places match “{term}”.</Text><Text className="font-inter-400 text-textTertiary text-center mt-2" style={{ fontSize: 12 }}>Try a username, product name, category, or city.</Text></View> : null}</View>;
     }
     if (tab === 'products') return productResults.length ? renderProducts(productResults) : <Text className="text-center text-textSecondary py-16" style={{ fontSize: 14 }}>No products match “{term}”.</Text>;
     if (tab === 'people') return people.length ? people.map((hit) => <UserRow key={hit.username} item={hit} onPress={() => openHit(hit)} />) : <Text className="text-center text-textSecondary py-16" style={{ fontSize: 14 }}>No people match “{term}”.</Text>;

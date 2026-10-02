@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { View, Text, Image, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { colors } from '../../utils/theme';
-import { resolveAvatar } from '../../utils/productImages';
+import { UserAvatar } from '../../components/UserAvatar';
 import { serverApi } from '../../utils/serverApi';
 
 // Live room deep link — resolves against REAL active streams from
@@ -62,7 +62,7 @@ export default function LiveRoomScreen() {
       </TouchableOpacity>
 
       <View className="items-center">
-        <Image source={resolveAvatar(room.hostUsername)} className="w-24 h-24 rounded-full" />
+        <UserAvatar name={room.hostName || room.hostUsername || 'Host'} username={room.hostUsername} size={96} />
         <View className="flex-row items-center mt-4 self-center px-2 rounded-full" style={{ backgroundColor: colors.error }}>
           <Text className="font-inter-700 text-white" style={{ fontSize: 10, lineHeight: 14, letterSpacing: 0.8 }}>
             LIVE NOW

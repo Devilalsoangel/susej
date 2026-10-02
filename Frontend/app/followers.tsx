@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react';
-import { View, Text, Image, FlatList, TouchableOpacity } from 'react-native';
+import { View, Text, FlatList, TouchableOpacity } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import Svg, { Path } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BackIcon } from '../utils/icons';
 import { colors } from '../utils/theme';
-import { resolveAvatar } from '../utils/productImages';
+import { UserAvatar } from '../components/UserAvatar';
+import { primeAvatars } from '../utils/avatarDirectory';
 import { useFollow } from '../contexts/FollowContext';
 
 function WalletPathIcon({ size = 20, color = colors.primary }: { size?: number; color?: string }) {
@@ -20,13 +21,15 @@ function WalletPathIcon({ size = 20, color = colors.primary }: { size?: number; 
 interface SeedUser {
   username: string;
   name: string;
-  avatar: any;
 }
 
+// The follow lists carry usernames only, so the picture is resolved by handle
+// through the shared avatar directory (one request per account, initials when
+// there is no photo). resolveAvatar() here returned the SAME blank placeholder
+// for every follower - the exact "PFP not showing at other users" report.
 const userFor = (username: string): SeedUser => ({
   username,
   name: username,
-  avatar: resolveAvatar(username),
 });
 
 type Tab = 'followers' | 'following';
@@ -48,6 +51,13 @@ export default function FollowersScreen() {
   );
 
   const rows = tab === 'following' ? followingRows : followersRows;
+
+  // Warm the avatar directory for the visible list so the rows land on real
+  // photos as they scroll in, instead of flashing initials per row.
+  useMemo(() => {
+    primeAvatars(rows.map((r) => r.username));
+    return null;
+  }, [rows]);
 
   const renderSegment = (label: string, value: Tab) => {
     const active = tab === value;
@@ -99,7 +109,7 @@ export default function FollowersScreen() {
               onPress={() => router.push(`/seller/${item.username}`)}
             >
               <View className="w-12 h-12 rounded-full overflow-hidden mr-3" style={{ backgroundColor: colors.surfaceContainer }}>
-                <Image source={item.avatar} className="w-full h-full" resizeMode="cover" />
+                <UserAvatar name={item.name} username={item.username} size={48} />
               </View>
               <View className="flex-1 pr-3">
                 <View className="flex-row items-center gap-1.5">

@@ -8,7 +8,7 @@ import { ChevronLeftIcon, ChevronRightIcon, SendIcon, PlusIcon, MinusIcon, Close
 import { colors, formatCount } from '../../utils/theme';
 import { useCommunities } from '../../contexts/CommunityContext';
 import type { CommunityMessage } from '../../contexts/CommunityContext';
-import { resolveAvatar } from '../../utils/productImages';
+import { UserAvatar } from '../../components/UserAvatar';
 import { setImmersiveNav } from '../../utils/immersiveNav';
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -434,7 +434,7 @@ export default function CommunityChatScreen() {
               {/* User name + time */}
               <View className={`flex-row items-center ${isSelf ? 'justify-end' : ''} mb-1`}>
                 {!isSelf ? (
-                  <Image source={resolveAvatar(item.authorUsername ?? item.author)} className="w-9 h-9 rounded-full mr-2" style={{ backgroundColor: colors.surfaceContainer }} />
+                  <UserAvatar name={item.author} username={item.authorUsername} size={36} style={{ marginRight: 8 }} />
                 ) : null}
                 <Text className={`font-inter-600 ${isSelf ? 'text-primaryContainer' : 'text-textPrimary'}`} style={{ fontSize: 14, lineHeight: 16 }}>
                   {item.author}

@@ -33,9 +33,18 @@ export async function GET(req: NextRequest) {
         : [];
       return { rows, wanted, profiles };
     }, { freshMs: 30_000, staleMs: 600_000 });
+    const myHandle = String(myUsername ?? "").trim().toLowerCase();
+    const visibleRows = base.rows.filter((c) => {
+      const status = String((c as { status?: unknown }).status ?? "active").toLowerCase();
+      if (!["active", "suspended", "banned"].includes(status)) return false;
+      const isPrivate = String(c.type ?? "").toLowerCase() === "private";
+      if (!isPrivate) return true;
+      if (!myHandle) return false;
+      return (base.wanted.get(c.id) ?? []).some((handle) => handle.trim().toLowerCase() === myHandle);
+    });
     const profiles = new Map(base.profiles.filter((u) => u.username).map((u) => [u.username!, { username: u.username!, name: u.businessName || u.name, avatar: u.avatar, verified: u.verification === "approved" }]));
     return NextResponse.json({
-      communities: base.rows.map((c) => {
+      communities: visibleRows.map((c) => {
         const handles = base.wanted.get(c.id) ?? [];
         return {
           id: c.id,
@@ -125,8 +134,8 @@ export async function POST(req: NextRequest) {
     const rawList: unknown = (community as unknown as { memberList?: unknown }).memberList;
     const list: unknown[] = Array.isArray(rawList) ? rawList : [];
     const isMember = list.some((m) => {
-      if (typeof m === "string") return m === auth.user.username;
-      if (m && typeof m === "object") return (m as { username?: string }).username === auth.user.username;
+      if (typeof m === "string") return m.toLowerCase() === String(auth.user.username).toLowerCase();
+      if (m && typeof m === "object") return String((m as { username?: string }).username ?? "").toLowerCase() === String(auth.user.username).toLowerCase();
       return false;
     });
     if (!isMember) {

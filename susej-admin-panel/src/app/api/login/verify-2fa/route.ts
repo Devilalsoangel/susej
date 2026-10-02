@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
 import {
   verifyPassword,
+  revealTotpSecret,
+  verifyTotpCode,
   verifyChallengeToken,
   signSession,
   SESSION_COOKIE,
@@ -69,7 +71,17 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  if (!admin.twoFactorEnabled || !admin.twoFactorCode || !verifyPassword(code, admin.twoFactorCode)) {
+  const totpSecret = revealTotpSecret(admin.twoFactorCode);
+  if (admin.twoFactorEnabled && !totpSecret && process.env.NODE_ENV === "production") {
+    return NextResponse.json(
+      { error: "Authenticator setup is required before sign-in.", enrollmentRequired: true },
+      { status: 409 }
+    );
+  }
+  const validFactor = totpSecret
+    ? verifyTotpCode(totpSecret, code)
+    : process.env.NODE_ENV !== "production" && admin.twoFactorCode !== null && verifyPassword(code, admin.twoFactorCode);
+  if (!admin.twoFactorEnabled || !validFactor) {
     const fails = tfaFailed(admin.id);
     const exhausted = fails >= MAX_LOGIN_ATTEMPTS;
     await writeAudit({

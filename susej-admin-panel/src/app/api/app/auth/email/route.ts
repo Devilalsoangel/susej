@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { PrismaClient } from "@/generated/prisma/client";
 import { randomBytes, scryptSync, timingSafeEqual } from "crypto";
 import { getPrisma } from "@/lib/db";
 import { createAppSession, toAppUser } from "@/lib/app-auth";
@@ -68,7 +69,7 @@ function canonicalEmail(email: string): string {
 }
 // Returns the count, or -1 when the check itself fails — the register path
 // fails CLOSED on -1 (503 try-again): a DB hiccup must never mint money.
-async function canonicalFarmCount(prisma: any, canonical: string): Promise<number> {
+async function canonicalFarmCount(prisma: PrismaClient, canonical: string): Promise<number> {
   const domain = canonical.split("@")[1] ?? "";
   const weekAgo = new Date(Date.now() - 7 * 24 * 3600 * 1000);
   try {
@@ -154,14 +155,25 @@ export async function POST(req: NextRequest) {
     for (let attempt = 0; attempt < 5 && !user; attempt += 1) {
       const username = attempt === 0 ? base : `${base}${Math.floor(1000 + Math.random() * 9000)}`;
       try {
-        user = await prisma.user.create({
-          data: {
-            name,
-            email,
-            username,
-            passwordHash: hashPassword(password),
-            walletBalance: 500, // standard welcome grant, same as OTP path
-          },
+        user = await prisma.$transaction(async (tx) => {
+          const created = await tx.user.create({
+            data: {
+              name,
+              email,
+              username,
+              passwordHash: hashPassword(password),
+              walletBalance: 500,
+            },
+          });
+          await tx.walletTransaction.create({
+            data: {
+              username: created.username!,
+              title: "Welcome bonus",
+              detail: "Standard welcome grant",
+              amount: 500,
+            },
+          });
+          return created;
         });
       } catch (e: unknown) {
         if ((e as { code?: string })?.code !== "P2002") throw e;
@@ -175,9 +187,6 @@ export async function POST(req: NextRequest) {
       }
     }
     if (!user) return NextResponse.json({ error: "Could not create account — try again" }, { status: 503 });
-    await prisma.walletTransaction
-      .create({ data: { username: user.username!, title: "Welcome bonus", detail: "Standard welcome grant", amount: 500 } })
-      .catch(() => undefined);
     const token = await createAppSession(user.id, user.username!);
     return NextResponse.json({ token, user: toAppUser(user) });
   }

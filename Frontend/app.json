@@ -2,7 +2,7 @@
   "expo": {
     "name": "susej",
     "slug": "susej",
-    "version": "1.1.1",
+    "version": "1.1.2",
     "sdkVersion": "57.0.0",
     "scheme": "susej",
     "platforms": [
@@ -20,9 +20,10 @@
         "backgroundColor": "#FFFFFF"
       },
       "package": "com.susej.app",
-      "versionCode": 2,
-      "buildNumber": "2",
+      "versionCode": 3,
+      "buildNumber": "3",
       "softwareKeyboardLayoutMode": "resize",
+      "allowBackup": false,
       "permissions": [
         "ACCESS_COARSE_LOCATION",
         "ACCESS_FINE_LOCATION"

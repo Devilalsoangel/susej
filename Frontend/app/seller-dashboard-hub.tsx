@@ -1,6 +1,7 @@
 import { View, Text, ScrollView, TouchableOpacity, Image, Alert } from 'react-native';
 import { router } from 'expo-router';
-import { resolveAvatar, resolveListingImage, listingTitle } from '../utils/productImages';
+import { resolveListingImage, listingTitle } from '../utils/productImages';
+import { UserAvatar } from '../components/UserAvatar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path, Rect, Circle } from 'react-native-svg';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -78,7 +79,9 @@ export default function SellerDashboardHubScreen() {
   // seller "user"'s data to logged-out viewers (cross-account leak, C2).
   const username = user?.username ?? '';
   const shopName = user?.businessName || user?.name || 'My Store';
-  const avatar = user?.avatar || resolveAvatar(username ?? 'user').uri;
+  // The seller's own picture, or null so the header can draw their initials.
+  // resolveAvatar()'s placeholder made an account with no photo look broken.
+  const avatar = user?.avatar || null;
   // Hero photo, cross-device truth first: edit-shop uploads + server-syncs
   // user.avatar, so it wins; the device-local @susej_shop_profile photo is the
   // offline fallback (avatar-only local reads stranded phone B on gradient).
@@ -354,7 +357,7 @@ export default function SellerDashboardHubScreen() {
           <View className="px-4 pb-4" style={{ marginTop: -30 }}>
             <View className="flex-row items-end">
               <View style={{ width: 66, height: 66, borderRadius: 33, borderWidth: 3, borderColor: colors.surfaceContainerLowest, overflow: 'visible' }}>
-                <Image source={{ uri: avatar }} style={{ width: 60, height: 60, borderRadius: 30 }} resizeMode="cover" />
+                <UserAvatar name={shopName} username={username} uri={avatar} size={60} />
               </View>
               <View className="flex-1 ml-3 pb-1">
                 <View className="flex-row items-center">

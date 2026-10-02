@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHash, randomInt } from "crypto";
+import type { Prisma } from "@/generated/prisma/client";
 import { getPrisma } from "@/lib/db";
-import { getAppUser, isIndianPhoneShape, canonPhone, devOtpExposureAllowed } from "@/lib/app-auth";
+import { authPhoneLockKey, authOtpPepperMissing, getAppUser, otpTombstoneValue, parseAppAuthBody, parseAppPhone, parseSendAuthIntent, devOtpExposureAllowed, hashOtpCode, readOtpSendWindow } from "@/lib/app-auth";
 import { getClientIp } from "@/lib/auth";
 
 // Per-IP send throttle: the per-phone 45s cooldown alone lets one IP pump
@@ -22,17 +23,20 @@ function throttleSendIp(ip: string): boolean {
 }
 
 // Production OTP request flow:
-// - 6-digit random code, stored as SHA-256 hash with 5-minute expiry,
+// - 6-digit random code, stored as a server-peppered HMAC with 5-minute expiry,
 //   max 5 verify attempts, single-use (row deleted on success).
 // - Delivery through an SMS provider when SMS_API_URL + SMS_API_KEY are set;
 //   otherwise AUTH_DEV_MODE (default on in development) returns devCode so
 //   the flow stays testable without a provider contract.
 const OTP_TTL_MS = 5 * 60 * 1000;
 const RESEND_COOLDOWN_MS = 45 * 1000;
-const MAX_ATTEMPTS = 5;
+const OTP_TRANSACTION = { maxWait: 10_000, timeout: 15_000 };
 
-function hashCode(phone: string, code: string): string {
-  return createHash("sha256").update(`${phone}:${code}`).digest("hex");
+function sameStoredChallenge(value: unknown, expected: Prisma.InputJsonValue): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const current = value as Record<string, unknown>;
+  const issued = expected as Record<string, unknown>;
+  return current.hash === issued.hash && current.issuedAt === issued.issuedAt;
 }
 
 async function sendViaSmsProvider(phone: string, code: string): Promise<boolean> {
@@ -53,76 +57,133 @@ async function sendViaSmsProvider(phone: string, code: string): Promise<boolean>
 }
 
 export async function POST(req: NextRequest) {
-  let body: { phone?: string } = {};
+  let parsedBody: unknown;
   try {
-    body = await req.json();
+    parsedBody = await req.json();
   } catch {
-    return NextResponse.json({ error: "Invalid body" }, { status: 400 });
+    return NextResponse.json({ error: "Invalid body", code: "INVALID_BODY" }, { status: 400 });
   }
-  const raw = (body.phone ?? "").replace(/\D/g, "");
-  if (!raw || raw.length < 10) {
-    return NextResponse.json({ error: "A valid 10-digit phone number is required" }, { status: 400 });
+  const body = parseAppAuthBody(parsedBody);
+  if (!body || Object.keys(body).length === 0) {
+    return NextResponse.json({ error: "Invalid body", code: "INVALID_BODY" }, { status: 400 });
   }
-  // India-only product (INR identity, 91-normalized accounts): codes are
-  // issued to Indian shapes only. A foreign number sharing an Indian
-  // account's last 10 digits must never receive a code — the verify step
-  // binds sessions by phone, and cross-country issuance is account takeover.
-  if (!isIndianPhoneShape(raw)) {
-    return NextResponse.json({ error: "Only Indian (+91) mobile numbers are supported" }, { status: 400 });
+  const intent = parseSendAuthIntent(body.intent, body.create);
+  if (!intent) {
+    return NextResponse.json({ error: "Auth intent must be login or signup", code: "INVALID_INTENT" }, { status: 400 });
   }
-  // Canonical identity: format variants (0-trunk, 91-prefix) share one OTP
-  // row, one cooldown, one hourly counter — never parallel live codes.
-  const phone = canonPhone(raw);
+  const phone = parseAppPhone(body.phone);
+  if (!phone) {
+    return NextResponse.json({ error: "A valid Indian mobile number is required", code: "INVALID_PHONE" }, { status: 400 });
+  }
+  // Fail closed before minting anything: an unkeyed challenge hash in
+  // production is an offline-crackable credential for the phone number.
+  if (authOtpPepperMissing()) {
+    return NextResponse.json(
+      { error: "OTP service is not configured. Please contact support.", code: "AUTH_CONFIG_MISSING" },
+      { status: 503, headers: { "Cache-Control": "no-store" } }
+    );
+  }
   if (!throttleSendIp(getClientIp(req))) {
-    return NextResponse.json({ error: "Too many codes requested — try again in a minute" }, { status: 429 });
+    return NextResponse.json({ error: "Too many codes requested — try again in a minute", code: "RATE_LIMITED" }, { status: 429 });
   }
   const prisma = await getPrisma();
-  if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
+  if (!prisma) return NextResponse.json({ error: "Database unavailable", code: "DATABASE_UNAVAILABLE" }, { status: 503 });
 
-  // Every DB touch below can throw (Neon timeout, pool drop on serverless):
-  // without this guard the throw becomes a 500 HTML page, and the app shows
-  // a raw red "HTTP 500". Always answer JSON.
   try {
-  // Cooldown: an unexpired request cannot be re-issued inside the window.
-  const existing = await prisma.appSetting.findUnique({ where: { key: `otp:${phone}` } });
-  if (existing?.value) {
-    const prev = existing.value as { exp?: number; issuedAt?: number };
-    if (typeof prev.exp === "number" && prev.exp > Date.now() &&
-        typeof prev.issuedAt === "number" && Date.now() - prev.issuedAt < RESEND_COOLDOWN_MS) {
-      return NextResponse.json({ error: "Code already sent. Please wait before requesting another." }, { status: 429 });
+    const issued = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${authPhoneLockKey(phone)}, 0))`;
+      const key = `otp:${phone}`;
+      const existing = await tx.appSetting.findUnique({ where: { key } });
+      const previous = existing?.value && typeof existing.value === "object" && !Array.isArray(existing.value)
+        ? existing.value as Record<string, unknown>
+        : {};
+      const previousExp = typeof previous.exp === "number" && Number.isFinite(previous.exp) ? previous.exp : null;
+      const previousIssuedAt = typeof previous.issuedAt === "number" && Number.isFinite(previous.issuedAt)
+        ? previous.issuedAt
+        : null;
+      // A tombstone (spent/expired/locked) is still a real limiter record: the
+      // 45s cooldown and the rolling-hour budget below read it, so burning a
+      // code never hands the caller a fresh budget.
+      if (previousExp !== null && previousExp > Date.now() && previousIssuedAt !== null &&
+          Date.now() - previousIssuedAt < RESEND_COOLDOWN_MS) {
+        return { kind: "cooldown" as const };
+      }
+      const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
+      const now = Date.now();
+      const { sentInWindow, firstSent } = readOtpSendWindow(previous, now);
+      if (sentInWindow >= 5) {
+        return { kind: "rate-limited" as const };
+      }
+      const nextValue: Prisma.InputJsonValue = {
+        hash: hashOtpCode(phone, code),
+        exp: now + OTP_TTL_MS,
+        attempts: 0,
+        issuedAt: now,
+        sent: sentInWindow + 1,
+        firstSent,
+        intent,
+        state: "active",
+      };
+      await tx.appSetting.upsert({
+        where: { key },
+        create: { key, value: nextValue },
+        update: { value: nextValue },
+      });
+      return {
+        kind: "issued" as const,
+        key,
+        code,
+        value: nextValue,
+        hadPrevious: !!existing,
+        previousValue: existing?.value as Prisma.InputJsonValue | undefined,
+      };
+    }, OTP_TRANSACTION);
+
+    if (issued.kind === "cooldown") {
+      return NextResponse.json({ error: "Code already sent. Please wait before requesting another.", code: "OTP_COOLDOWN" }, { status: 429 });
     }
-  }
+    if (issued.kind === "rate-limited") {
+      return NextResponse.json({ error: "Too many codes requested — try again in an hour", code: "RATE_LIMITED" }, { status: 429 });
+    }
 
-  const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
-  const now = Date.now();
-  // Hourly send cap per phone (brute-force bound): each code allows 5 verify
-  // attempts, and resends reset the counter — uncapped resends mean unbounded
-  // guesses. Cap 5 codes/hour/phone (Json row, no migration); the 6th send
-  // inside the window 429s. Legit users never hit 5/hour.
-  const prevVal = (existing?.value ?? null) as { sent?: number; firstSent?: number } | null;
-  const windowStart = typeof prevVal?.firstSent === "number" ? prevVal.firstSent : now;
-  const sentInWindow = now - windowStart < 3600 * 1000 ? Number(prevVal?.sent ?? 0) : 0;
-  if (sentInWindow >= 5) {
-    return NextResponse.json({ error: "Too many codes requested — try again in an hour" }, { status: 429 });
-  }
-  await prisma.appSetting.upsert({
-    where: { key: `otp:${phone}` },
-    create: { key: `otp:${phone}`, value: { hash: hashCode(phone, code), exp: now + OTP_TTL_MS, attempts: 0, issuedAt: now, sent: 1, firstSent: now } },
-    update: { value: { hash: hashCode(phone, code), exp: now + OTP_TTL_MS, attempts: 0, issuedAt: now, sent: sentInWindow + 1, firstSent: sentInWindow > 0 ? windowStart : now } },
-  });
-
-  const delivered = await sendViaSmsProvider(phone, code);
-  const devMode = devOtpExposureAllowed(phone);
-  if (!delivered && !devMode) {
-    return NextResponse.json({ error: "SMS delivery is not configured" }, { status: 503 });
-  }
-  return NextResponse.json({
-    ok: true,
-    message: delivered ? "OTP sent" : "OTP generated (dev mode)",
-    ...(!delivered && devMode ? { devCode: code } : {}),
-  });
+    const delivered = await sendViaSmsProvider(phone, issued.code);
+    const devMode = devOtpExposureAllowed(phone);
+    if (!delivered && !devMode) {
+      await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${authPhoneLockKey(phone)}, 0))`;
+        const current = await tx.appSetting.findUnique({ where: { key: issued.key } });
+        if (!current || !sameStoredChallenge(current.value, issued.value)) return;
+        if (issued.hadPrevious) {
+          // Put the prior row (live challenge or tombstone) back verbatim.
+          await tx.appSetting.update({
+            where: { key: issued.key },
+            data: { value: issued.previousValue! },
+          });
+        } else {
+          // No prior row: tombstone instead of DELETE. Deleting handed this
+          // phone a brand-new limiter (sent 0, firstSent now) for free, so a
+          // broken SMS provider became an unlimited retry pump.
+          await tx.appSetting.updateMany({
+            where: { key: issued.key, value: { equals: issued.value } },
+            data: {
+              value: otpTombstoneValue(issued.value as Record<string, unknown>, "expired", Date.now()),
+            },
+          });
+        }
+      }, OTP_TRANSACTION);
+      return NextResponse.json({ error: "SMS delivery is not configured", code: "SMS_UNAVAILABLE" }, { status: 503 });
+    }
+    return NextResponse.json(
+      {
+        ok: true,
+        intent,
+        message: delivered ? "OTP sent" : "OTP generated (dev mode)",
+        ...(!delivered && devMode ? { devCode: issued.code } : {}),
+      },
+      { headers: { "Cache-Control": "no-store" } }
+    );
   } catch {
-    return NextResponse.json({ error: "Server hiccup. Please try again." }, { status: 500 });
+    return NextResponse.json({ error: "Server hiccup. Please try again.", code: "SERVER_ERROR" }, { status: 500 });
   }
 }
 
@@ -138,13 +199,18 @@ export async function DELETE(req: NextRequest) {
   const header = req.headers.get("authorization") ?? "";
   const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
   if (!token) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-  const auth = await getAppUser(req);
-  if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   const all = req.nextUrl.searchParams.get("all") === "1";
   if (all) {
+    const auth = await getAppUser(req);
+    if (!auth) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     await prisma.appSession.deleteMany({ where: { userId: auth.user.id } });
-  } else {
-    await prisma.appSession.delete({ where: { id: auth.session.id } });
+    return NextResponse.json({ ok: true, revoked: "all" });
   }
-  return NextResponse.json({ ok: true, revoked: all ? "all" : "current" });
+  const tokenHash = createHash("sha256").update(token).digest("hex");
+  try {
+    await prisma.appSession.deleteMany({ where: { OR: [{ tokenHash }, { token }] } });
+  } catch {
+    await prisma.appSession.deleteMany({ where: { token } });
+  }
+  return NextResponse.json({ ok: true, revoked: "current" });
 }

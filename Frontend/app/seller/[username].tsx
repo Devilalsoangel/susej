@@ -3,7 +3,8 @@ import { View, Text, ScrollView, TouchableOpacity, Alert, Image } from 'react-na
 import Svg, { Path, Rect, Circle } from 'react-native-svg';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
-import { resolveAvatar } from '../../utils/productImages';
+import { AvatarView } from '../../components/AvatarView';
+import { Skeleton, SkeletonCircle } from '../../components/Skeleton';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { loadStoreTheme } from '../../utils/sellerUnlocks';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -20,6 +21,13 @@ import { getChildCategories, findMainCategory } from '../../utils/categories';
 import { serverApi } from '../../utils/serverApi';
 import { useBlockedSellers } from '../../utils/blockedSellers';
 import { goBack } from '../../utils/navigation';
+
+/**
+ * The title the storefront editor seeds a brand-new banner row with. It is a
+ * placeholder, never copy a visitor should read, and a banner carrying it with
+ * no image is not a hero at all.
+ */
+const PLACEHOLDER_BANNER_TITLE = 'New banner';
 import {
   ChipRail,
   StoreAccentProvider,
@@ -376,7 +384,12 @@ function StorefrontRoute({
   // exactly (same seller, same name everywhere).
   const displayName =
     realStats?.businessName?.trim() || realStats?.name?.trim() || profile.name;
-  const displayBio = realStats?.bio?.trim() ? realStats.bio : profile.bio;
+  // The bio is whatever the account actually has. It used to fall back to the
+  // store's generated line ("Goffy sells in Audio on susej. Tap below to..."),
+  // which INVENTED copy for anyone who never wrote a bio - and only for
+  // viewers, so the owner saw an empty bio on their own profile while every
+  // other visitor saw a paragraph of marketing text. No bio means no bio.
+  const displayBio = realStats?.bio?.trim() ?? '';
 
   // Own-store customization overrides (from the seller editors): customized
   // sub-category filters only apply to the logged-in user's own shop so
@@ -488,7 +501,14 @@ function StorefrontRoute({
 
   // Banners the seller actually created in the storefront editor, keyed per
   // seller. Template-generated promo banners are fabrication - never shown.
+  // Only a banner that carries an IMAGE can be a hero: the editor seeds a
+  // placeholder row (title "New banner", no image) and rendering that as a
+  // 540px gradient was the broken storefront. The placeholder title is also
+  // never shown to a visitor.
   const storeBanners = ownBanners && ownBanners.length > 0 ? ownBanners : [];
+  const heroBanner = storeBanners.find(
+    (banner) => Boolean(banner.image?.uri) && banner.title !== PLACEHOLDER_BANNER_TITLE,
+  );
 
   const matchesChip = (haystack: string) => {
     if (activeChip === 'all') return true;
@@ -664,13 +684,27 @@ function StorefrontRoute({
   const profileHeader = (
     <View>
       <View className="flex-row items-end">
-        {/* Themed stores: avatar pokes above the identity card into the hero
-            band (classic premium profile framing); default stays flat. */}
-        <View style={{ width: 96, height: 96, borderRadius: 9999, borderWidth: 4, borderColor: colors.surfaceContainerLowest, marginTop: themeAccent ? -26 : 0 }}>
-          <Image
-            source={profile.avatar ?? (themeAccent ? resolveAvatar(username, themeAccent) : resolveAvatar(username))}
-            style={{ width: 88, height: 88, borderRadius: 9999, backgroundColor: colors.surfaceContainer }}
-          />
+        {/* YouTube-style channel header: the avatar crosses the banner's bottom
+            edge whenever a real banner exists (it used to require a paid theme,
+            so an ordinary seller's avatar floated beside a lone name under a
+            540px void). */}
+        <View style={{ width: 96, height: 96, borderRadius: 9999, borderWidth: 4, borderColor: colors.surfaceContainerLowest, marginTop: heroBanner || themeAccent ? -26 : 0 }}>
+          {/* A real photo when there is one, otherwise the account's own
+              initials on a colour. The data-shaped resolveAvatar() placeholder
+              is a near-empty base64 image, so every account without a photo
+              rendered a BLANK circle - the "PFP not visible" report. The app
+              already forces a real photo at profile setup; visitors still need
+              to see who they are looking at. */}
+          {profile.avatar ? (
+            <Image
+              source={typeof profile.avatar === 'string' ? { uri: profile.avatar } : profile.avatar}
+              style={{ width: 88, height: 88, borderRadius: 9999, backgroundColor: colors.surfaceContainer }}
+            />
+          ) : (
+            <View className="items-center justify-center" style={{ width: 88, height: 88, borderRadius: 9999, overflow: 'hidden' }}>
+              <AvatarView name={displayName || username || 'susej'} size={88} />
+            </View>
+          )}
           {realStats?.verified && (
             <View
               style={{
@@ -1047,24 +1081,21 @@ function StorefrontRoute({
         {/* Seller-configured banner (from the storefront editor) renders as the
             hero for every viewer. No seller banner = no hero: identity-first
             layout, never a fabricated template banner (audit Aug 24). */}
-        {storeBanners.length > 0 && (
+        {/* A banner only counts as a banner if it has an IMAGE. The storefront
+            editor creates a placeholder row titled "New banner" with an empty
+            image, and that row was rendered as a 540px empty gradient with the
+            literal words "New banner" on it - the "totally broken" storefront.
+            No image means no hero: the header collapses to a compact identity
+            row instead of a void with placeholder text in it. */}
+        {heroBanner && (
           <View style={{
             // Honor the seller's chosen size preset (editor preview parity):
             // hero 2:1, wide 16:9, tall 4:5. The old fixed 200px strip made
-            // the picker theater — every choice rendered identically.
-            aspectRatio: storeBanners[0].size === 'tall' ? 4 / 5 : storeBanners[0].size === 'wide' ? 16 / 9 : 2 / 1,
+            // the picker theater - every choice rendered identically.
+            aspectRatio: heroBanner.size === 'tall' ? 4 / 5 : heroBanner.size === 'wide' ? 16 / 9 : 2 / 1,
             backgroundColor: colors.surfaceContainer,
           }}>
-            {storeBanners[0].image ? (
-              <Image source={storeBanners[0].image} className="w-full h-full" resizeMode="cover" />
-            ) : (
-              <LinearGradient
-                colors={themeAccent ? [themeAccent, themeAccent] : [colors.primaryContainer, colors.primary]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={{ flex: 1 }}
-              />
-            )}
+            <Image source={heroBanner.image} className="w-full h-full" resizeMode="cover" />
             <LinearGradient
               colors={['rgba(47,46,67,0)', 'rgba(47,46,67,0.55)', 'rgba(47,46,67,0.92)']}
               start={{ x: 0, y: 0.35 }}
@@ -1075,27 +1106,31 @@ function StorefrontRoute({
             />
             <View
               className="absolute left-5 right-5"
-              style={{ bottom: themeAccent ? 58 : 16 }}
+              // The avatar crosses the banner's bottom edge (YouTube channel
+              // header), so the copy clears it.
+              style={{ bottom: 64 }}
             >
-              <Text className="font-inter-700 text-white" style={{ fontSize: 22, lineHeight: 28 }}>
-                {storeBanners[0].title}
-              </Text>
-              {storeBanners[0].sub ? (
+              {heroBanner.title && heroBanner.title !== PLACEHOLDER_BANNER_TITLE ? (
+                <Text className="font-inter-700 text-white" style={{ fontSize: 22, lineHeight: 28 }}>
+                  {heroBanner.title}
+                </Text>
+              ) : null}
+              {heroBanner.sub ? (
                 <Text className="font-inter-400 mt-1" style={{ fontSize: 13, lineHeight: 18, color: colors.inverseOnSurface }}>
-                  {storeBanners[0].sub}
+                  {heroBanner.sub}
                 </Text>
               ) : null}
               {/* Banner CTA the seller configured in the storefront editor:
                   collected + synced but never rendered (dead promise). Routes
                   to chat with the seller about this banner's offer. */}
-              {storeBanners[0].cta ? (
+              {heroBanner.cta ? (
                 <TouchableOpacity
                   className="mt-3 self-start px-5 py-2.5 rounded-full"
                   style={{ backgroundColor: '#FFFFFF' }}
-                  onPress={() => router.push(`/(tabs)/chat?seller=${encodeURIComponent(username || '')}&product=${encodeURIComponent(storeBanners[0].title)}`)}
+                  onPress={() => router.push(`/(tabs)/chat?seller=${encodeURIComponent(username || '')}&product=${encodeURIComponent(heroBanner.title ?? 'this offer')}`)}
                 >
                   <Text className="font-inter-600" style={{ fontSize: 13, lineHeight: 18, color: '#1A1A2E' }}>
-                    {storeBanners[0].cta}
+                    {heroBanner.cta}
                   </Text>
                 </TouchableOpacity>
               ) : null}
@@ -1206,6 +1241,13 @@ function UserProfile({
   };
   const [stats, setStats] = useState<{ followers: number; following: number; posts: number } | null>(null);
   const [identity, setIdentity] = useState(sellerInfo);
+  // The account's real picture. Without it the profile rendered the
+  // near-empty resolveAvatar() base64, i.e. a blank circle, which is why a
+  // visitor saw "no PFP" on anyone who had not uploaded a photo.
+  const [avatar, setAvatar] = useState<string | null>(null);
+  // True until the server answers: the header shows a skeleton instead of
+  // zeroed stats that silently change a second later.
+  const [loading, setLoading] = useState(true);
   useEffect(() => {
     if (!username) return;
     let alive = true;
@@ -1218,7 +1260,11 @@ function UserProfile({
           verified: u.verification === 'approved',
           bio: typeof u.bio === 'string' ? u.bio : '',
         });
+        setAvatar(typeof u.avatar === 'string' && u.avatar.trim() ? u.avatar : null);
       }
+      if (alive) setLoading(false);
+    }).catch(() => {
+      if (alive) setLoading(false);
     });
     return () => {
       alive = false;
@@ -1264,6 +1310,45 @@ function UserProfile({
     ]);
   };
 
+  // Loading skeleton instead of a dead screen. The header used to paint itself
+  // immediately with zeroed stats ("0" / "-") and then swap in the real numbers
+  // a beat later, which reads as broken rather than loading.
+  if (loading) {
+    return (
+      <View className="flex-1 bg-surface">
+        <View className="flex-row items-center px-5" style={{ height: 52 + insets.top, paddingTop: insets.top, backgroundColor: colors.surface }}>
+          <TouchableOpacity onPress={() => goBack('/search')}>
+            <ChevronLeftIcon size={18} color={accent ?? colors.primary} />
+          </TouchableOpacity>
+          <Text className="flex-1 text-center font-inter-700" style={{ fontSize: 20, lineHeight: 28, color: accent ?? colors.primary }}>
+            susej
+          </Text>
+        </View>
+        <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 48 }}>
+          <View className="px-5 mt-4" accessibilityLabel="Loading profile">
+            <View className="flex-row items-center">
+              <SkeletonCircle size={86} />
+              <View className="flex-1 ml-4 flex-row">
+                {[0, 1, 2].map((i) => (
+                  <View key={i} className="flex-1 items-center">
+                    <Skeleton width={34} height={20} radius={6} />
+                    <Skeleton width={52} height={12} radius={4} style={{ marginTop: 8 }} />
+                  </View>
+                ))}
+              </View>
+            </View>
+            <Skeleton width="55%" height={16} radius={6} style={{ marginTop: 18 }} />
+            <Skeleton width="80%" height={12} radius={4} style={{ marginTop: 10 }} />
+            <View className="flex-row mt-4" style={{ gap: 12 }}>
+              <Skeleton width={132} height={44} radius={16} />
+              <Skeleton width={132} height={44} radius={16} />
+            </View>
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
+
   return (
     <View className="flex-1 bg-surface">
       {/* Header — back + susej + QR + more */}
@@ -1291,11 +1376,20 @@ function UserProfile({
         {/* Instagram-style header: avatar left, stats right, name + bio below */}
         <View className="px-5 mt-4">
           <View className="flex-row items-center">
-            <Image
-              source={resolveAvatar(username || 'anon')}
-              className="w-[86px] h-[86px] rounded-full"
-              style={{ backgroundColor: colors.surfaceContainer }}
-            />
+            {/* Real photo, or the account's own initials on a colour. The
+                resolveAvatar() placeholder is a near-empty base64 image, so a
+                shopper without a photo rendered as a BLANK circle. */}
+            {avatar ? (
+              <Image
+                source={{ uri: avatar }}
+                className="w-[86px] h-[86px] rounded-full"
+                style={{ backgroundColor: colors.surfaceContainer }}
+              />
+            ) : (
+              <View className="rounded-full overflow-hidden">
+                <AvatarView name={identity.name || username || 'susej'} size={86} />
+              </View>
+            )}
             <View className="flex-1 ml-4 flex-row">
               {[
                 { value: display(stats?.posts ?? 0), label: 'Posts' },

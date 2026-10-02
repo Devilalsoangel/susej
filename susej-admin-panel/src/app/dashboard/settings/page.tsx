@@ -224,7 +224,8 @@ function SecuritySettings() {
 
 function Rotate2faCard() {
   const [password, setPassword] = useState("");
-  const [code, setCode] = useState<string | null>(null);
+  const [secret, setSecret] = useState<string | null>(null);
+  const [otpauthUri, setOtpauthUri] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   async function rotate() {
@@ -239,29 +240,31 @@ function Rotate2faCard() {
         body: JSON.stringify({ password }),
       });
       const body = await res.json().catch(() => null);
-      if (!res.ok || !body?.code) {
+      if (!res.ok || !body?.secret) {
         setError(body?.error ?? "Rotation failed.");
         return;
       }
-      setCode(String(body.code));
+      setSecret(String(body.secret));
+      setOtpauthUri(String(body.otpauthUri ?? ""));
       setPassword("");
     } catch {
-      setError("Network error — code not rotated.");
+      setError("Network error — authenticator not rotated.");
     } finally {
       setBusy(false);
     }
   }
   return (
     <div className="rounded-2xl border border-[#E4E4E7] bg-white p-5">
-      <h3 className="text-[14px] font-semibold text-[#18181B]">My 2FA code</h3>
+      <h3 className="text-[14px] font-semibold text-[#18181B]">My authenticator</h3>
       <p className="mt-1 text-[12px] text-[#71717A]">
-        Seeded accounts share a bootstrap code — rotate it to a private one. The new code shows once; write it down.
+        Enroll a new authenticator app. The setup key shows once; add it to the app before hiding it.
       </p>
-      {code ? (
+      {secret ? (
         <div className="mt-3 rounded-xl bg-[#F4F4F5] p-4 text-center">
-          <p className="text-[11px] text-[#71717A]">Your new 2FA code (shown once)</p>
-          <p className="mt-1 text-[28px] font-bold tracking-[0.3em] text-[#18181B]">{code}</p>
-          <button className="mt-2 text-[12px] font-medium text-[#6C3BFF]" onClick={() => setCode(null)}>I saved it — hide</button>
+          <p className="text-[11px] text-[#71717A]">Authenticator setup key (shown once)</p>
+          <p className="mt-1 break-all font-mono text-[18px] font-bold tracking-[0.15em] text-[#18181B]">{secret}</p>
+          {otpauthUri && <p className="mt-2 break-all text-[10px] text-[#71717A]">{otpauthUri}</p>}
+          <button className="mt-2 text-[12px] font-medium text-[#6C3BFF]" onClick={() => { setSecret(null); setOtpauthUri(null); }}>I saved it — hide</button>
         </div>
       ) : (
         <div className="mt-3 flex items-end gap-3">
@@ -274,7 +277,7 @@ function Rotate2faCard() {
             onClick={rotate}
             className="h-9 shrink-0 rounded-[6px] bg-[#18181B] px-4 text-sm font-medium text-white outline-none disabled:opacity-40"
           >
-            {busy ? "…" : "Rotate code"}
+            {busy ? "…" : "Rotate authenticator"}
           </button>
         </div>
       )}

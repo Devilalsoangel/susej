@@ -6,8 +6,11 @@ import { validateMediaRefs } from "@/lib/media";
 
 /**
  * Variant shape gate (POST + PATCH share it): at most 20 groups, 50 values
- * each; names/labels clipped; priceDelta within ±10M (a negative delta
- * undercharges every order and distorts fee legs); stock integer 0..100000.
+ * each; names/labels clipped; priceDelta 0..10M (a NEGATIVE delta used to pass
+ * this gate: it undercharged every order for the "premium" option and skewed
+ * the commission/fee legs, while the app's own create wizard only ever emits
+ * additions — so a negative is hostile input, not a discount feature);
+ * stock integer 0..100000.
  * Returns 400-grade errors, never silent clips of money fields.
  */
 export function sanitizeVariants(raw: unknown): { ok: true; variants: null | unknown } | { ok: false; error: string } {
@@ -15,26 +18,37 @@ export function sanitizeVariants(raw: unknown): { ok: true; variants: null | unk
   if (!Array.isArray(raw)) return { ok: false, error: "Invalid variants" };
   if (raw.length > 20) return { ok: false, error: "Too many variant groups (max 20)" };
   const out: Array<{ name: string; values: Array<{ label: string; priceDelta?: number; stock?: number }> }> = [];
+  const groupNames = new Set<string>();
   for (const g of raw as Array<{ name?: unknown; values?: unknown }>) {
     const name = String(g?.name ?? "").trim().slice(0, 60);
     if (!name) return { ok: false, error: "Variant group needs a name" };
+    const nameKey = name.toLowerCase();
+    if (groupNames.has(nameKey)) return { ok: false, error: `Duplicate variant group "${name}"` };
+    groupNames.add(nameKey);
     if (!Array.isArray(g?.values) || (g.values as unknown[]).length === 0) {
       return { ok: false, error: `Variant "${name}" needs at least one value` };
     }
     if ((g.values as unknown[]).length > 50) return { ok: false, error: `Too many values in "${name}" (max 50)` };
     const values: Array<{ label: string; priceDelta?: number; stock?: number }> = [];
+    const labels = new Set<string>();
     for (const v of g.values as Array<{ label?: unknown; priceDelta?: unknown; stock?: unknown }>) {
       const label = String(v?.label ?? "").trim().slice(0, 60);
       if (!label) return { ok: false, error: `Variant "${name}" has an empty value` };
+      const labelKey = label.toLowerCase();
+      if (labels.has(labelKey)) return { ok: false, error: `Duplicate value "${label}" in "${name}"` };
+      labels.add(labelKey);
       const row: { label: string; priceDelta?: number; stock?: number } = { label };
-      if (v?.priceDelta !== undefined) {
+      if (v?.priceDelta !== undefined && v?.priceDelta !== null) {
         const d = Number(v.priceDelta);
-        if (!Number.isFinite(d) || Math.abs(d) > 10000000) return { ok: false, error: `Bad price adjustment in "${name}"` };
+        if (!Number.isFinite(d) || d < 0) {
+          return { ok: false, error: `Bad price adjustment in "${name}" (a variant can only add to the base price)` };
+        }
+        if (d > 10000000) return { ok: false, error: `Bad price adjustment in "${name}"` };
         row.priceDelta = Math.round(d);
       }
-      if (v?.stock !== undefined) {
+      if (v?.stock !== undefined && v?.stock !== null) {
         const s = Number(v.stock);
-        if (!Number.isFinite(s) || s < 0 || s > 100000) return { ok: false, error: `Bad stock in "${name}"` };
+        if (!Number.isFinite(s) || !Number.isInteger(s) || s < 0 || s > 100000) return { ok: false, error: `Bad stock in "${name}"` };
         row.stock = Math.floor(s);
       }
       values.push(row);
@@ -42,6 +56,22 @@ export function sanitizeVariants(raw: unknown): { ok: true; variants: null | unk
     out.push({ name, values });
   }
   return { ok: true, variants: out as never };
+}
+
+/** Effective sellability from the variant set: any numeric stock left (or a
+ *  value with no stock at all = unlimited) keeps the listing buyable. */
+export function variantListingSold(variants: unknown): boolean {
+  if (!Array.isArray(variants)) return false;
+  let remaining = 0;
+  let unlimited = false;
+  for (const g of variants as Array<{ values?: unknown }>) {
+    if (!Array.isArray(g?.values)) continue;
+    for (const v of g.values as Array<{ stock?: unknown }>) {
+      if (typeof v?.stock === "number") remaining += Math.max(0, Math.floor(Number(v.stock)));
+      else unlimited = true;
+    }
+  }
+  return !(remaining > 0 || unlimited);
 }
 
 function toAppPost(p: {
@@ -307,6 +337,17 @@ export async function POST(req: NextRequest) {
   const stockLeft = trackedVariants
     ? null
     : typeof stockLeftRaw === "number" && Number.isFinite(stockLeftRaw) && stockLeftRaw >= 0 && stockLeftRaw <= 100000 ? Math.floor(stockLeftRaw) : null;
+  // Zero-stock invariant (server-derived, never a client flag): base stock of 0
+  // starts sold, tracked variants start sold when every value is at 0, and a
+  // listing with any stock left (or an unlimited value) starts buyable. The
+  // client used to send isSold only for the base-stock case, so a variant
+  // listing created with all values at 0 published as live and 400'd every
+  // order.
+  const isSold = trackedVariants
+    ? variantListingSold(variants)
+    : stockLeft === null
+      ? false
+      : stockLeft <= 0;
   const negotiable = typeof (body as unknown as { negotiable?: unknown }).negotiable === "boolean" ? (body as unknown as { negotiable: boolean }).negotiable : null;
   const rawMode = (body as unknown as { deliveryMode?: unknown }).deliveryMode;
   const deliveryMode = rawMode === "pickup" || rawMode === "shipping" || rawMode === "local" ? String(rawMode) : null;
@@ -334,11 +375,9 @@ export async function POST(req: NextRequest) {
         likes: 0,
         comments: 0,
         status: "published",
-        // Zero-stock listings start sold (out-of-stock shelf state): the client
-        // sends isSold with stockLeft 0, and a 0-stock Active row can never
-        // sell (placement 400s). isSold is honored ONLY in that consistent
-        // pair — never as a free flag.
-        isSold: body.isSold === true && stockLeft === 0,
+        // Zero-stock listings start sold (out-of-stock shelf state): derived
+        // from the effective inventory above, never from a client flag.
+        isSold,
         featured: false,
         condition: body.condition ? String(body.condition) : null,
         brand: body.brand ? String(body.brand) : null,

@@ -429,6 +429,20 @@ export default function CreateScreen() {
     const stockNum = cleanVariants.length > 0
       ? undefined
       : Number.isFinite(qtyNum) ? qtyNum : 1;
+    // Zero-stock invariant for variant creation: a tracked variant listing
+    // starts sold when every value is at 0 (the server derives the same
+    // value, so local and server never disagree). The old payload only sent
+    // isSold for the base-stock case, so an all-zero variant listing
+    // published as live and rejected every order.
+    const trackedVariantStock = cleanVariants.length > 0
+      ? cleanVariants.every((g) => g.values.length > 0 && g.values.every((v) => typeof v.stock === 'number'))
+      : false;
+    const variantStockLeft = trackedVariantStock
+      ? cleanVariants.reduce((sum, g) => sum + g.values.reduce((s, v) => s + (typeof v.stock === 'number' ? Math.max(0, v.stock) : 0), 0), 0)
+      : null;
+    const startsSold = trackedVariantStock
+      ? variantStockLeft === 0
+      : stockNum === 0;
     // Upload FIRST (industry standard: DB stores hosted http(s) URLs only —
     // the server now rejects file://, content:// and data: references, which
     // previously leaked into the feed as broken images on every other device).
@@ -474,7 +488,7 @@ export default function CreateScreen() {
       stockLeft: stockNum,
       // Explicit 0-stock starts sold (out-of-stock shelf state, not a dead
       // Active row). Restock revives it (base → 1, tracked values → 1).
-      ...(stockNum === 0 ? { isSold: true } : {}),
+      ...(startsSold ? { isSold: true } : {}),
       // Fulfillment data the wizard collects — previously dropped before the
       // order (buyer never saw condition, delivery mode, or shipping fee).
       condition: condition || undefined,

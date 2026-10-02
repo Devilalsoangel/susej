@@ -108,10 +108,19 @@ export async function POST(req: NextRequest) {
       if (footprint.some((n) => n > 0)) {
         throw new UsernameFrozen();
       }
-      return tx.user.update({
+      const updated = await tx.user.update({
         where: { id: auth.user.id },
         data: { username: handle },
       });
+      // The birth-minted welcome bonus is keyed by username like every other
+      // wallet row. Renaming the user without moving it leaves the rupee in the
+      // balance with no ledger row (unaudited money) and frees the birth handle
+      // for a second account to claim. Move it in the SAME locked transaction.
+      await tx.walletTransaction.updateMany({
+        where: { username: me, title: "Welcome bonus" },
+        data: { username: handle },
+      });
+      return updated;
     }, { timeout: 20000 });
     return NextResponse.json({ user: toAppUser(updated) });
   } catch (e: unknown) {

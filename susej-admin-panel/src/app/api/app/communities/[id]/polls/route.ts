@@ -2,6 +2,16 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
 import { getAppUser } from "@/lib/app-auth";
 
+function hasMember(community: { type?: unknown; memberList?: unknown }, username: string): boolean {
+  if (String(community.type ?? "").toLowerCase() !== "private") return true;
+  const list = Array.isArray(community.memberList) ? community.memberList : [];
+  const target = username.trim().toLowerCase();
+  return list.some((member) => {
+    if (typeof member === "string") return member.trim().toLowerCase() === target;
+    return member && typeof member === "object" && String((member as { username?: unknown }).username ?? "").trim().toLowerCase() === target;
+  });
+}
+
 /**
  * GET /api/app/communities/[id]/polls — shared polls with vote tallies +
  * my votes. Missing tables (pre-migration) → { polls: [] } so clients keep
@@ -16,6 +26,14 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
   const auth = await getAppUser(_req).catch(() => null);
   const me = String(auth?.user.username ?? "");
+  const community = await prisma.community.findUnique({ where: { id } });
+  if (!community) return NextResponse.json({ error: "Community not found" }, { status: 404 });
+  if (String(community.status ?? "active").toLowerCase() !== "active") {
+    return NextResponse.json({ error: "Community is not active" }, { status: 403 });
+  }
+  if (!hasMember(community, me)) {
+    return NextResponse.json({ error: "Join this private community first" }, { status: 403 });
+  }
   try {
     const polls = await prisma.poll.findMany({
       where: { communityId: id },
@@ -47,7 +65,7 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
     });
     return NextResponse.json({ polls: out });
   } catch {
-    return NextResponse.json({ polls: [] });
+    return NextResponse.json({ error: "Poll service unavailable" }, { status: 503 });
   }
 }
 
@@ -57,13 +75,19 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   const prisma = await getPrisma();
   if (!prisma) return NextResponse.json({ error: "Database unavailable" }, { status: 503 });
   const { id } = await ctx.params;
+  const me = auth.user.username!;
+  const community = await prisma.community.findUnique({ where: { id } });
+  if (!community) return NextResponse.json({ error: "Community not found" }, { status: 404 });
+  if (String(community.status ?? "active").toLowerCase() !== "active" || (community as unknown as { postingLocked?: unknown }).postingLocked === true) {
+    return NextResponse.json({ error: "Community posting is locked" }, { status: 403 });
+  }
+  if (!hasMember(community, me)) return NextResponse.json({ error: "Join this community first" }, { status: 403 });
   let body: { question?: unknown; options?: unknown; pollId?: unknown; optionId?: unknown };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "Invalid body" }, { status: 400 });
   }
-  const me = auth.user.username!;
   // Vote path.
   if (body.pollId !== undefined) {
     const pollId = String(body.pollId ?? "").trim();
@@ -90,7 +114,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       if (/relation .* does not exist|does not exist|no such table/i.test(msg)) {
-        return NextResponse.json({ ok: true, localOnly: true });
+        return NextResponse.json({ error: "Poll service is not migrated" }, { status: 503 });
       }
       throw e;
     }
@@ -116,7 +140,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     if (/relation .* does not exist|does not exist|no such table/i.test(msg)) {
-      return NextResponse.json({ ok: true, localOnly: true });
+      return NextResponse.json({ error: "Poll service is not migrated" }, { status: 503 });
     }
     throw e;
   }

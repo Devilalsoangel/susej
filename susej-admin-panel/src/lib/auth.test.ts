@@ -51,7 +51,30 @@ test("legacy typeless session tokens are rejected", () => {
 test("tampered session tokens are rejected", () => {
   const token = auth.signSession(admin, "password-hash");
   const [body, signature] = token.split(".");
-  const changedSignature = `${signature.slice(0, -1)}${signature.endsWith("a") ? "b" : "a"}`;
-  assert.equal(auth.verifySessionToken(`${body}x.${signature}`), null);
+  const changedBody = `${body[0] === "A" ? "B" : "A"}${body.slice(1)}`;
+  const changedSignature = `${signature[0] === "A" ? "B" : "A"}${signature.slice(1)}`;
+  assert.equal(auth.verifySessionToken(`${changedBody}.${signature}`), null);
   assert.equal(auth.verifySessionToken(`${body}.${changedSignature}`), null);
+});
+
+test("TOTP secrets encrypt, reveal, and verify with a one-step clock window", () => {
+  const secret = auth.generateTotpSecret();
+  const now = 1_800_000_000_000;
+  const code = auth.totpCode(secret, now);
+  assert.ok(code && /^\d{6}$/.test(code));
+  assert.equal(auth.verifyTotpCode(secret, code!, now), true);
+  assert.equal(auth.verifyTotpCode(secret, code!, now - 30_000), true);
+  assert.equal(auth.verifyTotpCode(secret, code!, now + 90_000), false);
+  const protectedSecret = auth.protectTotpSecret(secret);
+  assert.notEqual(protectedSecret, secret);
+  assert.equal(auth.revealTotpSecret(protectedSecret), secret);
+  assert.equal(auth.revealTotpSecret("legacy:hash"), null);
+});
+
+test("seeded admins derive distinct authenticator secrets", () => {
+  const first = auth.deriveTotpSecret("shared-seed", "admin-one");
+  const second = auth.deriveTotpSecret("shared-seed", "admin-two");
+  assert.notEqual(first, second);
+  assert.ok(auth.totpCode(first, 1_800_000_000_000));
+  assert.ok(auth.totpCode(second, 1_800_000_000_000));
 });
