@@ -79,9 +79,11 @@ export async function POST(request: NextRequest) {
       { status: 409 }
     );
   }
+  // In dev mode with no TOTP secret, accept the fixed dev code "123456" directly.
+  const devStaticOk = devMode && !totpSecret && code === "123456";
   const validFactor = totpSecret
     ? verifyTotpCode(totpSecret, code)
-    : (process.env.NODE_ENV !== "production" || devMode) && admin.twoFactorCode !== null && verifyPassword(code, admin.twoFactorCode);
+    : devStaticOk || ((process.env.NODE_ENV !== "production" || devMode) && admin.twoFactorCode !== null && verifyPassword(code, admin.twoFactorCode));
   if (!admin.twoFactorEnabled || !validFactor) {
     const fails = tfaFailed(admin.id);
     const exhausted = fails >= MAX_LOGIN_ATTEMPTS;
