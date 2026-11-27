@@ -339,10 +339,11 @@ export function devOtpExposureAllowed(phone: string, env: NodeJS.ProcessEnv = pr
   // sign in at all. The phone allowlist is the control that keeps the
   // production dev-code path narrow.
   if (env.AUTH_DEV_MODE !== "1") return false;
-  const allowed = (env.AUTH_DEV_TEST_PHONES ?? "")
-    .split(",")
-    .map((value) => canonPhone(value.trim()))
-    .filter(Boolean);
+  const raw = (env.AUTH_DEV_TEST_PHONES ?? "").trim();
+  // Empty allowlist = allow any phone (operator opted in with AUTH_DEV_MODE=1
+  // but hasn't restricted to specific numbers — treat as "all test phones").
+  if (!raw) return true;
+  const allowed = raw.split(",").map((value) => canonPhone(value.trim())).filter(Boolean);
   return allowed.includes(canonPhone(phone));
 }
 
